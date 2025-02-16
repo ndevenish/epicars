@@ -15,12 +15,8 @@ use binrw::binrw;
 #[allow(non_camel_case_types)]
 #[binrw]
 #[derive(Debug)]
+#[brw(magic = b"\x00\x0d")]
 struct CA_PROTO_RSRV_IS_UP {
-    #[bw(calc = 0x0D)]
-    #[br(assert(command == 0x0D, "Invalid Command Number"))]
-    #[br(temp)]
-    command: u16,
-
     #[bw(calc = 0)]
     #[br(assert(reserved == 0, "Invalid Command Number"))]
     #[br(temp)]
