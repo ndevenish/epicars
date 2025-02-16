@@ -1,93 +1,276 @@
-use std::net::Ipv4Addr;
+#![allow(dead_code)]
 
-use binrw::{binrw, NullString};
+use std::{
+    io::{self, Write},
+    net::Ipv4Addr,
+};
 
-// #[binrw]
-// struct Header {
-//     command: u16,
-//     payload_size: u16,
-//     data_type: u16,
-//     data_count: u16,
-//     parameter_1: u32,
-//     parameter_2: u32,
-// }
+use nom::{
+    bytes::complete::take,
+    error::{Error, ErrorKind},
+    number::complete::{be_u16, be_u32},
+    Err, IResult,
+};
 
-#[allow(non_camel_case_types)]
-#[binrw]
+const EPICS_VERSION: i16 = 13;
+
+/// A basic trait to tie nom parseability to the struct without a
+/// plethora of named functions.
+/// Also adds common interface for writing a message struct to a writer.
+trait CAMessage {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized;
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
+}
+
+/// Message CA_PROTO_RSRV_IS_UP.
+///
+/// Beacon sent by a server when it becomes available. Beacons are also
+/// sent out periodically to announce the server is still alive. Another
+/// function of beacons is to allow detection of changes in network
+/// topology. Sent over UDP.
 #[derive(Debug)]
-#[brw(magic = b"\x00\x0d")]
-struct CA_PROTO_RSRV_IS_UP {
-    #[bw(calc = 0)]
-    #[br(assert(reserved == 0, "Invalid Command Number"))]
-    #[br(temp)]
-    reserved: u16,
-
-    #[br(assert(version == 13, "Unrecognised version"))]
-    #[bw(assert(*version == 13, "Unrecognised version"))]
-    version: u16,
-
+struct RsrvIsUp {
     server_port: u16,
-    beacon_number: u32,
-
-    #[br(map = |x: [u8; 4]| Ipv4Addr::from(x))]
-    #[bw(map = |addr: &Ipv4Addr| addr.octets())]
+    beacon_id: u32,
     server_ip: Ipv4Addr,
 }
 
-#[allow(non_camel_case_types)]
-#[binrw]
-#[derive(Debug)]
-#[brw(magic = b"\x00\x00")]
-struct CA_PROTO_VERSION {
-    #[bw(calc = 0)]
-    #[br(assert(payload_size == 0, "Invalid payload size"))]
-    #[br(temp)]
-    payload_size: u16,
+impl CAMessage for RsrvIsUp {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, header) = Header::parse(input)?;
+        if header.command != 0x0D {
+            return Err(Err::Error(Error::new(input, ErrorKind::Tag)));
+        }
 
-    priority: u16,
+        if header.field_1_data_type != 13 {
+            return Err(Err::Failure(Error::new(input, ErrorKind::Tag)));
+        }
+        Ok((
+            input,
+            RsrvIsUp {
+                server_port: header.field_2_data_count as u16,
+                beacon_id: header.field_3_parameter_1,
+                server_ip: Ipv4Addr::from(header.field_4_parameter_2),
+            },
+        ))
+    }
 
-    #[br(assert(version == 13, "Unrecognised version"))]
-    #[bw(assert(*version == 13, "Unrecognised version"))]
-    version: u16,
-
-    reserved_0: u32,
-
-    reserved_1: u32,
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write(&13_u16.to_be_bytes())?;
+        writer.write(&0_u16.to_be_bytes())?;
+        writer.write(&EPICS_VERSION.to_be_bytes())?;
+        writer.write(&self.server_port.to_be_bytes())?;
+        writer.write(&self.beacon_id.to_be_bytes())?;
+        writer.write(&self.server_ip.octets())?;
+        Ok(())
+    }
 }
 
-#[allow(non_camel_case_types)]
-#[binrw]
+/// Message CA_PROTO_VERSION.
+///
+/// Exchanges client and server protocol versions and desired circuit
+/// priority. MUST be the first message sent, by both client and server,
+/// when a new TCP (Virtual Circuit) connection is established. It is
+/// also sent as the first message in UDP search messages.
 #[derive(Debug)]
-#[brw(magic = b"\x00\x06")]
-struct CA_PROTO_SEARCH {
-    #[br(assert(payload_size != 0xFFFF ))]
-    #[bw(try_calc = u16::try_from(channel_name.len()))]
-    #[br(temp)]
-    payload_size: u16,
+struct Version {
+    priority: u16,
+}
+impl CAMessage for Version {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, header) = Header::parse(input)?;
+        if header.field_2_data_count != 13 {
+            return Err(Err::Failure(Error::new(input, ErrorKind::Tag)));
+        }
+        Ok((
+            input,
+            Version {
+                priority: header.field_1_data_type,
+            },
+        ))
+    }
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        Header {
+            command: 0,
+            payload_size: 0,
+            field_1_data_type: self.priority,
+            field_2_data_count: EPICS_VERSION as u32,
+            field_3_parameter_1: 0,
+            field_4_parameter_2: 0,
+        }
+        .write(writer)
+    }
+}
 
+struct Header {
+    command: u16,
+    payload_size: u32,
+    field_1_data_type: u16,
+    field_2_data_count: u32,
+    field_3_parameter_1: u32,
+    #[allow(dead_code)]
+    field_4_parameter_2: u32,
+}
+
+impl CAMessage for Header {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write(&self.command.to_be_bytes())?;
+        if self.payload_size < 0xFFFF && self.field_2_data_count <= 0xFFFF {
+            writer.write(&(self.payload_size as u16).to_be_bytes())?;
+            writer.write(&self.field_1_data_type.to_be_bytes())?;
+            writer.write(&(self.field_2_data_count as u16).to_be_bytes())?;
+            writer.write(&self.field_3_parameter_1.to_be_bytes())?;
+            writer.write(&self.field_4_parameter_2.to_be_bytes())?;
+        } else {
+            writer.write(&0xFFFFu32.to_be_bytes())?;
+            writer.write(&self.field_1_data_type.to_be_bytes())?;
+            writer.write(&[0x0000])?;
+            writer.write(&self.field_3_parameter_1.to_be_bytes())?;
+            writer.write(&self.field_4_parameter_2.to_be_bytes())?;
+            writer.write(&self.payload_size.to_be_bytes())?;
+            writer.write(&self.field_2_data_count.to_be_bytes())?;
+        }
+        Ok(())
+    }
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, command) = be_u16(input)?;
+        let (input, payload) = be_u16(input)?;
+        // "Data Type" is always here, even in large packet headers
+        let (input, field_1) = be_u16(input)?;
+
+        // Handle packets that could be large
+        if payload == 0xFFFF {
+            let (input, _) = take(2usize)(input)?;
+            let (input, field_3) = be_u32(input)?;
+            let (input, field_4) = be_u32(input)?;
+            let (input, payload) = be_u32(input)?;
+            let (input, field_2) = be_u32(input)?;
+            Ok((
+                input,
+                Header {
+                    command,
+                    payload_size: payload,
+                    field_1_data_type: field_1,
+                    field_2_data_count: field_2,
+                    field_3_parameter_1: field_3,
+                    field_4_parameter_2: field_4,
+                },
+            ))
+        } else {
+            let (input, field_2) = be_u16(input)?;
+            let (input, field_3) = be_u32(input)?;
+            let (input, field_4) = be_u32(input)?;
+            Ok((
+                input,
+                Header {
+                    command,
+                    payload_size: payload as u32,
+                    field_1_data_type: field_1,
+                    field_2_data_count: field_2 as u32,
+                    field_3_parameter_1: field_3,
+                    field_4_parameter_2: field_4,
+                },
+            ))
+        }
+    }
+}
+
+/// Message CA_PROTO_SEARCH.
+///
+/// Searches for a given channel name. Sent over UDP or TCP.
+#[derive(Debug)]
+pub struct Search {
     reply_flag: u16,
     search_id: u32,
-    search_id_2: u32,
+    channel_name: String,
+}
 
-    channel_name: NullString,
+#[derive(Debug)]
+pub struct SearchResponse {
+    tcp: bool,
+    port_number: u16,
+    server_ip: Ipv4Addr,
+    search_id: u32,
+}
+
+impl CAMessage for Search {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        let padded_len = (self.channel_name.len() + 1).div_ceil(8);
+
+        Header {
+            command: 6,
+            payload_size: padded_len as u32,
+            field_1_data_type: self.reply_flag,
+            field_2_data_count: EPICS_VERSION as u32,
+            field_3_parameter_1: self.search_id,
+            field_4_parameter_2: self.search_id,
+        }
+        .write(writer)?;
+        writer.write(self.channel_name.as_bytes())?;
+        // writer.write(iter::Repeat[0x00])
+        for _ in 0..(padded_len - self.channel_name.len()) {
+            writer.write(&[0x00])?;
+        }
+        Ok(())
+    }
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, header) = Header::parse(input)?;
+        if header.command != 0x06 {
+            return Err(Err::Error(Error::new(input, ErrorKind::Tag)));
+        }
+
+        let reply = header.field_1_data_type;
+        let version = header.field_2_data_count;
+        if version != 13 {
+            return Err(Err::Failure(Error::new(input, ErrorKind::Tag)));
+        }
+        let search_id = header.field_3_parameter_1;
+
+        let (input, raw_string) = take(header.payload_size)(input)?;
+        let strlen = raw_string
+            .iter()
+            .position(|&c| c == 0x00)
+            .unwrap_or(header.payload_size as usize);
+        let channel_name = String::from_utf8_lossy(&raw_string[0..strlen]).into_owned();
+
+        Ok((
+            input,
+            Search {
+                reply_flag: reply,
+                search_id,
+                channel_name,
+            },
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
-    use binrw::{BinReaderExt, BinWrite};
-
     use super::*;
+    use std::io::{Cursor, Seek};
 
     #[test]
     fn parse_beacon() {
         let raw_beacon = b"\x00\x0d\x00\x00\x00\x0d\x92\x32\x00\x06\xde\xde\xac\x17\x7c\xcf";
-        let mut reader = Cursor::new(raw_beacon);
-        let beacon: CA_PROTO_RSRV_IS_UP = reader.read_be().unwrap();
-        assert_eq!(beacon.version, 13);
+        // let mut reader = Cursor::new(raw_beacon);
+        // let beacon: CA_PROTO_RSRV_IS_UP = reader.read_be().unwrap();
+        let (_, beacon) = RsrvIsUp::parse(raw_beacon).unwrap();
         assert_eq!(beacon.server_port, 37426);
-        assert_eq!(beacon.beacon_number, 450270);
+        assert_eq!(beacon.beacon_id, 450270);
         assert_eq!(
             beacon.server_ip,
             "172.23.124.207".parse::<Ipv4Addr>().unwrap()
@@ -96,20 +279,32 @@ mod tests {
 
         // Now try converting it back
         let mut writer = Cursor::new(Vec::new());
-        beacon.write_be(&mut writer).unwrap();
+        beacon.write(&mut writer).unwrap();
+        assert_eq!(writer.stream_position().unwrap(), 16);
         assert_eq!(writer.into_inner(), raw_beacon);
     }
     #[test]
     fn parse_version() {
         let raw = b"\x00\x00\x00\x00\x00\x01\x00\x0d\x00\x00\x00\x00\x00\x00\x00\x00";
-        let mut reader = Cursor::new(raw);
-        let ver: CA_PROTO_VERSION = reader.read_be().unwrap();
-        assert_eq!(ver.version, 13);
+        // let mut reader = Cursor::new(raw);
+        let (_, ver) = Version::parse(raw).unwrap();
         println!("Version: {:?}", ver);
         assert_eq!(ver.priority, 1);
-
         let mut writer = Cursor::new(Vec::new());
-        ver.write_be(&mut writer).unwrap();
+        ver.write(&mut writer).unwrap();
+        assert_eq!(writer.stream_position().unwrap(), 16);
         assert_eq!(writer.into_inner(), raw);
+    }
+
+    #[test]
+    fn parse_search() {
+        let raw = b"\x00\x06\x00 \x00\x05\x00\r\x00\x00\x00\x01\x00\x00\x00\x01ME02P-MO-ALIGN-01:Z:TEMPAAAAAAA\x00";
+        let (_, search) = Search::parse(raw).unwrap();
+        assert_eq!(search.channel_name, "ME02P-MO-ALIGN-01:Z:TEMPAAAAAAA");
+        assert_eq!(search.reply_flag, 5);
+        assert_eq!(search.search_id, 1);
+        // Check parsing something that isn't a search
+        let raw = b"\x00\x00\x00 \x00\x05\x00\r\x00\x00\x00\x01\x00";
+        assert!(Search::parse(raw).is_err());
     }
 }
