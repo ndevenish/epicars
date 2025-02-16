@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use binrw::binrw;
+use binrw::{binrw, NullString};
 
 // #[binrw]
 // struct Header {
@@ -53,6 +53,23 @@ struct CA_PROTO_VERSION {
     reserved_0: u32,
 
     reserved_1: u32,
+}
+
+#[allow(non_camel_case_types)]
+#[binrw]
+#[derive(Debug)]
+#[brw(magic = b"\x00\x06")]
+struct CA_PROTO_SEARCH {
+    #[br(assert(payload_size != 0xFFFF ))]
+    #[bw(try_calc = u16::try_from(channel_name.len()))]
+    #[br(temp)]
+    payload_size: u16,
+
+    reply_flag: u16,
+    search_id: u32,
+    search_id_2: u32,
+
+    channel_name: NullString,
 }
 
 #[cfg(test)]
