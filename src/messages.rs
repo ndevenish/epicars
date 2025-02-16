@@ -34,6 +34,27 @@ struct CA_PROTO_RSRV_IS_UP {
     server_ip: Ipv4Addr,
 }
 
+#[allow(non_camel_case_types)]
+#[binrw]
+#[derive(Debug)]
+#[brw(magic = b"\x00\x00")]
+struct CA_PROTO_VERSION {
+    #[bw(calc = 0)]
+    #[br(assert(payload_size == 0, "Invalid payload size"))]
+    #[br(temp)]
+    payload_size: u16,
+
+    priority: u16,
+
+    #[br(assert(version == 13, "Unrecognised version"))]
+    #[bw(assert(*version == 13, "Unrecognised version"))]
+    version: u16,
+
+    reserved_0: u32,
+
+    reserved_1: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -60,5 +81,18 @@ mod tests {
         let mut writer = Cursor::new(Vec::new());
         beacon.write_be(&mut writer).unwrap();
         assert_eq!(writer.into_inner(), raw_beacon);
+    }
+    #[test]
+    fn parse_version() {
+        let raw = b"\x00\x00\x00\x00\x00\x01\x00\x0d\x00\x00\x00\x00\x00\x00\x00\x00";
+        let mut reader = Cursor::new(raw);
+        let ver: CA_PROTO_VERSION = reader.read_be().unwrap();
+        assert_eq!(ver.version, 13);
+        println!("Version: {:?}", ver);
+        assert_eq!(ver.priority, 1);
+
+        let mut writer = Cursor::new(Vec::new());
+        ver.write_be(&mut writer).unwrap();
+        assert_eq!(writer.into_inner(), raw);
     }
 }
