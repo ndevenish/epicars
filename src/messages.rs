@@ -22,6 +22,8 @@ struct CA_PROTO_RSRV_IS_UP {
     #[br(temp)]
     reserved: u16,
 
+    #[br(assert(version == 13, "Unrecognised version"))]
+    #[bw(assert(*version == 13, "Unrecognised version"))]
     version: u16,
 
     server_port: u16,
