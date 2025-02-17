@@ -9,7 +9,7 @@ use nom::{
     bytes::complete::take,
     error::{Error, ErrorKind},
     number::complete::{be_u16, be_u32},
-    Err, IResult, Input,
+    Err, IResult,
 };
 
 const EPICS_VERSION: u16 = 13;
@@ -208,10 +208,9 @@ pub struct Search {
 
 #[derive(Debug)]
 pub struct SearchResponse {
-    tcp: bool,
     port_number: u16,
-    server_ip: Ipv4Addr,
     search_id: u32,
+    server_ip: Ipv4Addr,
 }
 
 impl CAMessage for Search {
@@ -267,6 +266,25 @@ impl CAMessage for SearchResponse {
     where
         Self: Sized,
     {
+        let (input, header) = Header::parse_id(0x06, input)?;
+
+        assert!(header.payload_size == 0 || header.payload_size == 8);
+        if header.payload_size == 8 {
+            let (input, version) = be_u16(input)?;
+            let (input, _) = take(6usize)(input)?;
+            check_known_protocol(version, input)?;
+        }
+        Ok((
+            input,
+            SearchResponse {
+                port_number: header.field_1_data_type,
+                server_ip: Ipv4Addr::from(header.field_3_parameter_1),
+                search_id: header.field_4_parameter_2,
+            },
+        ))
+    }
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        Ok(())
     }
 }
 
