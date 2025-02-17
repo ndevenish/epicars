@@ -9,10 +9,10 @@ use nom::{
     bytes::complete::take,
     error::{Error, ErrorKind},
     number::complete::{be_u16, be_u32},
-    Err, IResult,
+    Err, IResult, Input,
 };
 
-const EPICS_VERSION: i16 = 13;
+const EPICS_VERSION: u16 = 13;
 
 /// A basic trait to tie nom parseability to the struct without a
 /// plethora of named functions.
@@ -24,6 +24,13 @@ trait CAMessage {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
 }
 
+fn check_known_protocol<I>(version: u16, input: I) -> Result<(), Err<nom::error::Error<I>>> {
+    if version != EPICS_VERSION {
+        Err(Err::Failure(Error::new(input, ErrorKind::Tag)))
+    } else {
+        Ok(())
+    }
+}
 /// Message CA_PROTO_RSRV_IS_UP.
 ///
 /// Beacon sent by a server when it becomes available. Beacons are also
@@ -43,9 +50,7 @@ impl CAMessage for RsrvIsUp {
         Self: Sized,
     {
         let (input, header) = Header::parse_id(0x06, input)?;
-        if header.field_1_data_type != 13 {
-            return Err(Err::Failure(Error::new(input, ErrorKind::Tag)));
-        }
+        check_known_protocol(header.field_1_data_type, input)?;
         Ok((
             input,
             RsrvIsUp {
@@ -83,9 +88,7 @@ impl CAMessage for Version {
         Self: Sized,
     {
         let (input, header) = Header::parse_id(0x00, input)?;
-        if header.field_2_data_count != 13 {
-            return Err(Err::Failure(Error::new(input, ErrorKind::Tag)));
-        }
+        check_known_protocol(header.field_2_data_count as u16, input)?;
         Ok((
             input,
             Version {
@@ -238,9 +241,7 @@ impl CAMessage for Search {
 
         let reply = header.field_1_data_type;
         let version = header.field_2_data_count;
-        if version != 13 {
-            return Err(Err::Failure(Error::new(input, ErrorKind::Tag)));
-        }
+        check_known_protocol(version as u16, input)?;
         let search_id = header.field_3_parameter_1;
 
         let (input, raw_string) = take(header.payload_size)(input)?;
