@@ -42,11 +42,7 @@ impl CAMessage for RsrvIsUp {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse(input)?;
-        if header.command != 0x0D {
-            return Err(Err::Error(Error::new(input, ErrorKind::Tag)));
-        }
-
+        let (input, header) = Header::parse_id(0x06, input)?;
         if header.field_1_data_type != 13 {
             return Err(Err::Failure(Error::new(input, ErrorKind::Tag)));
         }
@@ -86,7 +82,7 @@ impl CAMessage for Version {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse(input)?;
+        let (input, header) = Header::parse_id(0x00, input)?;
         if header.field_2_data_count != 13 {
             return Err(Err::Failure(Error::new(input, ErrorKind::Tag)));
         }
@@ -118,6 +114,17 @@ struct Header {
     field_3_parameter_1: u32,
     #[allow(dead_code)]
     field_4_parameter_2: u32,
+}
+
+impl Header {
+    /// Parse a Header, but check that it matches the expected tag
+    fn parse_id(command_id: u16, input: &[u8]) -> IResult<&[u8], Header> {
+        let (input, result) = Header::parse(input)?;
+        if result.command != command_id {
+            return Err(Err::Error(Error::new(input, ErrorKind::Tag)));
+        }
+        Ok((input, result))
+    }
 }
 
 impl CAMessage for Header {
@@ -218,7 +225,6 @@ impl CAMessage for Search {
         }
         .write(writer)?;
         writer.write(self.channel_name.as_bytes())?;
-        // writer.write(iter::Repeat[0x00])
         for _ in 0..(padded_len - self.channel_name.len()) {
             writer.write(&[0x00])?;
         }
@@ -228,10 +234,7 @@ impl CAMessage for Search {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse(input)?;
-        if header.command != 0x06 {
-            return Err(Err::Error(Error::new(input, ErrorKind::Tag)));
-        }
+        let (input, header) = Header::parse_id(0x06, input)?;
 
         let reply = header.field_1_data_type;
         let version = header.field_2_data_count;
@@ -255,6 +258,14 @@ impl CAMessage for Search {
                 channel_name,
             },
         ))
+    }
+}
+
+impl CAMessage for SearchResponse {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
     }
 }
 
