@@ -62,12 +62,12 @@ impl CAMessage for RsrvIsUp {
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        writer.write(&13_u16.to_be_bytes())?;
-        writer.write(&0_u16.to_be_bytes())?;
-        writer.write(&EPICS_VERSION.to_be_bytes())?;
-        writer.write(&self.server_port.to_be_bytes())?;
-        writer.write(&self.beacon_id.to_be_bytes())?;
-        writer.write(&self.server_ip.octets())?;
+        writer.write_all(&13_u16.to_be_bytes())?;
+        writer.write_all(&0_u16.to_be_bytes())?;
+        writer.write_all(&EPICS_VERSION.to_be_bytes())?;
+        writer.write_all(&self.server_port.to_be_bytes())?;
+        writer.write_all(&self.beacon_id.to_be_bytes())?;
+        writer.write_all(&self.server_ip.octets())?;
         Ok(())
     }
 }
@@ -132,21 +132,21 @@ impl Header {
 
 impl CAMessage for Header {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        writer.write(&self.command.to_be_bytes())?;
+        writer.write_all(&self.command.to_be_bytes())?;
         if self.payload_size < 0xFFFF && self.field_2_data_count <= 0xFFFF {
-            writer.write(&(self.payload_size as u16).to_be_bytes())?;
-            writer.write(&self.field_1_data_type.to_be_bytes())?;
-            writer.write(&(self.field_2_data_count as u16).to_be_bytes())?;
-            writer.write(&self.field_3_parameter_1.to_be_bytes())?;
-            writer.write(&self.field_4_parameter_2.to_be_bytes())?;
+            writer.write_all(&(self.payload_size as u16).to_be_bytes())?;
+            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
+            writer.write_all(&(self.field_2_data_count as u16).to_be_bytes())?;
+            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
+            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
         } else {
-            writer.write(&0xFFFFu32.to_be_bytes())?;
-            writer.write(&self.field_1_data_type.to_be_bytes())?;
-            writer.write(&[0x0000])?;
-            writer.write(&self.field_3_parameter_1.to_be_bytes())?;
-            writer.write(&self.field_4_parameter_2.to_be_bytes())?;
-            writer.write(&self.payload_size.to_be_bytes())?;
-            writer.write(&self.field_2_data_count.to_be_bytes())?;
+            writer.write_all(&0xFFFFu32.to_be_bytes())?;
+            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
+            writer.write_all(&[0x0000])?;
+            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
+            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
+            writer.write_all(&self.payload_size.to_be_bytes())?;
+            writer.write_all(&self.field_2_data_count.to_be_bytes())?;
         }
         Ok(())
     }
@@ -226,9 +226,9 @@ impl CAMessage for Search {
             field_4_parameter_2: self.search_id,
         }
         .write(writer)?;
-        writer.write(self.channel_name.as_bytes())?;
+        writer.write_all(self.channel_name.as_bytes())?;
         for _ in 0..(padded_len - self.channel_name.len()) {
-            writer.write(&[0x00])?;
+            writer.write_all(&[0x00])?;
         }
         Ok(())
     }
