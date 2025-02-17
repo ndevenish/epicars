@@ -201,16 +201,10 @@ impl CAMessage for Header {
 /// Searches for a given channel name. Sent over UDP or TCP.
 #[derive(Debug)]
 pub struct Search {
-    reply_flag: u16,
     search_id: u32,
     channel_name: String,
-}
-
-#[derive(Debug)]
-pub struct SearchResponse {
-    port_number: u16,
-    search_id: u32,
-    server_ip: Ipv4Addr,
+    /// Indicating whether failed search response should be returned.
+    should_reply: bool,
 }
 
 impl CAMessage for Search {
@@ -220,7 +214,7 @@ impl CAMessage for Search {
         Header {
             command: 6,
             payload_size: padded_len as u32,
-            field_1_data_type: self.reply_flag,
+            field_1_data_type: if self.should_reply { 10 } else { 5 },
             field_2_data_count: EPICS_VERSION as u32,
             field_3_parameter_1: self.search_id,
             field_4_parameter_2: self.search_id,
@@ -238,7 +232,7 @@ impl CAMessage for Search {
     {
         let (input, header) = Header::parse_id(0x06, input)?;
 
-        let reply = header.field_1_data_type;
+        let should_reply = header.field_1_data_type == 10;
         let version = header.field_2_data_count;
         check_known_protocol(version as u16, input)?;
         let search_id = header.field_3_parameter_1;
@@ -253,12 +247,19 @@ impl CAMessage for Search {
         Ok((
             input,
             Search {
-                reply_flag: reply,
+                should_reply,
                 search_id,
                 channel_name,
             },
         ))
     }
+}
+
+#[derive(Debug)]
+pub struct SearchResponse {
+    port_number: u16,
+    search_id: u32,
+    server_ip: Ipv4Addr,
 }
 
 impl CAMessage for SearchResponse {
@@ -339,7 +340,7 @@ mod tests {
         let raw = b"\x00\x06\x00 \x00\x05\x00\r\x00\x00\x00\x01\x00\x00\x00\x01ME02P-MO-ALIGN-01:Z:TEMPAAAAAAA\x00";
         let (_, search) = Search::parse(raw).unwrap();
         assert_eq!(search.channel_name, "ME02P-MO-ALIGN-01:Z:TEMPAAAAAAA");
-        assert_eq!(search.reply_flag, 5);
+        assert!(!search.should_reply);
         assert_eq!(search.search_id, 1);
         // Check parsing something that isn't a search
         let raw = b"\x00\x00\x00 \x00\x05\x00\r\x00\x00\x00\x01\x00";
