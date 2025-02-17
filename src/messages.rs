@@ -41,10 +41,10 @@ fn check_known_protocol<I>(version: u16, input: I) -> Result<(), Err<nom::error:
 /// topology. Sent over UDP.
 #[derive(Debug)]
 pub struct RsrvIsUp {
-    server_port: u16,
-    beacon_id: u32,
-    server_ip: Ipv4Addr,
-    protocol_version: u16,
+    pub server_port: u16,
+    pub beacon_id: u32,
+    pub server_ip: Ipv4Addr,
+    pub protocol_version: u16,
 }
 
 impl CAMessage for RsrvIsUp {
