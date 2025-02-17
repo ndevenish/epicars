@@ -284,7 +284,15 @@ impl CAMessage for SearchResponse {
         ))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        Ok(())
+        Header {
+            command: 0x06,
+            payload_size: 0,
+            field_1_data_type: self.port_number,
+            field_2_data_count: 0,
+            field_3_parameter_1: self.server_ip.to_bits(),
+            field_4_parameter_2: self.search_id,
+        }
+        .write(writer)
     }
 }
 
