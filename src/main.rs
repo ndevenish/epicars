@@ -1,27 +1,72 @@
-use std::net::UdpSocket;
-
+use mio::{Interest, Token};
 use nom::error::Error;
 use nom::Finish;
 
-use epics::messages::{CAMessage, RsrvIsUp};
+use epics::messages::{parse_search_packet, CAMessage, RsrvIsUp};
 
 fn main() {
-    let socket = UdpSocket::bind("0.0.0.0:5065").unwrap();
+    const BEACON: Token = Token(0);
+    const SEARCH: Token = Token(1);
+
+    let mut poll = mio::Poll::new().unwrap();
+    let mut events = mio::Events::with_capacity(128);
+
+    let mut socket_beacon = mio::net::UdpSocket::bind("0.0.0.0:5065".parse().unwrap()).unwrap();
+    let mut socket_search = mio::net::UdpSocket::bind("0.0.0.0:5064".parse().unwrap()).unwrap();
+
+    poll.registry()
+        .register(&mut socket_beacon, BEACON, Interest::READABLE)
+        .unwrap();
+    poll.registry()
+        .register(&mut socket_search, SEARCH, Interest::READABLE)
+        .unwrap();
+
+    println!(
+        "Waiting for packets on {:?}, {:?}",
+        socket_beacon.local_addr().unwrap(),
+        socket_search.local_addr().unwrap()
+    );
+    loop {
+        poll.poll(&mut events, None).unwrap();
+        for event in events.iter() {
+            match event.token() {
+                BEACON => read_socket(&mut socket_beacon),
+                SEARCH => read_socket(&mut socket_search),
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+fn read_socket(socket: &mut mio::net::UdpSocket) {
     let mut buf: Vec<u8> = vec![0; 0xFFFF];
-    println!("Waiting for packets on {:?}", socket.local_addr().unwrap());
+
     while let Ok((size, sender)) = socket.recv_from(&mut buf) {
-        if let Ok((_, command)) =
-            nom::number::complete::be_u16::<_, Error<_>>(buf.as_slice()).finish()
-        {
+        let msg_buf = &buf[..size];
+
+        if let Ok((_, command)) = nom::number::complete::be_u16::<_, Error<_>>(msg_buf).finish() {
             // Process the command here
             if command == 13 {
-                if let Ok((_, beacon)) = RsrvIsUp::parse(buf.as_slice()) {
+                if let Ok((_, beacon)) = RsrvIsUp::parse(msg_buf) {
                     println!("Received Beacon {beacon:?} from {sender}");
                 } else {
-                    println!("Received INVALID Beacon from {sender}: {:?}", &buf[..size]);
+                    println!("Received INVALID Beacon from {sender}: {:?}", msg_buf);
                 }
-            } else {
-                println!("Received code: {command} from {sender}");
+            } else if command == 0 && size > 16 {
+                if let Ok(searches) = parse_search_packet(msg_buf) {
+                    println!(
+                        "Received SEARCH for {} names from {sender}: {}",
+                        searches.len(),
+                        searches
+                            .iter()
+                            .map(|x| x.channel_name.clone())
+                            .collect::<Vec<String>>()
+                            .join(" ")
+                    );
+                } else {
+                    println!("Receied code 0 CA_PROTO_VERSION packet from {sender} but we don't understand the contents");
+                }
+                // println!("Received code: {command} from {sender} in {size} bytes");
             }
         } else {
             println!("Receieved {size} byte packet from {sender}");

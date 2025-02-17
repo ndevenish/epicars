@@ -7,9 +7,11 @@ use std::{
 
 use nom::{
     bytes::complete::take,
+    combinator::all_consuming,
     error::{Error, ErrorKind},
+    multi::many0,
     number::complete::{be_u16, be_u32},
-    Err, IResult,
+    Err, Finish, IResult, Parser,
 };
 
 const EPICS_VERSION: u16 = 13;
@@ -203,11 +205,11 @@ impl CAMessage for Header {
 /// Searches for a given channel name. Sent over UDP or TCP.
 #[derive(Debug)]
 pub struct Search {
-    search_id: u32,
-    channel_name: String,
+    pub search_id: u32,
+    pub channel_name: String,
     /// Indicating whether failed search response should be returned.
-    should_reply: bool,
-    protocol_version: u16,
+    pub should_reply: bool,
+    pub protocol_version: u16,
 }
 
 impl CAMessage for Search {
@@ -310,6 +312,15 @@ impl CAMessage for SearchResponse {
         }
         Ok(())
     }
+}
+
+pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, nom::error::Error<&[u8]>> {
+    // Starts with a version packet
+    let (input, _) = Version::parse(input).finish()?;
+    // Then a stream of multiple messages
+    let (_, messages) = all_consuming(many0(Search::parse)).parse(input).finish()?;
+
+    Ok(messages)
 }
 
 #[cfg(test)]
