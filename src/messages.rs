@@ -17,7 +17,7 @@ const EPICS_VERSION: u16 = 13;
 /// A basic trait to tie nom parseability to the struct without a
 /// plethora of named functions.
 /// Also adds common interface for writing a message struct to a writer.
-trait CAMessage {
+pub trait CAMessage {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
         Self: Sized;
@@ -38,10 +38,11 @@ fn check_known_protocol<I>(version: u16, input: I) -> Result<(), Err<nom::error:
 /// function of beacons is to allow detection of changes in network
 /// topology. Sent over UDP.
 #[derive(Debug)]
-struct RsrvIsUp {
+pub struct RsrvIsUp {
     server_port: u16,
     beacon_id: u32,
     server_ip: Ipv4Addr,
+    protocol_version: u16,
 }
 
 impl CAMessage for RsrvIsUp {
@@ -50,13 +51,13 @@ impl CAMessage for RsrvIsUp {
         Self: Sized,
     {
         let (input, header) = Header::parse_id(0x0D, input)?;
-        check_known_protocol(header.field_1_data_type, input)?;
         Ok((
             input,
             RsrvIsUp {
                 server_port: header.field_2_data_count as u16,
                 beacon_id: header.field_3_parameter_1,
                 server_ip: Ipv4Addr::from(header.field_4_parameter_2),
+                protocol_version: header.field_1_data_type,
             },
         ))
     }
@@ -81,6 +82,7 @@ impl CAMessage for RsrvIsUp {
 #[derive(Debug)]
 struct Version {
     priority: u16,
+    protocol_version: u16,
 }
 impl CAMessage for Version {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
@@ -88,11 +90,11 @@ impl CAMessage for Version {
         Self: Sized,
     {
         let (input, header) = Header::parse_id(0x00, input)?;
-        check_known_protocol(header.field_2_data_count as u16, input)?;
         Ok((
             input,
             Version {
                 priority: header.field_1_data_type,
+                protocol_version: header.field_2_data_count as u16,
             },
         ))
     }
@@ -205,6 +207,7 @@ pub struct Search {
     channel_name: String,
     /// Indicating whether failed search response should be returned.
     should_reply: bool,
+    protocol_version: u16,
 }
 
 impl CAMessage for Search {
@@ -233,8 +236,7 @@ impl CAMessage for Search {
         let (input, header) = Header::parse_id(0x06, input)?;
 
         let should_reply = header.field_1_data_type == 10;
-        let version = header.field_2_data_count;
-        check_known_protocol(version as u16, input)?;
+        let protocol_version = header.field_2_data_count as u16;
         let search_id = header.field_3_parameter_1;
 
         let (input, raw_string) = take(header.payload_size)(input)?;
@@ -250,6 +252,7 @@ impl CAMessage for Search {
                 should_reply,
                 search_id,
                 channel_name,
+                protocol_version,
             },
         ))
     }
@@ -260,6 +263,7 @@ pub struct SearchResponse {
     port_number: u16,
     search_id: u32,
     server_ip: Ipv4Addr,
+    protocol_version: Option<u16>,
 }
 
 impl CAMessage for SearchResponse {
@@ -269,31 +273,42 @@ impl CAMessage for SearchResponse {
     {
         let (input, header) = Header::parse_id(0x06, input)?;
 
+        let mut response = SearchResponse {
+            port_number: header.field_1_data_type,
+            server_ip: Ipv4Addr::from(header.field_3_parameter_1),
+            search_id: header.field_4_parameter_2,
+            protocol_version: None,
+        };
         assert!(header.payload_size == 0 || header.payload_size == 8);
         if header.payload_size == 8 {
             let (input, version) = be_u16(input)?;
             let (input, _) = take(6usize)(input)?;
-            check_known_protocol(version, input)?;
+            response.protocol_version = Some(version);
+            Ok((input, response))
+        } else {
+            Ok((input, response))
         }
-        Ok((
-            input,
-            SearchResponse {
-                port_number: header.field_1_data_type,
-                server_ip: Ipv4Addr::from(header.field_3_parameter_1),
-                search_id: header.field_4_parameter_2,
-            },
-        ))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         Header {
             command: 0x06,
-            payload_size: 0,
+            payload_size: if self.protocol_version.is_some() {
+                8
+            } else {
+                0
+            },
             field_1_data_type: self.port_number,
             field_2_data_count: 0,
             field_3_parameter_1: self.server_ip.to_bits(),
             field_4_parameter_2: self.search_id,
         }
-        .write(writer)
+        .write(writer)?;
+        // If we set a protocol version, that goes in the payload
+        if let Some(version) = self.protocol_version {
+            writer.write_all(&version.to_be_bytes())?;
+            writer.write_all(&[0, 0, 0, 0, 0, 0])?;
+        }
+        Ok(())
     }
 }
 
