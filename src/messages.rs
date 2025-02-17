@@ -49,7 +49,7 @@ impl CAMessage for RsrvIsUp {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse_id(0x06, input)?;
+        let (input, header) = Header::parse_id(0x0D, input)?;
         check_known_protocol(header.field_1_data_type, input)?;
         Ok((
             input,
