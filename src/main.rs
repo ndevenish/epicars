@@ -2,10 +2,7 @@ use mio::{Interest, Token};
 use nom::error::Error;
 use nom::Finish;
 
-use epics::{
-    client::Client,
-    messages::{parse_search_packet, CAMessage, RsrvIsUp},
-};
+use epics::messages::{parse_search_packet, CAMessage, RsrvIsUp};
 
 fn main() {
     const BEACON: Token = Token(0);

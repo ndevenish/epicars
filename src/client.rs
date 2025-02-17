@@ -1,7 +1,8 @@
+#![allow(dead_code)]
+
 use pnet::datalink;
 use std::{
     collections::HashMap,
-    hash::Hash,
     net::{IpAddr, Ipv4Addr},
     time::Instant,
 };
