@@ -45,6 +45,16 @@ fn padded_string(length: usize) -> impl FnMut(&[u8]) -> IResult<&[u8], String> {
     }
 }
 
+/// Write a null-terminated string, padded to the specified length
+fn write_padded_string<W: Write>(writer: &mut W, length: usize, string: &str) -> io::Result<()> {
+    assert!(string.len() < length);
+    writer.write_all(string.as_bytes())?;
+    for _ in 0..(length - string.len()) {
+        writer.write_all(&[0x00])?;
+    }
+    Ok(())
+}
+
 /// Message CA_PROTO_RSRV_IS_UP.
 ///
 /// Beacon sent by a server when it becomes available. Beacons are also
@@ -237,10 +247,7 @@ impl CAMessage for Search {
             field_4_parameter_2: self.search_id,
         }
         .write(writer)?;
-        writer.write_all(self.channel_name.as_bytes())?;
-        for _ in 0..(padded_len - self.channel_name.len()) {
-            writer.write_all(&[0x00])?;
-        }
+        write_padded_string(writer, padded_len, &self.channel_name)?;
         Ok(())
     }
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
