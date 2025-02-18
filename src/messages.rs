@@ -135,6 +135,7 @@ impl CAMessage for Version {
     }
 }
 
+#[derive(Debug, Default)]
 struct Header {
     command: u16,
     payload_size: u32,
@@ -411,6 +412,67 @@ impl CAMessage for CreateChanResponse {
             field_2_data_count: self.data_count,
             field_3_parameter_1: self.client_id,
             field_4_parameter_2: self.server_id,
+        }
+        .write(writer)
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum AccessRight {
+    None = 0,
+    Read = 1,
+    Write = 2,
+    ReadWrite = 3,
+}
+
+impl TryFrom<u32> for AccessRight {
+    type Error = ();
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(AccessRight::None),
+            1 => Ok(AccessRight::Read),
+            2 => Ok(AccessRight::Write),
+            3 => Ok(AccessRight::ReadWrite),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Message CA_PROTO_ACCESS_RIGHTS
+///
+/// Notifies of access rights for a channel. This value is determined
+/// based on host and client name and may change during runtime. Client
+/// cannot change access rights nor can it explicitly query its value,
+/// so last received value must be stored.
+#[derive(Debug)]
+struct AccessRights {
+    client_id: u32,
+    access_rights: AccessRight,
+}
+
+impl CAMessage for AccessRights {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, header) = Header::parse_id(22, input)?;
+        Ok((
+            input,
+            AccessRights {
+                client_id: header.field_3_parameter_1,
+                access_rights: header
+                    .field_4_parameter_2
+                    .try_into()
+                    .map_err(|_| Err::Error(Error::new(input, ErrorKind::Verify)))?,
+            },
+        ))
+    }
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        Header {
+            command: 22,
+            field_3_parameter_1: self.client_id,
+            field_4_parameter_2: self.access_rights as u32,
+            ..Default::default()
         }
         .write(writer)
     }
