@@ -33,6 +33,18 @@ fn check_known_protocol<I>(version: u16, input: I) -> Result<(), Err<nom::error:
         Ok(())
     }
 }
+
+fn padded_string(length: usize) -> impl FnMut(&[u8]) -> IResult<&[u8], String> {
+    move |input| {
+        let (input, raw_string) = take(length)(input)?;
+        let strlen = raw_string.iter().position(|&c| c == 0x00).unwrap_or(length);
+        Ok((
+            input,
+            String::from_utf8_lossy(&raw_string[0..strlen]).into_owned(),
+        ))
+    }
+}
+
 /// Message CA_PROTO_RSRV_IS_UP.
 ///
 /// Beacon sent by a server when it becomes available. Beacons are also
@@ -240,13 +252,7 @@ impl CAMessage for Search {
         let should_reply = header.field_1_data_type == 10;
         let protocol_version = header.field_2_data_count as u16;
         let search_id = header.field_3_parameter_1;
-
-        let (input, raw_string) = take(header.payload_size)(input)?;
-        let strlen = raw_string
-            .iter()
-            .position(|&c| c == 0x00)
-            .unwrap_or(header.payload_size as usize);
-        let channel_name = String::from_utf8_lossy(&raw_string[0..strlen]).into_owned();
+        let (_, channel_name) = padded_string(header.payload_size as usize)(input)?;
 
         Ok((
             input,
