@@ -59,7 +59,7 @@ impl Default for Client {
             .collect();
         println!("Addresses: {:?}", broadcast_ips);
         Client {
-            beacon_port: 5064,
+            beacon_port: 5065,
             search_port: 5064,
             broadcast_addresses: Vec::new(),
             observed_beacons: HashMap::new(),
