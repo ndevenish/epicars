@@ -336,6 +336,86 @@ pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, nom::error::Erro
     Ok(messages)
 }
 
+/// Message CA_PROTO_CREATE_CHAN.
+///
+/// Requests creation of channel. Server will allocate required
+/// resources and return initialized SID. Sent over TCP.
+#[derive(Debug)]
+struct CreateChan {
+    client_id: u32,
+    protocol_version: u32,
+    channel_name: String,
+}
+
+impl CAMessage for CreateChan {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, header) = Header::parse_id(18, input)?;
+        let (input, channel_name) = padded_string(header.payload_size as usize)(input)?;
+        Ok((
+            input,
+            CreateChan {
+                client_id: header.field_3_parameter_1,
+                protocol_version: header.field_4_parameter_2,
+                channel_name,
+            },
+        ))
+    }
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        let payload_size = (self.channel_name.len() + 1).div_ceil(8) as u32;
+        Header {
+            command: 18,
+            payload_size,
+            field_1_data_type: 0,
+            field_2_data_count: 0,
+            field_3_parameter_1: self.client_id,
+            field_4_parameter_2: self.protocol_version,
+        }
+        .write(writer)?;
+        write_padded_string(writer, payload_size as usize, &self.channel_name)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct CreateChanResponse {
+    data_type: u16,
+    data_count: u32,
+    client_id: u32,
+    server_id: u32,
+}
+
+impl CAMessage for CreateChanResponse {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, header) = Header::parse_id(18, input)?;
+        Ok((
+            input,
+            CreateChanResponse {
+                data_type: header.field_1_data_type,
+                data_count: header.field_2_data_count,
+                client_id: header.field_3_parameter_1,
+                server_id: header.field_4_parameter_2,
+            },
+        ))
+    }
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        Header {
+            command: 18,
+            payload_size: 0,
+            field_1_data_type: self.data_type,
+            field_2_data_count: self.data_count,
+            field_3_parameter_1: self.client_id,
+            field_4_parameter_2: self.server_id,
+        }
+        .write(writer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
