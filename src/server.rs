@@ -1,15 +1,22 @@
-use pnet::datalink;
+use pnet::{datalink, packet::udp::Udp};
+use socket2::{Domain, Protocol, SockAddr, Type};
 use std::{
     collections::HashMap,
     fmt::format,
     hash::Hash,
-    io::Cursor,
-    net::{IpAddr, Ipv4Addr},
+    io::{self, Cursor},
+    net::{IpAddr, Ipv4Addr, ToSocketAddrs},
     time::{Duration, Instant},
 };
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::{
+    net::{TcpListener, UdpSocket},
+    task::yield_now,
+};
 
-use crate::messages::{self, parse_search_packet, CAMessage};
+use crate::{
+    messages::{self, parse_search_packet, CAMessage},
+    new_reusable_udp_socket,
+};
 
 #[derive(Default)]
 struct Limits<T> {
@@ -159,10 +166,15 @@ impl Server {
     fn listen_for_searches(&self) {
         let search_port = self.search_port.clone();
         tokio::spawn(async move {
-            let listener = UdpSocket::bind(format!("0.0.0.0:{}", search_port))
-                .await
-                .unwrap();
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
+            let listener = UdpSocket::from_std(
+                new_reusable_udp_socket(format!("0.0.0.0:{}", search_port))
+                    .unwrap()
+                    .into(),
+            )
+            .unwrap();
+
+            // Ok(UdpSocket::from_std(socket.into()).unwrap())
             loop {
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
@@ -179,10 +191,8 @@ impl Server {
         let connection_port = self.connection_port.clone();
         tokio::spawn(async move {
             println!("Starting to broadcast");
-            let broadcast = UdpSocket::bind(format!("0.0.0.0:{}", beacon_port))
-                .await
-                .unwrap();
-            broadcast.set_broadcast(true);
+            let broadcast = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+            broadcast.set_broadcast(true).unwrap();
             let mut message = messages::RsrvIsUp {
                 server_port: connection_port,
                 beacon_id: 0,
@@ -194,10 +204,17 @@ impl Server {
                 let message_bytes = writer.into_inner();
                 let broadcast_ips = get_broadcast_ips();
                 for i in broadcast_ips.iter() {
-                    broadcast.send_to(message_bytes.as_slice(), (*i, beacon_port));
+                    broadcast
+                        .send_to(message_bytes.as_slice(), (*i, beacon_port))
+                        .await
+                        .unwrap();
                 }
                 message.beacon_id = message.beacon_id.wrapping_add(1);
-                println!("Broadcast beacon to {} interfaces", broadcast_ips.len());
+                println!(
+                    "Broadcast beacon to {} interfaces: {:?}",
+                    broadcast_ips.len(),
+                    broadcast_ips,
+                );
                 tokio::time::sleep(Duration::from_secs(15)).await;
             }
         });
@@ -205,6 +222,8 @@ impl Server {
     pub async fn listen(&self) -> ! {
         self.listen_for_searches();
         self.broadcast_beacons();
-        loop {}
+        loop {
+            yield_now().await;
+        }
     }
 }

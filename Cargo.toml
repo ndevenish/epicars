@@ -7,4 +7,5 @@ edition = "2021"
 mio = { version = "1.0.3", features = ["net", "os-poll"] }
 nom = "8.0.0"
 pnet = { version = "0.35.0", default-features = false, features = ["pnet_datalink", "std"] }
+socket2 = "0.5.8"
 tokio = { version = "1.43.0", features = ["macros", "net", "rt", "time"] }

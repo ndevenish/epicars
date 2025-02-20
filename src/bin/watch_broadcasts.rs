@@ -2,7 +2,10 @@ use mio::{Interest, Token};
 use nom::error::Error;
 use nom::Finish;
 
-use epics::messages::{parse_search_packet, CAMessage, RsrvIsUp};
+use epics::{
+    messages::{parse_search_packet, CAMessage, RsrvIsUp},
+    new_reusable_udp_socket,
+};
 
 fn main() {
     const BEACON: Token = Token(0);
@@ -12,7 +15,8 @@ fn main() {
     let mut events = mio::Events::with_capacity(128);
 
     let mut socket_beacon = mio::net::UdpSocket::bind("0.0.0.0:5065".parse().unwrap()).unwrap();
-    let mut socket_search = mio::net::UdpSocket::bind("0.0.0.0:5064".parse().unwrap()).unwrap();
+    let mut socket_search =
+        mio::net::UdpSocket::from_std(new_reusable_udp_socket("0.0.0.0:5064").unwrap().into());
 
     poll.registry()
         .register(&mut socket_beacon, BEACON, Interest::READABLE)

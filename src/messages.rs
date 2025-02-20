@@ -508,7 +508,7 @@ mod tests {
         assert_eq!(beacon.beacon_id, 450270);
         assert_eq!(
             beacon.server_ip,
-            "172.23.124.207".parse::<Ipv4Addr>().unwrap()
+            Some("172.23.124.207".parse::<Ipv4Addr>().unwrap())
         );
         println!("Beacon: {:?}", beacon);
 
@@ -541,5 +541,13 @@ mod tests {
         // Check parsing something that isn't a search
         let raw = b"\x00\x00\x00 \x00\x05\x00\r\x00\x00\x00\x01\x00";
         assert!(Search::parse(raw).is_err());
+        // let raw = []
+        // Saw this fail?
+        let raw = [
+            0x0u8, 0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0xd, 0x0, 0x0, 0x0, 0x5, 0x0, 0x0, 0x0, 0x0,
+            0x0u8, 0x6, 0x0, 0x8, 0x0, 0x5, 0x0, 0xd, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x73,
+            0x6f, 0x6d, 0x65, 0x0, 0x0, 0x0, 0x0,
+        ];
+        let searches = parse_search_packet(&raw).unwrap();
     }
 }

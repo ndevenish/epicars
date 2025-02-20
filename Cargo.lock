@@ -54,6 +54,7 @@ dependencies = [
  "mio",
  "nom",
  "pnet",
+ "socket2",
  "tokio",
 ]
 
