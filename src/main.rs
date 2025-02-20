@@ -1,7 +1,7 @@
-use mio::{Interest, Token};
-use nom::error::Error;
-use nom::Finish;
+use epics::server::Server;
 
-use epics::messages::{parse_search_packet, CAMessage, RsrvIsUp};
-
-fn main() {}
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let server = Server::new(5070);
+    server.listen().await;
+}

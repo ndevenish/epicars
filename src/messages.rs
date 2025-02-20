@@ -61,11 +61,11 @@ fn write_padded_string<W: Write>(writer: &mut W, length: usize, string: &str) ->
 /// sent out periodically to announce the server is still alive. Another
 /// function of beacons is to allow detection of changes in network
 /// topology. Sent over UDP.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RsrvIsUp {
     pub server_port: u16,
     pub beacon_id: u32,
-    pub server_ip: Ipv4Addr,
+    pub server_ip: Option<Ipv4Addr>,
     pub protocol_version: u16,
 }
 
@@ -80,7 +80,10 @@ impl CAMessage for RsrvIsUp {
             RsrvIsUp {
                 server_port: header.field_2_data_count as u16,
                 beacon_id: header.field_3_parameter_1,
-                server_ip: Ipv4Addr::from(header.field_4_parameter_2),
+                server_ip: match header.field_4_parameter_2 {
+                    0u32 => None,
+                    _ => Some(Ipv4Addr::from(header.field_4_parameter_2)),
+                },
                 protocol_version: header.field_1_data_type,
             },
         ))
@@ -92,7 +95,11 @@ impl CAMessage for RsrvIsUp {
         writer.write_all(&EPICS_VERSION.to_be_bytes())?;
         writer.write_all(&self.server_port.to_be_bytes())?;
         writer.write_all(&self.beacon_id.to_be_bytes())?;
-        writer.write_all(&self.server_ip.octets())?;
+        if let Some(ip) = &self.server_ip {
+            writer.write_all(&ip.octets())?;
+        } else {
+            writer.write_all(&0u32.to_be_bytes())?;
+        }
         Ok(())
     }
 }
@@ -278,7 +285,9 @@ impl CAMessage for Search {
 pub struct SearchResponse {
     port_number: u16,
     search_id: u32,
-    server_ip: Ipv4Addr,
+    /// Server to connect to, if different from the message sender
+    server_ip: Option<Ipv4Addr>,
+    /// Protocol version only present if this is being sent as UDP
     protocol_version: Option<u16>,
 }
 
@@ -291,7 +300,10 @@ impl CAMessage for SearchResponse {
 
         let mut response = SearchResponse {
             port_number: header.field_1_data_type,
-            server_ip: Ipv4Addr::from(header.field_3_parameter_1),
+            server_ip: match header.field_3_parameter_1 {
+                0xFFFFFFFFu32 => None,
+                i => Some(Ipv4Addr::from(i)),
+            },
             search_id: header.field_4_parameter_2,
             protocol_version: None,
         };
@@ -315,7 +327,10 @@ impl CAMessage for SearchResponse {
             },
             field_1_data_type: self.port_number,
             field_2_data_count: 0,
-            field_3_parameter_1: self.server_ip.to_bits(),
+            field_3_parameter_1: match self.server_ip {
+                None => 0xFFFFFFFFu32,
+                Some(ip) => ip.to_bits(),
+            },
             field_4_parameter_2: self.search_id,
         }
         .write(writer)?;

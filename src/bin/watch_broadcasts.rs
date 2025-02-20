@@ -50,7 +50,8 @@ fn read_socket(socket: &mut mio::net::UdpSocket) {
                 if let Ok((_, beacon)) = RsrvIsUp::parse(msg_buf) {
                     println!(
                         "Received BEACON {}:{} from {sender}",
-                        beacon.server_ip, beacon.server_port
+                        beacon.server_ip.map(|f| f.into()).unwrap_or(sender.ip()),
+                        beacon.server_port
                     );
                 } else {
                     println!("Received INVALID Beacon from {sender}: {:?}", msg_buf);
