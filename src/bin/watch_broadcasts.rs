@@ -1,4 +1,3 @@
-use mio::{Interest, Token};
 use nom::error::Error;
 use nom::Finish;
 
@@ -6,46 +5,41 @@ use epics::{
     messages::{parse_search_packet, CAMessage, RsrvIsUp},
     new_reusable_udp_socket,
 };
+use tokio::{net::UdpSocket, task::yield_now};
 
-fn main() {
-    const BEACON: Token = Token(0);
-    const SEARCH: Token = Token(1);
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    // const BEACON: Token = Token(0);
+    // const SEARCH: Token = Token(1);
 
-    let mut poll = mio::Poll::new().unwrap();
-    let mut events = mio::Events::with_capacity(128);
+    // let mut poll = mio::Poll::new().unwrap();
+    // let mut events = mio::Events::with_capacity(128);
 
-    let mut socket_beacon = mio::net::UdpSocket::bind("0.0.0.0:5065".parse().unwrap()).unwrap();
-    let mut socket_search =
-        mio::net::UdpSocket::from_std(new_reusable_udp_socket("0.0.0.0:5064").unwrap());
-
-    poll.registry()
-        .register(&mut socket_beacon, BEACON, Interest::READABLE)
-        .unwrap();
-    poll.registry()
-        .register(&mut socket_search, SEARCH, Interest::READABLE)
-        .unwrap();
-
-    println!(
-        "Waiting for packets on {:?}, {:?}",
-        socket_beacon.local_addr().unwrap(),
-        socket_search.local_addr().unwrap()
-    );
-    loop {
-        poll.poll(&mut events, None).unwrap();
-        for event in events.iter() {
-            match event.token() {
-                BEACON => read_socket(&mut socket_beacon),
-                SEARCH => read_socket(&mut socket_search),
-                _ => unreachable!(),
-            }
+    tokio::spawn(async {
+        let socket_beacon = UdpSocket::bind("0.0.0.0:5065").await.unwrap();
+        loop {
+            read_socket(&socket_beacon).await;
         }
+    });
+
+    tokio::spawn(async {
+        let socket_search =
+            tokio::net::UdpSocket::from_std(new_reusable_udp_socket("0.0.0.0:5064").unwrap())
+                .unwrap();
+        loop {
+            read_socket(&socket_search).await;
+        }
+    });
+    println!("Waiting for packets on 0.0.0.0:5065, 0.0.0.0:5064",);
+    loop {
+        yield_now().await;
     }
 }
 
-fn read_socket(socket: &mut mio::net::UdpSocket) {
+async fn read_socket(socket: &UdpSocket) {
     let mut buf: Vec<u8> = vec![0; 0xFFFF];
 
-    while let Ok((size, sender)) = socket.recv_from(&mut buf) {
+    while let Ok((size, sender)) = socket.recv_from(&mut buf).await {
         let msg_buf = &buf[..size];
 
         if let Ok((_, command)) = nom::number::complete::be_u16::<_, Error<_>>(msg_buf).finish() {
