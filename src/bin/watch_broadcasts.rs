@@ -14,7 +14,6 @@ async fn main() {
 
     // let mut poll = mio::Poll::new().unwrap();
     // let mut events = mio::Events::with_capacity(128);
-
     tokio::spawn(async {
         let socket_beacon = UdpSocket::bind("0.0.0.0:5065").await.unwrap();
         loop {
@@ -68,7 +67,7 @@ async fn read_socket(socket: &UdpSocket) {
                 } else {
                     println!("Receied code 0 CA_PROTO_VERSION packet from {sender} but we don't understand the contents");
                 }
-                // println!("Received code: {command} from {sender} in {size} bytes");
+                println!("{:?}", msg_buf);
             }
         } else {
             println!("Receieved {size} byte packet from {sender}");

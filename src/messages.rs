@@ -267,7 +267,7 @@ impl CAMessage for Search {
         let should_reply = header.field_1_data_type == 10;
         let protocol_version = header.field_2_data_count as u16;
         let search_id = header.field_3_parameter_1;
-        let (_, channel_name) = padded_string(header.payload_size as usize)(input)?;
+        let (input, channel_name) = padded_string(header.payload_size as usize)(input)?;
 
         Ok((
             input,
