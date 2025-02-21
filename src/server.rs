@@ -3,14 +3,13 @@
 use pnet::datalink;
 use std::{
     collections::HashMap,
-    io::Cursor,
+    io::{self, Cursor},
     net::{IpAddr, Ipv4Addr},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::{
-    net::{TcpListener, UdpSocket},
-    task::yield_now,
-};
+use tokio::net::{TcpListener, UdpSocket};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     messages::{self, parse_search_packet, CAMessage},
@@ -107,11 +106,17 @@ impl Circuit {
 
 struct LibraryRecord(usize);
 
-struct Library {
+#[derive(Default)]
+struct ChannelLibrary {
     /// Records are addressed purely
     records: HashMap<LibraryRecord, Dbr>,
     /// Keeps track of externally exposed names for each record
-    names: HashMap<String, LibraryRecord>,
+    names: Arc<Mutex<HashMap<String, LibraryRecord>>>,
+}
+impl ChannelLibrary {
+    fn new() -> Self {
+        ChannelLibrary::default()
+    }
 }
 
 pub struct Server {
@@ -126,7 +131,8 @@ pub struct Server {
     /// The beacon ID of the last beacon broadcast
     beacon_id: u32,
     circuits: Vec<Circuit>,
-    // library: ChannelLibrary,
+    library: ChannelLibrary,
+    shutdown: CancellationToken,
 }
 
 impl Default for Server {
@@ -138,6 +144,8 @@ impl Default for Server {
             last_beacon: Instant::now(),
             beacon_id: 0,
             circuits: Vec::new(),
+            library: ChannelLibrary::new(),
+            shutdown: CancellationToken::new(),
         }
     }
 }
@@ -155,15 +163,18 @@ fn get_broadcast_ips() -> Vec<Ipv4Addr> {
 }
 
 impl Server {
-    pub fn new(beacon_port: u16) -> Self {
-        Server {
+    pub async fn new(beacon_port: u16) -> io::Result<Self> {
+        let server = Server {
             beacon_port,
             ..Default::default()
-        }
+        };
+        server.listen().await?;
+        Ok(server)
     }
 
-    fn listen_for_searches(&self, listening_port: u16) {
+    fn listen_for_searches(&self, connection_port: u16) {
         let search_port = self.search_port;
+        let server_names = self.library.names.clone();
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
             let listener = UdpSocket::from_std(
@@ -175,29 +186,40 @@ impl Server {
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
                 if let Ok(searches) = parse_search_packet(msg_buf) {
-                    println!(
-                        "Got search message from {}: {}",
-                        origin,
-                        searches
-                            .iter()
-                            .map(|s| s.channel_name.clone())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
+                    let mut replies = Vec::new();
+                    {
+                        let server_names = server_names.lock().unwrap();
+                        for search in searches {
+                            if server_names.contains_key(&search.channel_name) {
+                                replies.push(search.respond(None, connection_port, true));
+                            }
+                        }
+                    }
+                    if replies.len() > 0 {
+                        let mut reply_buf = Cursor::new(Vec::new());
+                        messages::Version::default().write(&mut reply_buf).unwrap();
+                        for reply in replies {
+                            reply.write(&mut reply_buf).unwrap();
+                        }
+                        listener
+                            .send_to(&reply_buf.into_inner(), origin)
+                            .await
+                            .unwrap();
+                    }
                 } else {
                     println!("Got unparseable search message from {}", origin);
                 }
             }
         });
     }
-    fn broadcast_beacons(&self, listening_port: u16) {
+    async fn broadcast_beacons(&self, connection_port: u16) -> io::Result<()> {
         let beacon_port = self.beacon_port;
+        let broadcast = UdpSocket::bind("0.0.0.0:0").await?;
         tokio::spawn(async move {
             println!("Starting to broadcast");
-            let broadcast = UdpSocket::bind("0.0.0.0:0").await.unwrap();
             broadcast.set_broadcast(true).unwrap();
             let mut message = messages::RsrvIsUp {
-                server_port: listening_port,
+                server_port: connection_port,
                 beacon_id: 0,
                 ..Default::default()
             };
@@ -221,21 +243,21 @@ impl Server {
                 tokio::time::sleep(Duration::from_secs(15)).await;
             }
         });
+        Ok(())
     }
-    pub async fn listen(&self) -> ! {
+
+    fn handle_circuit_lifecycle(&self, listener: TcpListener) -> ! {
+        loop {}
+    }
+
+    pub async fn listen(&self) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port.unwrap_or(0);
-        let connection_socket = TcpListener::bind(format!("0.0.0.0:{}", request_port))
-            .await
-            .unwrap();
+        let connection_socket = TcpListener::bind(format!("0.0.0.0:{}", request_port)).await?;
         let listen_port = connection_socket.local_addr().unwrap().port();
 
         self.listen_for_searches(listen_port);
-        self.broadcast_beacons(listen_port);
-
-        // Just process everything indefinitely
-        loop {
-            yield_now().await;
-        }
+        self.broadcast_beacons(listen_port).await?;
+        self.handle_circuit_lifecycle(connection_socket);
     }
 }

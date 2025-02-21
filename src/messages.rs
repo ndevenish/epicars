@@ -111,10 +111,19 @@ impl CAMessage for RsrvIsUp {
 /// when a new TCP (Virtual Circuit) connection is established. It is
 /// also sent as the first message in UDP search messages.
 #[derive(Debug)]
-struct Version {
+pub struct Version {
     priority: u16,
     protocol_version: u16,
 }
+impl Default for Version {
+    fn default() -> Self {
+        Version {
+            priority: 0,
+            protocol_version: EPICS_VERSION,
+        }
+    }
+}
+
 impl CAMessage for Version {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
@@ -241,6 +250,23 @@ pub struct Search {
     pub should_reply: bool,
     pub protocol_version: u16,
 }
+impl Search {
+    /// Construct a search response. is_udp required because field is
+    /// only present when the intended target is UDP.
+    pub fn respond(
+        &self,
+        server_ip: Option<Ipv4Addr>,
+        port_number: u16,
+        is_udp: bool,
+    ) -> SearchResponse {
+        SearchResponse {
+            port_number,
+            server_ip,
+            search_id: self.search_id,
+            protocol_version: if is_udp { Some(EPICS_VERSION) } else { None },
+        }
+    }
+}
 
 impl CAMessage for Search {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
@@ -283,12 +309,12 @@ impl CAMessage for Search {
 
 #[derive(Debug)]
 pub struct SearchResponse {
-    port_number: u16,
-    search_id: u32,
+    pub port_number: u16,
+    pub search_id: u32,
     /// Server to connect to, if different from the message sender
-    server_ip: Option<Ipv4Addr>,
+    pub server_ip: Option<Ipv4Addr>,
     /// Protocol version only present if this is being sent as UDP
-    protocol_version: Option<u16>,
+    pub protocol_version: Option<u16>,
 }
 
 impl CAMessage for SearchResponse {
