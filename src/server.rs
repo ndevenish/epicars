@@ -1,11 +1,10 @@
-use pnet::{datalink, packet::udp::Udp};
-use socket2::{Domain, Protocol, SockAddr, Type};
+#![allow(dead_code)]
+
+use pnet::datalink;
 use std::{
     collections::HashMap,
-    fmt::format,
-    hash::Hash,
-    io::{self, Cursor},
-    net::{IpAddr, Ipv4Addr, ToSocketAddrs},
+    io::Cursor,
+    net::{IpAddr, Ipv4Addr},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -56,7 +55,7 @@ struct EnumDBR {
 }
 
 /// Basic DBR Data types, independent of category
-enum DBRID {
+enum Dbrid {
     String = 0,
     Int = 1,
     Short = 2,
@@ -75,7 +74,7 @@ enum DBRCategory {
     Control = 4,
 }
 
-enum DBR {
+enum Dbr {
     Enum(EnumDBR),
     String(StringDBR),
     Char(NumericDBR<i8>),
@@ -110,7 +109,7 @@ struct LibraryRecord(usize);
 
 struct Library {
     /// Records are addressed purely
-    records: HashMap<LibraryRecord, DBR>,
+    records: HashMap<LibraryRecord, Dbr>,
     /// Keeps track of externally exposed names for each record
     names: HashMap<String, LibraryRecord>,
 }
@@ -164,13 +163,11 @@ impl Server {
     }
 
     fn listen_for_searches(&self) {
-        let search_port = self.search_port.clone();
+        let search_port = self.search_port;
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
             let listener = UdpSocket::from_std(
-                new_reusable_udp_socket(format!("0.0.0.0:{}", search_port))
-                    .unwrap()
-                    .into(),
+                new_reusable_udp_socket(format!("0.0.0.0:{}", search_port)).unwrap(),
             )
             .unwrap();
 
@@ -187,8 +184,8 @@ impl Server {
         });
     }
     fn broadcast_beacons(&self) {
-        let beacon_port = self.beacon_port.clone();
-        let connection_port = self.connection_port.clone();
+        let beacon_port = self.beacon_port;
+        let connection_port = self.connection_port;
         tokio::spawn(async move {
             println!("Starting to broadcast");
             let broadcast = UdpSocket::bind("0.0.0.0:0").await.unwrap();

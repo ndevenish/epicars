@@ -16,7 +16,7 @@ fn main() {
 
     let mut socket_beacon = mio::net::UdpSocket::bind("0.0.0.0:5065".parse().unwrap()).unwrap();
     let mut socket_search =
-        mio::net::UdpSocket::from_std(new_reusable_udp_socket("0.0.0.0:5064").unwrap().into());
+        mio::net::UdpSocket::from_std(new_reusable_udp_socket("0.0.0.0:5064").unwrap());
 
     poll.registry()
         .register(&mut socket_beacon, BEACON, Interest::READABLE)
