@@ -69,7 +69,6 @@ async fn read_socket(socket: &UdpSocket) {
                 } else {
                     println!("Receied code 0 CA_PROTO_VERSION packet from {sender} but we don't understand the contents");
                 }
-                println!("{:?}", msg_buf);
             }
         } else {
             println!("Receieved {size} byte packet from {sender}");
