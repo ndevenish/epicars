@@ -119,8 +119,8 @@ pub struct Server {
     beacon_port: u16,
     /// Port to receive search queries on
     search_port: u16,
-    /// Port to receive connections on
-    connection_port: u16,
+    /// Port to receive connections on, if specified
+    connection_port: Option<u16>,
     /// Time that last beacon was sent
     last_beacon: Instant,
     /// The beacon ID of the last beacon broadcast
@@ -134,7 +134,7 @@ impl Default for Server {
         Server {
             beacon_port: 5065,
             search_port: 5064,
-            connection_port: 5064,
+            connection_port: None,
             last_beacon: Instant::now(),
             beacon_id: 0,
             circuits: Vec::new(),
@@ -171,7 +171,6 @@ impl Server {
             )
             .unwrap();
 
-            // Ok(UdpSocket::from_std(socket.into()).unwrap())
             loop {
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
@@ -183,15 +182,14 @@ impl Server {
             }
         });
     }
-    fn broadcast_beacons(&self) {
+    fn broadcast_beacons(&self, listening_port: u16) {
         let beacon_port = self.beacon_port;
-        let connection_port = self.connection_port;
         tokio::spawn(async move {
             println!("Starting to broadcast");
             let broadcast = UdpSocket::bind("0.0.0.0:0").await.unwrap();
             broadcast.set_broadcast(true).unwrap();
             let mut message = messages::RsrvIsUp {
-                server_port: connection_port,
+                server_port: listening_port,
                 beacon_id: 0,
                 ..Default::default()
             };
@@ -217,8 +215,16 @@ impl Server {
         });
     }
     pub async fn listen(&self) -> ! {
+        // Create the TCP listener first so we know what port to advertise
+        let request_port = self.connection_port.unwrap_or(0);
+        let connection_socket = TcpListener::bind(format!("0.0.0.0:{}", request_port))
+            .await
+            .unwrap();
+        let listen_port = connection_socket.local_addr().unwrap().port();
+
         self.listen_for_searches();
-        self.broadcast_beacons();
+        self.broadcast_beacons(listen_port);
+        // Just process everything indefinitely
         loop {
             yield_now().await;
         }
