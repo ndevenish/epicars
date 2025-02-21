@@ -15,7 +15,9 @@ async fn main() {
     // let mut poll = mio::Poll::new().unwrap();
     // let mut events = mio::Events::with_capacity(128);
     tokio::spawn(async {
-        let socket_beacon = UdpSocket::bind("0.0.0.0:5065").await.unwrap();
+        let socket_beacon =
+            UdpSocket::from_std(new_reusable_udp_socket("0.0.0.0:5065").unwrap()).unwrap();
+
         loop {
             read_socket(&socket_beacon).await;
         }
