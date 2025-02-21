@@ -162,7 +162,7 @@ impl Server {
         }
     }
 
-    fn listen_for_searches(&self) {
+    fn listen_for_searches(&self, listening_port: u16) {
         let search_port = self.search_port;
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
@@ -175,7 +175,15 @@ impl Server {
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
                 if let Ok(searches) = parse_search_packet(msg_buf) {
-                    println!("Got search message from {}", origin);
+                    println!(
+                        "Got search message from {}: {}",
+                        origin,
+                        searches
+                            .iter()
+                            .map(|s| s.channel_name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                 } else {
                     println!("Got unparseable search message from {}", origin);
                 }
@@ -222,8 +230,9 @@ impl Server {
             .unwrap();
         let listen_port = connection_socket.local_addr().unwrap().port();
 
-        self.listen_for_searches();
+        self.listen_for_searches(listen_port);
         self.broadcast_beacons(listen_port);
+
         // Just process everything indefinitely
         loop {
             yield_now().await;
