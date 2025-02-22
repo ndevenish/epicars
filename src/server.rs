@@ -96,34 +96,45 @@ struct Circuit {
 }
 
 impl Circuit {
-    fn start(mut stream: TcpStream) {
-        tokio::spawn(async move {
-            let mut circuit = Circuit {
-                last_message: Instant::now(),
-                client_version: None,
-                client_host_name: None,
-                client_user_name: None,
-                client_events_on: true,
-            };
-            loop {
-                let message = match Message::read_server_message(&mut stream).await {
-                    Ok(message) => message,
-                    Err(err) => {
-                        println!("Got error reading server message: {}", err);
-                        continue;
-                    }
-                };
-                match message {
-                    Message::Version(v) => circuit.client_version = Some(v.protocol_version),
-                    Message::Echo => {
-                        let mut reply_buf = Cursor::new(Vec::new());
-                        messages::Echo.write(&mut reply_buf).unwrap();
-                        stream.write_all(&reply_buf.into_inner()).await.unwrap();
-                    }
-                    _ => panic!("Unknown message"),
-                };
+    async fn start(mut stream: TcpStream) {
+        let mut circuit = Circuit {
+            last_message: Instant::now(),
+            client_version: None,
+            client_host_name: None,
+            client_user_name: None,
+            client_events_on: true,
+        };
+        // Immediately send a Version message
+        stream
+            .write_all(messages::Version::default().as_bytes().as_ref())
+            .await
+            .unwrap();
+        // Immediately receive a Version message from the client
+        match Message::read_server_message(&mut stream).await.unwrap() {
+            Message::Version(v) => circuit.client_version = Some(v.protocol_version),
+            _ => {
+                // This is an error, we cannot receive anything until we get this
+                panic!("Got unexpected message when expecting client version");
             }
-        });
+        }
+        // Now, everything else is based on responding to events
+        loop {
+            let message = match Message::read_server_message(&mut stream).await {
+                Ok(message) => message,
+                Err(err) => {
+                    println!("Got error reading server message: {}", err);
+                    continue;
+                }
+            };
+            match message {
+                Message::Echo => {
+                    let mut reply_buf = Cursor::new(Vec::new());
+                    messages::Echo.write(&mut reply_buf).unwrap();
+                    stream.write_all(&reply_buf.into_inner()).await.unwrap();
+                }
+                _ => panic!("Unexpected message"),
+            };
+        }
     }
 }
 struct LibraryRecord(usize);
@@ -280,15 +291,13 @@ impl Server {
         Ok(())
     }
 
-    fn handle_circuit_lifecycle(&self, listener: TcpListener) {
+    fn handle_tcp_connections(&self, listener: TcpListener) {
         tokio::spawn(async move {
             loop {
-                let (mut connection, _client) = listener.accept().await.unwrap();
-                // Immediately send a Version message; this counts
-                connection
-                    .write_all(messages::Version::default().as_bytes().as_ref())
-                    .await
-                    .unwrap();
+                let (connection, _client) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    Circuit::start(connection).await;
+                });
             }
         });
     }
@@ -301,7 +310,7 @@ impl Server {
 
         self.listen_for_searches(listen_port);
         self.broadcast_beacons(listen_port).await?;
-        self.handle_circuit_lifecycle(connection_socket);
+        self.handle_tcp_connections(connection_socket);
         Ok(())
     }
 }
