@@ -8,11 +8,14 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream, UdpSocket},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    messages::{self, parse_search_packet, CAMessage},
+    messages::{self, parse_search_packet, CAMessage, Message},
     new_reusable_udp_socket,
 };
 
@@ -86,24 +89,42 @@ enum Dbr {
 struct Circuit {
     last_message: Instant,
     /// We must have this for the circuit to count as ready
-    client_version: Option<i16>,
+    client_version: Option<u16>,
     client_host_name: Option<String>,
     client_user_name: Option<String>,
     client_events_on: bool,
 }
 
 impl Circuit {
-    fn new() -> Self {
-        Circuit {
-            last_message: Instant::now(),
-            client_version: None,
-            client_host_name: None,
-            client_user_name: None,
-            client_events_on: true,
-        }
+    fn start(mut stream: TcpStream) {
+        tokio::spawn(async move {
+            let mut circuit = Circuit {
+                last_message: Instant::now(),
+                client_version: None,
+                client_host_name: None,
+                client_user_name: None,
+                client_events_on: true,
+            };
+            loop {
+                let message = match Message::read_server_message(&mut stream).await {
+                    Ok(message) => message,
+                    Err(err) => {
+                        println!("Got error reading server message: {}", err);
+                        continue;
+                    }
+                };
+                match message {
+                    Message::Version(v) => circuit.client_version = Some(v.protocol_version),
+                    Message::Echo => {
+                        let mut reply_buf = Cursor::new(Vec::new());
+                        messages::Echo::default().write(&mut reply_buf).unwrap();
+                        stream.write(&reply_buf.into_inner()).await.unwrap();
+                    }
+                };
+            }
+        });
     }
 }
-
 struct LibraryRecord(usize);
 
 #[derive(Default)]
@@ -164,10 +185,17 @@ fn get_broadcast_ips() -> Vec<Ipv4Addr> {
 
 impl Server {
     pub async fn new(beacon_port: u16) -> io::Result<Self> {
-        let server = Server {
+        let mut server = Server {
             beacon_port,
             ..Default::default()
         };
+        server
+            .library
+            .names
+            .lock()
+            .unwrap()
+            .insert("something".to_string(), LibraryRecord { 0: 0 });
+
         server.listen().await?;
         Ok(server)
     }
@@ -183,6 +211,10 @@ impl Server {
             .unwrap();
 
             loop {
+                println!(
+                    "Listening for searches on {:?}",
+                    listener.local_addr().unwrap()
+                );
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
                 if let Ok(searches) = parse_search_packet(msg_buf) {
@@ -191,6 +223,7 @@ impl Server {
                         let server_names = server_names.lock().unwrap();
                         for search in searches {
                             if server_names.contains_key(&search.channel_name) {
+                                println!("Request match! Can provide {}", search.channel_name);
                                 replies.push(search.respond(None, connection_port, true));
                             }
                         }
@@ -198,13 +231,14 @@ impl Server {
                     if replies.len() > 0 {
                         let mut reply_buf = Cursor::new(Vec::new());
                         messages::Version::default().write(&mut reply_buf).unwrap();
-                        for reply in replies {
+                        for reply in &replies {
                             reply.write(&mut reply_buf).unwrap();
                         }
                         listener
                             .send_to(&reply_buf.into_inner(), origin)
                             .await
                             .unwrap();
+                        println!("Sending {} results", replies.len());
                     }
                 } else {
                     println!("Got unparseable search message from {}", origin);
@@ -216,7 +250,6 @@ impl Server {
         let beacon_port = self.beacon_port;
         let broadcast = UdpSocket::bind("0.0.0.0:0").await?;
         tokio::spawn(async move {
-            println!("Starting to broadcast");
             broadcast.set_broadcast(true).unwrap();
             let mut message = messages::RsrvIsUp {
                 server_port: connection_port,
@@ -246,8 +279,16 @@ impl Server {
         Ok(())
     }
 
-    fn handle_circuit_lifecycle(&self, listener: TcpListener) -> ! {
-        loop {}
+    fn handle_circuit_lifecycle(&self, listener: TcpListener) {
+        tokio::spawn(async move {
+            loop {
+                let (mut connection, client) = listener.accept().await.unwrap();
+                // Immediately send a Version message; this counts
+                connection
+                    .write(&messages::Version::default().into().as_ref())
+                    .await;
+            }
+        });
     }
 
     pub async fn listen(&self) -> Result<(), std::io::Error> {
@@ -259,5 +300,6 @@ impl Server {
         self.listen_for_searches(listen_port);
         self.broadcast_beacons(listen_port).await?;
         self.handle_circuit_lifecycle(connection_socket);
+        Ok(())
     }
 }

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
-    io::{self, Write},
+    io::{self, Cursor, Write},
     net::Ipv4Addr,
 };
 
@@ -13,8 +13,70 @@ use nom::{
     number::complete::{be_u16, be_u32},
     Err, Finish, IResult, Parser,
 };
+use thiserror::Error;
+use tokio::{io::AsyncReadExt, net::TcpStream};
 
 const EPICS_VERSION: u16 = 13;
+
+enum CommandId {}
+pub enum Message {
+    Version(Version),
+    RsrvIsUp(RsrvIsUp),
+    Search(Search),
+    SearchResponse(SearchResponse),
+    CreateChannel(CreateChannel),
+    CreateChannelResponse(CreateChannelResponse),
+    AccessRights(AccessRights),
+    Echo,
+}
+
+#[derive(Error, Debug)]
+pub enum MessageError {
+    #[error("IO Error Occured")]
+    IO(#[from] io::Error),
+    #[error("An error occured parsing a message")]
+    ParsingError(#[from] nom::Err<nom::error::Error<Vec<u8>>>),
+    #[error("Unknown command ID: {0}")]
+    UnknownCommandId(u16),
+}
+
+impl From<nom::Err<nom::error::Error<&[u8]>>> for MessageError {
+    fn from(err: nom::Err<nom::error::Error<&[u8]>>) -> Self {
+        MessageError::ParsingError(err.to_owned())
+    }
+}
+
+impl Message {
+    /// Parse message sent to the server, directly from a TCP stream
+    ///
+    /// Handles any message that could be sent to the server, not
+    /// messages that could be sent to a client. This is because some
+    /// response messages have the same command ID but different fields,
+    /// so it is impossible to tell which is which purely from the
+    /// contents of the message.
+    pub async fn read_server_message(source: &mut TcpStream) -> Result<Self, MessageError> {
+        let mut header_buffer = Vec::with_capacity(16);
+        header_buffer.resize(16, 0);
+        source.read_exact(header_buffer.as_mut_slice()).await?;
+        let (_, header) = Header::parse(&header_buffer).map_err(|_| {
+            io::Error::new(std::io::ErrorKind::InvalidData, "Failed to read header")
+        })?;
+        // Resize the buffer to hold the message payload
+        header_buffer.resize(16 + header.payload_size as usize, 0);
+        source.read_exact(&mut header_buffer[16..]);
+
+        // Read the message differently depending on what it is
+        let input = header_buffer.as_slice();
+
+        Ok(match header.command {
+            0 => Self::Version(Version::parse(input)?.1),
+            6 => Self::Search(Search::parse(input)?.1),
+            18 => Self::CreateChannel(CreateChannel::parse(input)?.1),
+            23 => Self::Echo,
+            unknown => Err(MessageError::UnknownCommandId(unknown))?,
+        })
+    }
+}
 
 /// A basic trait to tie nom parseability to the struct without a
 /// plethora of named functions.
@@ -69,6 +131,26 @@ pub struct RsrvIsUp {
     pub protocol_version: u16,
 }
 
+impl<T> Into<Vec<u8>> for T
+where
+    T: CAMessage,
+{
+    fn into(self) -> Vec<u8> {
+        let mut buffer = Cursor::new(Vec::new());
+        self.write(&mut buffer).unwrap();
+        buffer.into_inner()
+    }
+}
+// impl<T> TryInto<Vec<u8>> for T
+// where
+//     T: CAMessage,
+// {
+//     type Error = io::Error;
+
+//     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
+
+//     }
+// }
 impl CAMessage for RsrvIsUp {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
@@ -112,8 +194,8 @@ impl CAMessage for RsrvIsUp {
 /// also sent as the first message in UDP search messages.
 #[derive(Debug)]
 pub struct Version {
-    priority: u16,
-    protocol_version: u16,
+    pub priority: u16,
+    pub protocol_version: u16,
 }
 impl Default for Version {
     fn default() -> Self {
@@ -170,6 +252,10 @@ impl Header {
             return Err(Err::Error(Error::new(input, ErrorKind::Tag)));
         }
         Ok((input, result))
+    }
+    /// Size of header from a stream
+    fn size() -> usize {
+        return 16;
     }
 }
 
@@ -383,13 +469,13 @@ pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, nom::error::Erro
 /// Requests creation of channel. Server will allocate required
 /// resources and return initialized SID. Sent over TCP.
 #[derive(Debug)]
-struct CreateChan {
+struct CreateChannel {
     client_id: u32,
     protocol_version: u32,
     channel_name: String,
 }
 
-impl CAMessage for CreateChan {
+impl CAMessage for CreateChannel {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
         Self: Sized,
@@ -398,7 +484,7 @@ impl CAMessage for CreateChan {
         let (input, channel_name) = padded_string(header.payload_size as usize)(input)?;
         Ok((
             input,
-            CreateChan {
+            CreateChannel {
                 client_id: header.field_3_parameter_1,
                 protocol_version: header.field_4_parameter_2,
                 channel_name,
@@ -422,14 +508,14 @@ impl CAMessage for CreateChan {
 }
 
 #[derive(Debug)]
-struct CreateChanResponse {
+struct CreateChannelResponse {
     data_type: u16,
     data_count: u32,
     client_id: u32,
     server_id: u32,
 }
 
-impl CAMessage for CreateChanResponse {
+impl CAMessage for CreateChannelResponse {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
         Self: Sized,
@@ -437,7 +523,7 @@ impl CAMessage for CreateChanResponse {
         let (input, header) = Header::parse_id(18, input)?;
         Ok((
             input,
-            CreateChanResponse {
+            CreateChannelResponse {
                 data_type: header.field_1_data_type,
                 data_count: header.field_2_data_count,
                 client_id: header.field_3_parameter_1,
@@ -517,6 +603,58 @@ impl CAMessage for AccessRights {
         }
         .write(writer)
     }
+}
+
+#[derive(Default)]
+pub struct Echo;
+
+impl CAMessage for Echo {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, _) = Header::parse_id(23, input)?;
+        Ok((input, Echo))
+    }
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        Header {
+            command: 23,
+            ..Default::default()
+        }
+        .write(writer)?;
+        Ok(())
+    }
+}
+
+enum ErrorSeverity {
+    Warning = 0,
+    Success = 1,
+    Error = 2,
+    Info = 3,
+    Severe = 4,
+}
+
+enum ErrorCondition {
+    Normal = 0,
+}
+impl ErrorCondition {
+    fn get_severity(&self) -> ErrorSeverity {
+        match self {
+            Self::Normal => ErrorSeverity::Success,
+        }
+    }
+    fn get_description(&self) -> String {
+        match self {
+            Self::Normal => "Normal successful completion".to_owned(),
+        }
+    }
+}
+struct ECAError {
+    original_request: Message,
+    error_message: String,
+    client_id: u32,
+    severity: ErrorSeverity,
+    condition: ErrorCondition,
 }
 
 #[cfg(test)]
