@@ -32,6 +32,10 @@ struct LimitSet<T> {
     alarm_limits: Limits<T>,
 }
 
+enum SingleOrVec<T> {
+    Single(T),
+    Vector(Vec<T>),
+}
 struct NumericDBR<T> {
     status: i16,
     severity: i16,
@@ -39,9 +43,25 @@ struct NumericDBR<T> {
     precision: Option<u16>,
     units: String,
     limits: LimitSet<T>,
-    count: usize,
-    value: Vec<T>,
+    value: SingleOrVec<T>,
     last_updated: Instant,
+}
+
+impl<T> Default for NumericDBR<T>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self {
+            status: Default::default(),
+            severity: Default::default(),
+            precision: Default::default(),
+            units: Default::default(),
+            limits: Default::default(),
+            value: SingleOrVec::Single(T::default()),
+            last_updated: Instant::now(),
+        }
+    }
 }
 
 struct StringDBR {
@@ -96,7 +116,7 @@ struct Circuit {
 }
 
 impl Circuit {
-    async fn start(mut stream: TcpStream) {
+    async fn start(mut stream: TcpStream, _library: ChannelLibrary) {
         let mut circuit = Circuit {
             last_message: Instant::now(),
             client_version: None,
@@ -139,18 +159,20 @@ impl Circuit {
 }
 struct LibraryRecord(usize);
 
-#[derive(Default)]
-struct ChannelLibrary {
-    /// Records are addressed purely
-    records: HashMap<LibraryRecord, Dbr>,
-    /// Keeps track of externally exposed names for each record
-    names: Arc<Mutex<HashMap<String, LibraryRecord>>>,
-}
-impl ChannelLibrary {
-    fn new() -> Self {
-        ChannelLibrary::default()
-    }
-}
+type ChannelLibrary = Arc<Mutex<HashMap<String, Dbr>>>;
+
+// #[derive(Default)]
+// struct ChannelLibrary {
+//     /// Records are addressed purely
+//     records: HashMap<LibraryRecord, Dbr>,
+//     /// Keeps track of externally exposed names for each record
+//     names: Arc<Mutex<HashMap<String, LibraryRecord>>>,
+// }
+// impl ChannelLibrary {
+//     fn new() -> Self {
+//         ChannelLibrary::default()
+//     }
+// }
 
 pub struct Server {
     /// Broadcast port to sent beacons
@@ -177,7 +199,7 @@ impl Default for Server {
             last_beacon: Instant::now(),
             beacon_id: 0,
             circuits: Vec::new(),
-            library: ChannelLibrary::new(),
+            library: ChannelLibrary::default(),
             shutdown: CancellationToken::new(),
         }
     }
@@ -203,10 +225,9 @@ impl Server {
         };
         server
             .library
-            .names
             .lock()
             .unwrap()
-            .insert("something".to_string(), LibraryRecord(0));
+            .insert("something".to_string(), Dbr::Double(NumericDBR::default()));
 
         server.listen().await?;
         Ok(server)
@@ -214,7 +235,7 @@ impl Server {
 
     fn listen_for_searches(&self, connection_port: u16) {
         let search_port = self.search_port;
-        let server_names = self.library.names.clone();
+        let server_names = self.library.clone();
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
             let listener = UdpSocket::from_std(
@@ -292,11 +313,13 @@ impl Server {
     }
 
     fn handle_tcp_connections(&self, listener: TcpListener) {
+        let library = self.library.clone();
         tokio::spawn(async move {
             loop {
                 let (connection, _client) = listener.accept().await.unwrap();
+                let circuit_library = library.clone();
                 tokio::spawn(async move {
-                    Circuit::start(connection).await;
+                    Circuit::start(connection, circuit_library).await;
                 });
             }
         });
@@ -305,6 +328,7 @@ impl Server {
     pub async fn listen(&self) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port.unwrap_or(0);
+
         let connection_socket = TcpListener::bind(format!("0.0.0.0:{}", request_port)).await?;
         let listen_port = connection_socket.local_addr().unwrap().port();
 
