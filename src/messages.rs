@@ -55,15 +55,14 @@ impl Message {
     /// so it is impossible to tell which is which purely from the
     /// contents of the message.
     pub async fn read_server_message(source: &mut TcpStream) -> Result<Self, MessageError> {
-        let mut header_buffer = Vec::with_capacity(16);
-        header_buffer.resize(16, 0);
+        let mut header_buffer = vec![0; 16];
         source.read_exact(header_buffer.as_mut_slice()).await?;
         let (_, header) = Header::parse(&header_buffer).map_err(|_| {
             io::Error::new(std::io::ErrorKind::InvalidData, "Failed to read header")
         })?;
         // Resize the buffer to hold the message payload
         header_buffer.resize(16 + header.payload_size as usize, 0);
-        source.read_exact(&mut header_buffer[16..]);
+        source.read_exact(&mut header_buffer[16..]).await.unwrap();
 
         // Read the message differently depending on what it is
         let input = header_buffer.as_slice();
@@ -76,6 +75,19 @@ impl Message {
             unknown => Err(MessageError::UnknownCommandId(unknown))?,
         })
     }
+
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        match self {
+            Self::Echo => Echo.write(writer),
+            Self::Version(msg) => msg.write(writer),
+            Self::RsrvIsUp(msg) => msg.write(writer),
+            Self::Search(msg) => msg.write(writer),
+            Self::SearchResponse(msg) => msg.write(writer),
+            Self::CreateChannel(msg) => msg.write(writer),
+            Self::CreateChannelResponse(msg) => msg.write(writer),
+            Self::AccessRights(msg) => msg.write(writer),
+        }
+    }
 }
 
 /// A basic trait to tie nom parseability to the struct without a
@@ -85,6 +97,7 @@ pub trait CAMessage {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
         Self: Sized;
+
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
 }
 
@@ -131,26 +144,20 @@ pub struct RsrvIsUp {
     pub protocol_version: u16,
 }
 
-impl<T> Into<Vec<u8>> for T
+pub trait AsBytes {
+    fn as_bytes(&self) -> Vec<u8>;
+}
+impl<T> AsBytes for T
 where
     T: CAMessage,
 {
-    fn into(self) -> Vec<u8> {
+    fn as_bytes(&self) -> Vec<u8> {
         let mut buffer = Cursor::new(Vec::new());
         self.write(&mut buffer).unwrap();
         buffer.into_inner()
     }
 }
-// impl<T> TryInto<Vec<u8>> for T
-// where
-//     T: CAMessage,
-// {
-//     type Error = io::Error;
 
-//     fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-
-//     }
-// }
 impl CAMessage for RsrvIsUp {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
@@ -255,7 +262,7 @@ impl Header {
     }
     /// Size of header from a stream
     fn size() -> usize {
-        return 16;
+        16
     }
 }
 
@@ -469,7 +476,7 @@ pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, nom::error::Erro
 /// Requests creation of channel. Server will allocate required
 /// resources and return initialized SID. Sent over TCP.
 #[derive(Debug)]
-struct CreateChannel {
+pub struct CreateChannel {
     client_id: u32,
     protocol_version: u32,
     channel_name: String,
@@ -508,7 +515,7 @@ impl CAMessage for CreateChannel {
 }
 
 #[derive(Debug)]
-struct CreateChannelResponse {
+pub struct CreateChannelResponse {
     data_type: u16,
     data_count: u32,
     client_id: u32,
@@ -572,7 +579,7 @@ impl TryFrom<u32> for AccessRight {
 /// cannot change access rights nor can it explicitly query its value,
 /// so last received value must be stored.
 #[derive(Debug)]
-struct AccessRights {
+pub struct AccessRights {
     client_id: u32,
     access_rights: AccessRight,
 }
@@ -636,27 +643,134 @@ enum ErrorSeverity {
 
 enum ErrorCondition {
     Normal = 0,
+    AllocMem = 6,
+    TooLarge = 9,
+    Timeout = 10,
+    BadType = 14,
+    Internal = 17,
+    DblClFail = 18,
+    GetFail = 19,
+    PutFail = 20,
+    BadCount = 22,
+    BadStr = 23,
+    Disconn = 24,
+    EvDisallow = 26,
+    BadMonId = 30,
+    BadMask = 41,
+    IoDone = 42,
+    IoInProgress = 43,
+    BadSyncGrp = 44,
+    PutCbInProg = 45,
+    NoRdAccess = 46,
+    NoWtAccess = 47,
+    Anachronism = 48,
+    NoSearchAddr = 49,
+    NoConvert = 50,
+    BadChId = 51,
+    BadFuncPtr = 52,
+    IsAttached = 53,
+    UnavailInServ = 54,
+    ChanDestroy = 55,
+    BadPriority = 56,
+    NotThreaded = 57,
+    Array16kClient = 58,
+    ConnSeqTmo = 59,
+    UnrespTmo = 60,
 }
+
 impl ErrorCondition {
     fn get_severity(&self) -> ErrorSeverity {
         match self {
             Self::Normal => ErrorSeverity::Success,
-        }
-    }
-    fn get_description(&self) -> String {
-        match self {
-            Self::Normal => "Normal successful completion".to_owned(),
+            Self::AllocMem => ErrorSeverity::Warning,
+            Self::TooLarge => ErrorSeverity::Warning,
+            Self::Timeout => ErrorSeverity::Warning,
+            Self::BadType => ErrorSeverity::Error,
+            Self::Internal => ErrorSeverity::Severe,
+            Self::DblClFail => ErrorSeverity::Warning,
+            Self::GetFail => ErrorSeverity::Warning,
+            Self::PutFail => ErrorSeverity::Warning,
+            Self::BadCount => ErrorSeverity::Warning,
+            Self::BadStr => ErrorSeverity::Error,
+            Self::Disconn => ErrorSeverity::Warning,
+            Self::EvDisallow => ErrorSeverity::Error,
+            Self::BadMonId => ErrorSeverity::Error,
+            Self::BadMask => ErrorSeverity::Error,
+            Self::IoDone => ErrorSeverity::Info,
+            Self::IoInProgress => ErrorSeverity::Info,
+            Self::BadSyncGrp => ErrorSeverity::Error,
+            Self::PutCbInProg => ErrorSeverity::Error,
+            Self::NoRdAccess => ErrorSeverity::Warning,
+            Self::NoWtAccess => ErrorSeverity::Warning,
+            Self::Anachronism => ErrorSeverity::Error,
+            Self::NoSearchAddr => ErrorSeverity::Warning,
+            Self::NoConvert => ErrorSeverity::Warning,
+            Self::BadChId => ErrorSeverity::Error,
+            Self::BadFuncPtr => ErrorSeverity::Error,
+            Self::IsAttached => ErrorSeverity::Warning,
+            Self::UnavailInServ => ErrorSeverity::Warning,
+            Self::ChanDestroy => ErrorSeverity::Warning,
+            Self::BadPriority => ErrorSeverity::Error,
+            Self::NotThreaded => ErrorSeverity::Error,
+            Self::Array16kClient => ErrorSeverity::Warning,
+            Self::ConnSeqTmo => ErrorSeverity::Warning,
+            Self::UnrespTmo => ErrorSeverity::Warning,
         }
     }
 }
-struct ECAError {
-    original_request: Message,
-    error_message: String,
-    client_id: u32,
-    severity: ErrorSeverity,
-    condition: ErrorCondition,
+impl std::fmt::Display for ErrorCondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}",         match self {
+            Self::Normal => "Normal successful completion",
+            Self::AllocMem => "Unable to allocate additional dynamic memory",
+            Self::TooLarge => "The requested data transfer is greater than available memory or EPICS_CA_MAX_ARRAY_BYTES",
+            Self::Timeout => "User specified timeout on IO operation expired",
+            Self::BadType => "The data type specified is invalid",
+            Self::Internal => "Channel Access Internal Failure",
+            Self::DblClFail => "The requested local DB operation failed",
+            Self::GetFail => "Channel read request failed",
+            Self::PutFail => "Channel write request failed",
+            Self::BadCount => "Invalid element count requested",
+            Self::BadStr => "Invalid string",
+            Self::Disconn => "Virtual circuit disconnect",
+            Self::EvDisallow => "Request inappropriate within subscription (monitor) update callback",
+            Self::BadMonId => "Bad event subscription (monitor) identifier",
+            Self::BadMask => "Invalid event selection mask",
+            Self::IoDone => "IO operations have completed",
+            Self::IoInProgress => "IO operations are in progress",
+            Self::BadSyncGrp => "Invalid synchronous group identifier",
+            Self::PutCbInProg => "Put callback timed out",
+            Self::NoRdAccess => "Read access denied",
+            Self::NoWtAccess => "Write access denied",
+            Self::Anachronism => "Requested feature is no longer supported",
+            Self::NoSearchAddr => "Empty PV search address list",
+            Self::NoConvert => "No reasonable data conversion between client and server types",
+            Self::BadChId => "Invalid channel identifier",
+            Self::BadFuncPtr => "Invalid function pointer",
+            Self::IsAttached => "Thread is already attached to a client context",
+            Self::UnavailInServ => "Not supported by attached service",
+            Self::ChanDestroy => "User destroyed channel",
+            Self::BadPriority => "Invalid channel priority",
+            Self::NotThreaded => "Preemptive callback not enabled - additional threads may not join context",
+            Self::Array16kClient => "Client’s protocol revision does not support transfers exceeding 16k bytes",
+            Self::ConnSeqTmo => "Virtual circuit connection sequence aborted",
+            Self::UnrespTmo => "?",
+        })
+    }
 }
 
+struct ECAError {
+    error_message: String,
+    client_id: u32,
+    condition: ErrorCondition,
+    original_request: Message,
+}
+
+// impl CAMessage for ECAError {
+//     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+//         // Work out how big our message payload is
+//     }
+// }
 #[cfg(test)]
 mod tests {
     use super::*;

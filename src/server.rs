@@ -9,13 +9,13 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     net::{TcpListener, TcpStream, UdpSocket},
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    messages::{self, parse_search_packet, CAMessage, Message},
+    messages::{self, parse_search_packet, AsBytes, CAMessage, Message},
     new_reusable_udp_socket,
 };
 
@@ -117,9 +117,10 @@ impl Circuit {
                     Message::Version(v) => circuit.client_version = Some(v.protocol_version),
                     Message::Echo => {
                         let mut reply_buf = Cursor::new(Vec::new());
-                        messages::Echo::default().write(&mut reply_buf).unwrap();
-                        stream.write(&reply_buf.into_inner()).await.unwrap();
+                        messages::Echo.write(&mut reply_buf).unwrap();
+                        stream.write_all(&reply_buf.into_inner()).await.unwrap();
                     }
+                    _ => panic!("Unknown message"),
                 };
             }
         });
@@ -185,7 +186,7 @@ fn get_broadcast_ips() -> Vec<Ipv4Addr> {
 
 impl Server {
     pub async fn new(beacon_port: u16) -> io::Result<Self> {
-        let mut server = Server {
+        let server = Server {
             beacon_port,
             ..Default::default()
         };
@@ -194,7 +195,7 @@ impl Server {
             .names
             .lock()
             .unwrap()
-            .insert("something".to_string(), LibraryRecord { 0: 0 });
+            .insert("something".to_string(), LibraryRecord(0));
 
         server.listen().await?;
         Ok(server)
@@ -228,7 +229,7 @@ impl Server {
                             }
                         }
                     }
-                    if replies.len() > 0 {
+                    if !replies.is_empty() {
                         let mut reply_buf = Cursor::new(Vec::new());
                         messages::Version::default().write(&mut reply_buf).unwrap();
                         for reply in &replies {
@@ -282,11 +283,12 @@ impl Server {
     fn handle_circuit_lifecycle(&self, listener: TcpListener) {
         tokio::spawn(async move {
             loop {
-                let (mut connection, client) = listener.accept().await.unwrap();
+                let (mut connection, _client) = listener.accept().await.unwrap();
                 // Immediately send a Version message; this counts
                 connection
-                    .write(&messages::Version::default().into().as_ref())
-                    .await;
+                    .write_all(messages::Version::default().as_bytes().as_ref())
+                    .await
+                    .unwrap();
             }
         });
     }
