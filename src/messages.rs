@@ -120,14 +120,11 @@ fn padded_string(length: usize) -> impl FnMut(&[u8]) -> IResult<&[u8], String> {
     }
 }
 
-/// Write a null-terminated string, padded to the specified length
-fn write_padded_string<W: Write>(writer: &mut W, length: usize, string: &str) -> io::Result<()> {
-    assert!(string.len() < length);
-    writer.write_all(string.as_bytes())?;
-    for _ in 0..(length - string.len()) {
-        writer.write_all(&[0x00])?;
-    }
-    Ok(())
+fn pad_string(string: &str) -> Vec<u8> {
+    let mut bytes = string.as_bytes().to_vec();
+    let padded_len = (bytes.len() + 1).div_ceil(8);
+    bytes.resize(padded_len, 0);
+    bytes
 }
 
 /// Message CA_PROTO_RSRV_IS_UP.
@@ -363,18 +360,17 @@ impl Search {
 
 impl CAMessage for Search {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        let padded_len = (self.channel_name.len() + 1).div_ceil(8);
-
+        let padded_name = pad_string(&self.channel_name);
         Header {
             command: 6,
-            payload_size: padded_len as u32,
+            payload_size: padded_name.len() as u32,
             field_1_data_type: if self.should_reply { 10 } else { 5 },
             field_2_data_count: EPICS_VERSION as u32,
             field_3_parameter_1: self.search_id,
             field_4_parameter_2: self.search_id,
         }
         .write(writer)?;
-        write_padded_string(writer, padded_len, &self.channel_name)?;
+        writer.write_all(&padded_name)?;
         Ok(())
     }
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
@@ -500,6 +496,7 @@ impl CAMessage for CreateChannel {
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         let payload_size = (self.channel_name.len() + 1).div_ceil(8) as u32;
+        let channel_name = pad_string(&self.channel_name);
         Header {
             command: 18,
             payload_size,
@@ -509,7 +506,7 @@ impl CAMessage for CreateChannel {
             field_4_parameter_2: self.protocol_version,
         }
         .write(writer)?;
-        write_padded_string(writer, payload_size as usize, &self.channel_name)?;
+        writer.write_all(&channel_name)?;
         Ok(())
     }
 }
