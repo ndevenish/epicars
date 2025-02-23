@@ -15,7 +15,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    messages::{self, parse_search_packet, AsBytes, CAMessage, Message},
+    messages::{self, parse_search_packet, AsBytes, CAMessage, Message, MessageError},
     new_reusable_udp_socket,
 };
 
@@ -113,10 +113,16 @@ struct Circuit {
     client_host_name: Option<String>,
     client_user_name: Option<String>,
     client_events_on: bool,
+    library: ChannelLibrary,
 }
 
+struct Channel {
+    name: String,
+    client_id: u32,
+    server_id: u32,
+}
 impl Circuit {
-    async fn start(mut stream: TcpStream, _library: ChannelLibrary) {
+    async fn start(mut stream: TcpStream, library: ChannelLibrary) {
         println!("Starting circuit with {:?}", stream.peer_addr());
         let mut circuit = Circuit {
             last_message: Instant::now(),
@@ -124,6 +130,7 @@ impl Circuit {
             client_host_name: None,
             client_user_name: None,
             client_events_on: true,
+            library,
         };
         // Immediately send a Version message
         println!("Sending VERSION");
@@ -145,10 +152,23 @@ impl Circuit {
         loop {
             let message = match Message::read_server_message(&mut stream).await {
                 Ok(message) => message,
-                Err(err) => {
-                    println!("Got error reading server message: {}", err);
-                    continue;
-                }
+                Err(err) => match err {
+                    MessageError::IO(io) => {
+                        println!("IO Error reading server message: {}", io);
+                        // match io.kind() {
+                        //     ErrorKind::Eof => break,
+                        // }
+                        break;
+                    }
+                    MessageError::UnknownCommandId(id) => {
+                        println!("Error: Receieved unknown command id: {id}");
+                        continue;
+                    }
+                    MessageError::ParsingError(msg) => {
+                        println!("Error: Incoming message parse error: {}", msg);
+                        continue;
+                    }
+                },
             };
             match message {
                 Message::Echo => {
@@ -156,9 +176,23 @@ impl Circuit {
                     messages::Echo.write(&mut reply_buf).unwrap();
                     stream.write_all(&reply_buf.into_inner()).await.unwrap();
                 }
+                Message::ClientName(name) if circuit.client_user_name.is_none() => {
+                    println!("Got client username: {}", name.name);
+                    circuit.client_user_name = Some(name.name);
+                }
+                Message::HostName(name) if circuit.client_host_name.is_none() => {
+                    println!("Got client hostname: {}", name.name);
+                    circuit.client_host_name = Some(name.name);
+                }
+                Message::CreateChannel(chan) => {
+                    println!("Got request to create channel to: {}", chan.channel_name);
+                }
                 msg => panic!("Unexpected message: {:?}", msg),
             };
         }
+        // If out here, we are closing the channel
+        println!("Closing channel");
+        let _ = stream.shutdown().await;
     }
 }
 struct LibraryRecord(usize);

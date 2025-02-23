@@ -579,9 +579,9 @@ pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, nom::error::Erro
 /// resources and return initialized SID. Sent over TCP.
 #[derive(Debug)]
 pub struct CreateChannel {
-    client_id: u32,
-    protocol_version: u32,
-    channel_name: String,
+    pub client_id: u32,
+    pub protocol_version: u32,
+    pub channel_name: String,
 }
 
 impl CAMessage for CreateChannel {
@@ -737,7 +737,9 @@ impl CAMessage for Echo {
 }
 
 #[derive(Debug)]
-pub struct ClientName(String);
+pub struct ClientName {
+    pub name: String,
+}
 
 impl CAMessage for ClientName {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
@@ -749,12 +751,12 @@ impl CAMessage for ClientName {
         // - we _know_ that the data is limited by vec length so this should not be an issue...
         let (_, client_name) = padded_string(message.payload.len())(&message.payload).unwrap();
 
-        Ok((input, ClientName(client_name)))
+        Ok((input, ClientName { name: client_name }))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 20,
-            payload: pad_string(&self.0),
+            payload: pad_string(&self.name),
             ..Default::default()
         }
         .write(writer)
@@ -762,7 +764,9 @@ impl CAMessage for ClientName {
 }
 
 #[derive(Debug)]
-pub struct HostName(String);
+pub struct HostName {
+    pub name: String,
+}
 
 impl CAMessage for HostName {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
@@ -774,12 +778,12 @@ impl CAMessage for HostName {
         // - we _know_ that the data is limited by vec length so this should not be an issue...
         let (_, client_name) = padded_string(message.payload.len())(&message.payload).unwrap();
 
-        Ok((input, HostName(client_name)))
+        Ok((input, HostName { name: client_name }))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 21,
-            payload: pad_string(&self.0),
+            payload: pad_string(&self.name),
             ..Default::default()
         }
         .write(writer)
