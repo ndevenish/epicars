@@ -4,6 +4,7 @@ use tokio::task::yield_now;
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     Server::new(5065).await.unwrap();
+    println!("Entering main() infinite loop");
     loop {
         yield_now().await;
     }

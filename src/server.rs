@@ -6,10 +6,11 @@ use std::{
     io::{self, Cursor},
     net::{IpAddr, Ipv4Addr},
     sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
 };
 use tokio_util::sync::CancellationToken;
@@ -117,6 +118,7 @@ struct Circuit {
 
 impl Circuit {
     async fn start(mut stream: TcpStream, _library: ChannelLibrary) {
+        println!("Starting circuit with {:?}", stream.peer_addr());
         let mut circuit = Circuit {
             last_message: Instant::now(),
             client_version: None,
@@ -125,11 +127,13 @@ impl Circuit {
             client_events_on: true,
         };
         // Immediately send a Version message
+        println!("Sending VERSION");
         stream
             .write_all(messages::Version::default().as_bytes().as_ref())
             .await
             .unwrap();
         // Immediately receive a Version message from the client
+        println!("Waiting for server message");
         match Message::read_server_message(&mut stream).await.unwrap() {
             Message::Version(v) => circuit.client_version = Some(v.protocol_version),
             _ => {
@@ -243,11 +247,11 @@ impl Server {
             )
             .unwrap();
 
+            println!(
+                "Listening for searches on {:?}",
+                listener.local_addr().unwrap()
+            );
             loop {
-                println!(
-                    "Listening for searches on {:?}",
-                    listener.local_addr().unwrap()
-                );
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
                 if let Ok(searches) = parse_search_packet(msg_buf) {
@@ -316,11 +320,18 @@ impl Server {
         let library = self.library.clone();
         tokio::spawn(async move {
             loop {
-                let (connection, _client) = listener.accept().await.unwrap();
-                let circuit_library = library.clone();
-                tokio::spawn(async move {
-                    Circuit::start(connection, circuit_library).await;
-                });
+                println!("Waiting to accept TCP connections");
+                let (mut connection, _client) = listener.accept().await.unwrap();
+                println!("  Got new stream from {}", _client);
+                let mut buffer = vec![0u8; 1000];
+                let mut count = 0usize;
+                loop {
+                    let size = connection.read(&mut buffer[count..]).await.unwrap();
+                }
+                // let circuit_library = library.clone();
+                // tokio::spawn(async move {
+                //     Circuit::start(connection, circuit_library).await;
+                // });
             }
         });
     }
@@ -329,12 +340,32 @@ impl Server {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port.unwrap_or(0);
 
-        let connection_socket = TcpListener::bind(format!("0.0.0.0:{}", request_port)).await?;
-        let listen_port = connection_socket.local_addr().unwrap().port();
+        // let connection_socket =
+        //     tokio::net::TcpListener::bind(format!("192.168.1.148:{}", request_port)).await?;
+        // let listen_port = connection_socket.local_addr().unwrap().port();
+        // println!(
+        //     "Listening for TCP connections on {}",
+        //     connection_socket.local_addr().unwrap()
+        // );
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            println!("Started thread to handle synchronous TCP");
+            let listen =
+                std::net::TcpListener::bind(format!("192.168.1.148:{}", request_port)).unwrap();
+            tx.send(listen.local_addr().unwrap().port()).unwrap();
+            println!("Starting TCP listen loop");
+            loop {
+                let (stream, _client) = listen.accept().unwrap();
+                println!("Got stream connection to {}", stream.peer_addr().unwrap());
+            }
+        });
+        let listen_port = rx.recv().unwrap();
+        println!("Successfully moved past thread branch");
 
         self.listen_for_searches(listen_port);
         self.broadcast_beacons(listen_port).await?;
-        self.handle_tcp_connections(connection_socket);
+        // self.handle_tcp_connections(connection_socket);
+
         Ok(())
     }
 }
