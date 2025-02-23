@@ -6,11 +6,10 @@ use std::{
     io::{self, Cursor},
     net::{IpAddr, Ipv4Addr},
     sync::{Arc, Mutex},
-    thread,
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     net::{TcpListener, TcpStream, UdpSocket},
 };
 use tokio_util::sync::CancellationToken;
@@ -254,13 +253,14 @@ impl Server {
             loop {
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
+                println!("Got search from {}", origin);
                 if let Ok(searches) = parse_search_packet(msg_buf) {
                     let mut replies = Vec::new();
                     {
                         let server_names = server_names.lock().unwrap();
                         for search in searches {
                             if server_names.contains_key(&search.channel_name) {
-                                println!("Request match! Can provide {}", search.channel_name);
+                                // println!("Request match! Can provide {}", search.channel_name);
                                 replies.push(search.respond(None, connection_port, true));
                             }
                         }
@@ -275,7 +275,7 @@ impl Server {
                             .send_to(&reply_buf.into_inner(), origin)
                             .await
                             .unwrap();
-                        println!("Sending {} results", replies.len());
+                        println!("Sending {} search results", replies.len());
                     }
                 } else {
                     println!("Got unparseable search message from {}", origin);
@@ -320,51 +320,32 @@ impl Server {
         let library = self.library.clone();
         tokio::spawn(async move {
             loop {
-                println!("Waiting to accept TCP connections");
-                let (mut connection, _client) = listener.accept().await.unwrap();
-                println!("  Got new stream from {}", _client);
-                let mut buffer = vec![0u8; 1000];
-                let mut count = 0usize;
-                loop {
-                    let size = connection.read(&mut buffer[count..]).await.unwrap();
-                }
-                // let circuit_library = library.clone();
-                // tokio::spawn(async move {
-                //     Circuit::start(connection, circuit_library).await;
-                // });
+                println!(
+                    "Waiting to accept TCP connections on {}",
+                    listener.local_addr().unwrap()
+                );
+                let (connection, client) = listener.accept().await.unwrap();
+                println!("  Got new stream from {}", client);
+                let circuit_library = library.clone();
+                tokio::spawn(async move {
+                    Circuit::start(connection, circuit_library).await;
+                });
             }
         });
     }
 
     pub async fn listen(&self) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
-        let request_port = self.connection_port.unwrap_or(0);
+        let request_port = self.connection_port.unwrap_or(40000);
 
-        // let connection_socket =
-        //     tokio::net::TcpListener::bind(format!("192.168.1.148:{}", request_port)).await?;
-        // let listen_port = connection_socket.local_addr().unwrap().port();
-        // println!(
-        //     "Listening for TCP connections on {}",
-        //     connection_socket.local_addr().unwrap()
-        // );
-        let (tx, rx) = std::sync::mpsc::channel();
-        thread::spawn(move || {
-            println!("Started thread to handle synchronous TCP");
-            let listen =
-                std::net::TcpListener::bind(format!("192.168.1.148:{}", request_port)).unwrap();
-            tx.send(listen.local_addr().unwrap().port()).unwrap();
-            println!("Starting TCP listen loop");
-            loop {
-                let (stream, _client) = listen.accept().unwrap();
-                println!("Got stream connection to {}", stream.peer_addr().unwrap());
-            }
-        });
-        let listen_port = rx.recv().unwrap();
-        println!("Successfully moved past thread branch");
+        let connection_socket =
+            tokio::net::TcpListener::bind(format!("0.0.0.0:{}", request_port)).await?;
+
+        let listen_port = connection_socket.local_addr().unwrap().port();
 
         self.listen_for_searches(listen_port);
         self.broadcast_beacons(listen_port).await?;
-        // self.handle_tcp_connections(connection_socket);
+        self.handle_tcp_connections(connection_socket);
 
         Ok(())
     }
