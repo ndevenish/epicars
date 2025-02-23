@@ -790,11 +790,6 @@ impl CAMessage for HostName {
     }
 }
 
-// impl CAMessage for HostName {}
-
-// pub struct HostName {
-//     pub name: String,
-// }
 enum ErrorSeverity {
     Warning = 0,
     Success = 1,

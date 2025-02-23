@@ -154,10 +154,8 @@ impl Circuit {
                 Ok(message) => message,
                 Err(err) => match err {
                     MessageError::IO(io) => {
+                        // Just fail the circuit completely, could inspect io.kind later
                         println!("IO Error reading server message: {}", io);
-                        // match io.kind() {
-                        //     ErrorKind::Eof => break,
-                        // }
                         break;
                     }
                     MessageError::UnknownCommandId(id) => {
@@ -195,22 +193,8 @@ impl Circuit {
         let _ = stream.shutdown().await;
     }
 }
-struct LibraryRecord(usize);
 
 type ChannelLibrary = Arc<Mutex<HashMap<String, Dbr>>>;
-
-// #[derive(Default)]
-// struct ChannelLibrary {
-//     /// Records are addressed purely
-//     records: HashMap<LibraryRecord, Dbr>,
-//     /// Keeps track of externally exposed names for each record
-//     names: Arc<Mutex<HashMap<String, LibraryRecord>>>,
-// }
-// impl ChannelLibrary {
-//     fn new() -> Self {
-//         ChannelLibrary::default()
-//     }
-// }
 
 pub struct Server {
     /// Broadcast port to sent beacons
@@ -271,6 +255,55 @@ impl Server {
         Ok(server)
     }
 
+    pub async fn listen(&self) -> Result<(), std::io::Error> {
+        // Create the TCP listener first so we know what port to advertise
+        let request_port = self.connection_port.unwrap_or(40000);
+
+        let connection_socket =
+            tokio::net::TcpListener::bind(format!("0.0.0.0:{}", request_port)).await?;
+
+        let listen_port = connection_socket.local_addr().unwrap().port();
+
+        self.listen_for_searches(listen_port);
+        self.broadcast_beacons(listen_port).await?;
+        self.handle_tcp_connections(connection_socket);
+
+        Ok(())
+    }
+
+    async fn broadcast_beacons(&self, connection_port: u16) -> io::Result<()> {
+        let beacon_port = self.beacon_port;
+        let broadcast = UdpSocket::bind("0.0.0.0:0").await?;
+        tokio::spawn(async move {
+            broadcast.set_broadcast(true).unwrap();
+            let mut message = messages::RsrvIsUp {
+                server_port: connection_port,
+                beacon_id: 0,
+                ..Default::default()
+            };
+            loop {
+                let mut writer = Cursor::new(Vec::new());
+                message.write(&mut writer).unwrap();
+                let message_bytes = writer.into_inner();
+                let broadcast_ips = get_broadcast_ips();
+                for i in broadcast_ips.iter() {
+                    broadcast
+                        .send_to(message_bytes.as_slice(), (*i, beacon_port))
+                        .await
+                        .unwrap();
+                }
+                message.beacon_id = message.beacon_id.wrapping_add(1);
+                println!(
+                    "Broadcast beacon to {} interfaces: {:?}",
+                    broadcast_ips.len(),
+                    broadcast_ips,
+                );
+                tokio::time::sleep(Duration::from_secs(15)).await;
+            }
+        });
+        Ok(())
+    }
+
     fn listen_for_searches(&self, connection_port: u16) {
         let search_port = self.search_port;
         let server_names = self.library.clone();
@@ -318,38 +351,6 @@ impl Server {
             }
         });
     }
-    async fn broadcast_beacons(&self, connection_port: u16) -> io::Result<()> {
-        let beacon_port = self.beacon_port;
-        let broadcast = UdpSocket::bind("0.0.0.0:0").await?;
-        tokio::spawn(async move {
-            broadcast.set_broadcast(true).unwrap();
-            let mut message = messages::RsrvIsUp {
-                server_port: connection_port,
-                beacon_id: 0,
-                ..Default::default()
-            };
-            loop {
-                let mut writer = Cursor::new(Vec::new());
-                message.write(&mut writer).unwrap();
-                let message_bytes = writer.into_inner();
-                let broadcast_ips = get_broadcast_ips();
-                for i in broadcast_ips.iter() {
-                    broadcast
-                        .send_to(message_bytes.as_slice(), (*i, beacon_port))
-                        .await
-                        .unwrap();
-                }
-                message.beacon_id = message.beacon_id.wrapping_add(1);
-                println!(
-                    "Broadcast beacon to {} interfaces: {:?}",
-                    broadcast_ips.len(),
-                    broadcast_ips,
-                );
-                tokio::time::sleep(Duration::from_secs(15)).await;
-            }
-        });
-        Ok(())
-    }
 
     fn handle_tcp_connections(&self, listener: TcpListener) {
         let library = self.library.clone();
@@ -367,21 +368,5 @@ impl Server {
                 });
             }
         });
-    }
-
-    pub async fn listen(&self) -> Result<(), std::io::Error> {
-        // Create the TCP listener first so we know what port to advertise
-        let request_port = self.connection_port.unwrap_or(40000);
-
-        let connection_socket =
-            tokio::net::TcpListener::bind(format!("0.0.0.0:{}", request_port)).await?;
-
-        let listen_port = connection_socket.local_addr().unwrap().port();
-
-        self.listen_for_searches(listen_port);
-        self.broadcast_beacons(listen_port).await?;
-        self.handle_tcp_connections(connection_socket);
-
-        Ok(())
     }
 }
