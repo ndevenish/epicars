@@ -140,6 +140,7 @@ impl Circuit {
                 panic!("Got unexpected message when expecting client version");
             }
         }
+        println!("Got client version: {}", circuit.client_version.unwrap());
         // Now, everything else is based on responding to events
         loop {
             let message = match Message::read_server_message(&mut stream).await {
@@ -155,7 +156,7 @@ impl Circuit {
                     messages::Echo.write(&mut reply_buf).unwrap();
                     stream.write_all(&reply_buf.into_inner()).await.unwrap();
                 }
-                _ => panic!("Unexpected message"),
+                msg => panic!("Unexpected message: {:?}", msg),
             };
         }
     }

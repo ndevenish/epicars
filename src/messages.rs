@@ -18,6 +18,7 @@ use tokio::{io::AsyncReadExt, net::TcpStream};
 
 const EPICS_VERSION: u16 = 13;
 
+#[derive(Default)]
 struct RawMessage {
     command: u16,
     field_1_data_type: u16,
@@ -28,6 +29,16 @@ struct RawMessage {
     payload: Vec<u8>,
 }
 
+impl RawMessage {
+    /// Parse a Header, but check that it matches the expected tag
+    fn parse_id(command_id: u16, input: &[u8]) -> IResult<&[u8], RawMessage> {
+        let (input, result) = RawMessage::parse(input)?;
+        if result.command != command_id {
+            return Err(Err::Error(Error::new(input, ErrorKind::Tag)));
+        }
+        Ok((input, result))
+    }
+}
 impl CAMessage for RawMessage {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         // Ensure that the payload is padded out to 8 byte multiple -
@@ -107,6 +118,7 @@ impl CAMessage for RawMessage {
     }
 }
 
+#[derive(Debug)]
 pub enum Message {
     Version(Version),
     RsrvIsUp(RsrvIsUp),
@@ -115,6 +127,8 @@ pub enum Message {
     CreateChannel(CreateChannel),
     CreateChannelResponse(CreateChannelResponse),
     AccessRights(AccessRights),
+    ClientName(ClientName),
+    HostName(HostName),
     Echo,
 }
 
@@ -160,6 +174,8 @@ impl Message {
             6 => Self::Search(Search::parse(input)?.1),
             18 => Self::CreateChannel(CreateChannel::parse(input)?.1),
             23 => Self::Echo,
+            20 => Self::ClientName(ClientName::parse(input)?.1),
+            21 => Self::HostName(HostName::parse(input)?.1),
             unknown => Err(MessageError::UnknownCommandId(unknown))?,
         })
     }
@@ -174,6 +190,8 @@ impl Message {
             Self::CreateChannel(msg) => msg.write(writer),
             Self::CreateChannelResponse(msg) => msg.write(writer),
             Self::AccessRights(msg) => msg.write(writer),
+            Self::ClientName(msg) => msg.write(writer),
+            Self::HostName(msg) => msg.write(writer),
         }
     }
 }
@@ -197,7 +215,7 @@ fn check_known_protocol<I>(version: u16, input: I) -> Result<(), Err<nom::error:
     }
 }
 
-fn padded_string(length: usize) -> impl FnMut(&[u8]) -> IResult<&[u8], String> {
+fn padded_string(length: usize) -> impl for<'a> FnMut(&'a [u8]) -> IResult<&'a [u8], String> {
     move |input| {
         let (input, raw_string) = take(length)(input)?;
         let strlen = raw_string.iter().position(|&c| c == 0x00).unwrap_or(length);
@@ -718,6 +736,61 @@ impl CAMessage for Echo {
     }
 }
 
+#[derive(Debug)]
+pub struct ClientName(String);
+
+impl CAMessage for ClientName {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, message) = RawMessage::parse_id(20, input)?;
+        // Unwrapping here as otherwise it might return a reference to the (local) message
+        // - we _know_ that the data is limited by vec length so this should not be an issue...
+        let (_, client_name) = padded_string(message.payload.len())(&message.payload).unwrap();
+
+        Ok((input, ClientName(client_name)))
+    }
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 20,
+            payload: pad_string(&self.0),
+            ..Default::default()
+        }
+        .write(writer)
+    }
+}
+
+#[derive(Debug)]
+pub struct HostName(String);
+
+impl CAMessage for HostName {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, message) = RawMessage::parse_id(21, input)?;
+        // Unwrapping here as otherwise it might return a reference to the (local) message
+        // - we _know_ that the data is limited by vec length so this should not be an issue...
+        let (_, client_name) = padded_string(message.payload.len())(&message.payload).unwrap();
+
+        Ok((input, HostName(client_name)))
+    }
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 21,
+            payload: pad_string(&self.0),
+            ..Default::default()
+        }
+        .write(writer)
+    }
+}
+
+// impl CAMessage for HostName {}
+
+// pub struct HostName {
+//     pub name: String,
+// }
 enum ErrorSeverity {
     Warning = 0,
     Success = 1,
