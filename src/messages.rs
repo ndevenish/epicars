@@ -29,6 +29,15 @@ pub trait CAMessage: TryFrom<RawMessage> {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
 }
 
+/// Represents the content of any message
+///
+/// This is via header parsing (accounting for large headers) and then
+/// automatically reading the payload. When writing, it will
+/// automatically pad the output payload to the correct multiple of 8
+/// bytes (although this will not avoid the necessity of adding a zero
+/// byte to the end of String).
+///
+/// Other messages can be parsed from a RawMessage with TryFrom<RawMessage>.
 #[derive(Default, Debug)]
 pub struct RawMessage {
     command: u16,
@@ -474,6 +483,7 @@ impl TryFrom<RawMessage> for Version {
         })
     }
 }
+
 impl CAMessage for Version {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
