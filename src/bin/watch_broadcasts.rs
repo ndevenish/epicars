@@ -1,3 +1,5 @@
+use std::io::ErrorKind;
+
 use epics::{
     messages::{self, parse_search_packet, RawMessage},
     new_reusable_udp_socket,
@@ -12,8 +14,17 @@ async fn main() {
     // let mut poll = mio::Poll::new().unwrap();
     // let mut events = mio::Events::with_capacity(128);
     tokio::spawn(async {
-        let socket_beacon =
-            UdpSocket::from_std(new_reusable_udp_socket("0.0.0.0:5065").unwrap()).unwrap();
+        let std_sock = match new_reusable_udp_socket("0.0.0.0:5065") {
+            Ok(x) => x,
+            Err(err) => match err.kind() {
+                ErrorKind::AddrInUse => {
+                    panic!("Error: Port 5065 already in use, without reuse flag. Is a caRepeater running?");
+                }
+                x => panic!("IO Error: {}", x),
+            },
+        };
+
+        let socket_beacon = UdpSocket::from_std(std_sock).unwrap();
 
         loop {
             read_socket(&socket_beacon).await;
