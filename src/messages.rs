@@ -114,7 +114,7 @@ impl CAMessage for RawMessage {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         // Ensure that the payload is padded out to 8 byte multiple -
         // the protocol requires this.
-        let payload_size = self.payload.len().div_ceil(8);
+        let payload_size = self.payload.len().div_ceil(8) * 8;
 
         writer.write_all(&self.command.to_be_bytes())?;
         if payload_size < 0xFFFF && self.field_2_data_count <= 0xFFFF {
