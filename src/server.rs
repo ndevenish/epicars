@@ -178,7 +178,7 @@ impl Server {
         let listen_port = connection_socket.local_addr().unwrap().port();
 
         self.listen_for_searches(listen_port);
-        self.broadcast_beacons(listen_port).await?;
+        // self.broadcast_beacons(listen_port).await?;
         self.handle_tcp_connections(connection_socket);
 
         Ok(())
