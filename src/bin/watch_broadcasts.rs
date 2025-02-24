@@ -1,8 +1,5 @@
-use nom::error::Error;
-use nom::Finish;
-
 use epics::{
-    messages::{parse_search_packet, CAMessage, RsrvIsUp},
+    messages::{self, parse_search_packet, RawMessage},
     new_reusable_udp_socket,
 };
 use tokio::{net::UdpSocket, task::yield_now};
@@ -43,35 +40,47 @@ async fn read_socket(socket: &UdpSocket) {
     while let Ok((size, sender)) = socket.recv_from(&mut buf).await {
         let msg_buf = &buf[..size];
 
-        if let Ok((_, command)) = nom::number::complete::be_u16::<_, Error<_>>(msg_buf).finish() {
-            // Process the command here
-            if command == 13 {
-                if let Ok((_, beacon)) = RsrvIsUp::parse(msg_buf) {
+        if let Ok((leftover, raw)) = RawMessage::parse(msg_buf) {
+            match raw.command {
+                0 => {
+                    if let Ok(searches) = parse_search_packet(msg_buf) {
+                        println!(
+                            "Received SEARCH for {} names from {sender}: {}",
+                            searches.len(),
+                            searches
+                                .iter()
+                                .map(|x| x.channel_name.clone())
+                                .collect::<Vec<String>>()
+                                .join(" ")
+                        );
+                    } else {
+                        println!("Receied code 0 CA_PROTO_VERSION packet from {sender} but we don't understand the contents");
+                    }
+                }
+                13 => {
+                    let beacon: messages::RsrvIsUp = raw.try_into().unwrap();
                     println!(
                         "Received BEACON {}:{} from {sender}",
                         beacon.server_ip.map(|f| f.into()).unwrap_or(sender.ip()),
                         beacon.server_port
                     );
-                } else {
-                    println!("Received INVALID Beacon from {sender}: {:?}", msg_buf);
+                    if !leftover.is_empty() {
+                        println!(
+                            "Warning: After parsing BEACON, {} bytes were remaining",
+                            leftover.len()
+                        )
+                    }
                 }
-            } else if command == 0 && size > 16 {
-                if let Ok(searches) = parse_search_packet(msg_buf) {
-                    println!(
-                        "Received SEARCH for {} names from {sender}: {}",
-                        searches.len(),
-                        searches
-                            .iter()
-                            .map(|x| x.channel_name.clone())
-                            .collect::<Vec<String>>()
-                            .join(" ")
-                    );
-                } else {
-                    println!("Receied code 0 CA_PROTO_VERSION packet from {sender} but we don't understand the contents");
+                _ => {
+                    println!()
                 }
             }
         } else {
-            println!("Receieved {size} byte packet from {sender}");
+            println!(
+                "Got an error parsing a raw message; was it a real CA message? {:x?}",
+                msg_buf
+            );
+            break;
         }
     }
 }

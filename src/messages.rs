@@ -8,7 +8,7 @@ use std::{
 use nom::{
     bytes::complete::take,
     combinator::all_consuming,
-    error::{Error, ErrorKind},
+    error::{Error, ErrorKind, ParseError},
     multi::many0,
     number::complete::{be_u16, be_u32},
     Err, Finish, IResult, Parser,
@@ -36,7 +36,7 @@ pub trait CAMessage: TryFrom<RawMessage> {
 /// Other messages can be parsed from a RawMessage with TryFrom<RawMessage>.
 #[derive(Default, Debug)]
 pub struct RawMessage {
-    command: u16,
+    pub command: u16,
     field_1_data_type: u16,
     field_2_data_count: u32,
     field_3_parameter_1: u32,
@@ -114,7 +114,7 @@ impl RawMessage {
             Err(MessageError::IncorrectCommandId(self.command, id))
         }
     }
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    pub fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
         Self: Sized,
     {
@@ -201,7 +201,7 @@ where
 {
     let (i, r) = RawMessage::parse(input)
         .map_err(|e| nom::Err::Error(MessageError::ParsingError(e.to_owned())))?;
-    let v = r.try_into().map_err(|e| nom::Err::Error(e))?;
+    let v = r.try_into().map_err(nom::Err::Error)?;
     Ok((i, v))
 }
 
@@ -242,6 +242,23 @@ impl From<nom::Err<nom::error::Error<&[u8]>>> for MessageError {
     }
 }
 
+impl ParseError<&[u8]> for MessageError {
+    fn from_error_kind(input: &[u8], kind: ErrorKind) -> Self {
+        MessageError::ParsingError(nom::Err::Error(nom::error::Error::from_error_kind(
+            input.to_vec(),
+            kind,
+        )))
+    }
+    fn append(input: &[u8], kind: ErrorKind, _other: Self) -> Self {
+        Self::from_error_kind(input, kind)
+    }
+    fn from_char(input: &[u8], _: char) -> Self {
+        Self::from_error_kind(input, ErrorKind::Char)
+    }
+    fn or(self, other: Self) -> Self {
+        other
+    }
+}
 impl Message {
     /// Parse message sent to the server, directly from a TCP stream
     ///
@@ -596,7 +613,9 @@ pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, MessageError> {
     // Starts with a version packet
     let (input, _) = parse_message::<Version>(input).finish()?;
     // Then a stream of multiple messages
-    let (_, messages) = all_consuming(many0(Search::parse)).parse(input).finish()?;
+    let (_, messages) = all_consuming(many0(parse_message::<Search>))
+        .parse(input)
+        .finish()?;
 
     Ok(messages)
 }
