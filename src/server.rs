@@ -36,6 +36,7 @@ enum SingleOrVec<T> {
     Single(T),
     Vector(Vec<T>),
 }
+
 struct NumericDBR<T> {
     status: i16,
     severity: i16,
@@ -80,11 +81,11 @@ struct EnumDBR {
 enum Dbrid {
     String = 0,
     Int = 1,
-    Short = 2,
-    Float = 3,
-    Enum = 4,
-    Char = 5,
-    Long = 6,
+    Float = 2,
+    Enum = 3,
+    Char = 4,
+    Long = 5,
+    Double = 6,
 }
 
 /// Mapping of DBR categories
@@ -104,94 +105,6 @@ enum Dbr {
     Long(NumericDBR<i32>),
     Float(NumericDBR<f32>),
     Double(NumericDBR<f64>),
-}
-
-struct Circuit {
-    last_message: Instant,
-    /// We must have this for the circuit to count as ready
-    client_version: Option<u16>,
-    client_host_name: Option<String>,
-    client_user_name: Option<String>,
-    client_events_on: bool,
-    library: ChannelLibrary,
-}
-
-struct Channel {
-    name: String,
-    client_id: u32,
-    server_id: u32,
-}
-impl Circuit {
-    async fn start(mut stream: TcpStream, library: ChannelLibrary) {
-        println!("Starting circuit with {:?}", stream.peer_addr());
-        let mut circuit = Circuit {
-            last_message: Instant::now(),
-            client_version: None,
-            client_host_name: None,
-            client_user_name: None,
-            client_events_on: true,
-            library,
-        };
-        // Immediately send a Version message
-        println!("Sending VERSION");
-        stream
-            .write_all(messages::Version::default().as_bytes().as_ref())
-            .await
-            .unwrap();
-        // Immediately receive a Version message from the client
-        println!("Waiting for server message");
-        match Message::read_server_message(&mut stream).await.unwrap() {
-            Message::Version(v) => circuit.client_version = Some(v.protocol_version),
-            _ => {
-                // This is an error, we cannot receive anything until we get this
-                panic!("Got unexpected message when expecting client version");
-            }
-        }
-        println!("Got client version: {}", circuit.client_version.unwrap());
-        // Now, everything else is based on responding to events
-        loop {
-            let message = match Message::read_server_message(&mut stream).await {
-                Ok(message) => message,
-                Err(err) => match err {
-                    MessageError::IO(io) => {
-                        // Just fail the circuit completely, could inspect io.kind later
-                        println!("IO Error reading server message: {}", io);
-                        break;
-                    }
-                    MessageError::UnknownCommandId(id) => {
-                        println!("Error: Receieved unknown command id: {id}");
-                        continue;
-                    }
-                    MessageError::ParsingError(msg) => {
-                        println!("Error: Incoming message parse error: {}", msg);
-                        continue;
-                    }
-                },
-            };
-            match message {
-                Message::Echo => {
-                    let mut reply_buf = Cursor::new(Vec::new());
-                    messages::Echo.write(&mut reply_buf).unwrap();
-                    stream.write_all(&reply_buf.into_inner()).await.unwrap();
-                }
-                Message::ClientName(name) if circuit.client_user_name.is_none() => {
-                    println!("Got client username: {}", name.name);
-                    circuit.client_user_name = Some(name.name);
-                }
-                Message::HostName(name) if circuit.client_host_name.is_none() => {
-                    println!("Got client hostname: {}", name.name);
-                    circuit.client_host_name = Some(name.name);
-                }
-                Message::CreateChannel(chan) => {
-                    println!("Got request to create channel to: {}", chan.channel_name);
-                }
-                msg => panic!("Unexpected message: {:?}", msg),
-            };
-        }
-        // If out here, we are closing the channel
-        println!("Closing channel");
-        let _ = stream.shutdown().await;
-    }
 }
 
 type ChannelLibrary = Arc<Mutex<HashMap<String, Dbr>>>;
@@ -368,5 +281,94 @@ impl Server {
                 });
             }
         });
+    }
+}
+
+struct Circuit {
+    last_message: Instant,
+    /// We must have this for the circuit to count as ready
+    client_version: Option<u16>,
+    client_host_name: Option<String>,
+    client_user_name: Option<String>,
+    client_events_on: bool,
+    library: ChannelLibrary,
+}
+
+struct Channel {
+    name: String,
+    client_id: u32,
+    server_id: u32,
+}
+
+impl Circuit {
+    async fn start(mut stream: TcpStream, library: ChannelLibrary) {
+        println!("Starting circuit with {:?}", stream.peer_addr());
+        let mut circuit = Circuit {
+            last_message: Instant::now(),
+            client_version: None,
+            client_host_name: None,
+            client_user_name: None,
+            client_events_on: true,
+            library,
+        };
+        // Immediately send a Version message
+        println!("Sending VERSION");
+        stream
+            .write_all(messages::Version::default().as_bytes().as_ref())
+            .await
+            .unwrap();
+        // Immediately receive a Version message from the client
+        println!("Waiting for server message");
+        match Message::read_server_message(&mut stream).await.unwrap() {
+            Message::Version(v) => circuit.client_version = Some(v.protocol_version),
+            _ => {
+                // This is an error, we cannot receive anything until we get this
+                panic!("Got unexpected message when expecting client version");
+            }
+        }
+        println!("Got client version: {}", circuit.client_version.unwrap());
+        // Now, everything else is based on responding to events
+        loop {
+            let message = match Message::read_server_message(&mut stream).await {
+                Ok(message) => message,
+                Err(err) => match err {
+                    MessageError::IO(io) => {
+                        // Just fail the circuit completely, could inspect io.kind later
+                        println!("IO Error reading server message: {}", io);
+                        break;
+                    }
+                    MessageError::UnknownCommandId(id) => {
+                        println!("Error: Receieved unknown command id: {id}");
+                        continue;
+                    }
+                    MessageError::ParsingError(msg) => {
+                        println!("Error: Incoming message parse error: {}", msg);
+                        continue;
+                    }
+                },
+            };
+            match message {
+                Message::Echo => {
+                    let mut reply_buf = Cursor::new(Vec::new());
+                    messages::Echo.write(&mut reply_buf).unwrap();
+                    stream.write_all(&reply_buf.into_inner()).await.unwrap();
+                }
+                Message::ClientName(name) if circuit.client_user_name.is_none() => {
+                    println!("Got client username: {}", name.name);
+                    circuit.client_user_name = Some(name.name);
+                }
+                Message::HostName(name) if circuit.client_host_name.is_none() => {
+                    println!("Got client hostname: {}", name.name);
+                    circuit.client_host_name = Some(name.name);
+                }
+                Message::CreateChannel(chan) => {
+                    println!("Got request to create channel to: {}", chan.channel_name);
+                }
+                msg => panic!("Unexpected message: {:?}", msg),
+            };
+        }
+        // If out here, we are closing the channel
+        println!("Closing channel");
+        let _ = stream.shutdown().await;
     }
 }
