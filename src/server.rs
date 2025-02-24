@@ -349,27 +349,28 @@ impl Circuit {
                         continue;
                     }
                     MessageError::UnexpectedMessage(msg) => {
-                        println!("Error: Got valid but unexpected message from client: {msg:?}");
+                        println!("Error: Got message from client that is invalid to receive on a server: {msg:?}");
                         continue;
                     }
                 },
             };
-            circuit.handle_message(message).await;
+            if let Err(MessageError::UnexpectedMessage(msg)) = circuit.handle_message(message).await
+            {
+                println!("Error: Unexpected message: {:?}", msg);
+                continue;
+            }
         }
         // If out here, we are closing the channel
         println!("Closing channel");
         let _ = circuit.stream.shutdown().await;
     }
 
-    async fn handle_message(&mut self, message: Message) {
+    async fn handle_message(&mut self, message: Message) -> Result<(), MessageError> {
         match message {
             Message::Echo => {
                 let mut reply_buf = Cursor::new(Vec::new());
                 messages::Echo.write(&mut reply_buf).unwrap();
-                self.stream
-                    .write_all(&reply_buf.into_inner())
-                    .await
-                    .unwrap();
+                self.stream.write_all(&reply_buf.into_inner()).await?
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {
                 println!("Got client username: {}", name.name);
@@ -382,7 +383,8 @@ impl Circuit {
             Message::CreateChannel(chan) => {
                 println!("Got request to create channel to: {}", chan.channel_name);
             }
-            msg => panic!("Unexpected message: {:?}", msg),
+            msg => return Err(MessageError::UnexpectedMessage(msg)),
         };
+        Ok(())
     }
 }
