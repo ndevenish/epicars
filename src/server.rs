@@ -77,26 +77,6 @@ struct EnumDBR {
     value: u16,
 }
 
-/// Basic DBR Data types, independent of category
-enum Dbrid {
-    String = 0,
-    Int = 1,
-    Float = 2,
-    Enum = 3,
-    Char = 4,
-    Long = 5,
-    Double = 6,
-}
-
-/// Mapping of DBR categories
-enum DBRCategory {
-    Basic = 0,
-    Status = 1,
-    Time = 2,
-    Graphics = 3,
-    Control = 4,
-}
-
 enum Dbr {
     Enum(EnumDBR),
     String(StringDBR),
@@ -352,6 +332,7 @@ impl Circuit {
                         println!("Error: Got message from client that is invalid to receive on a server: {msg:?}");
                         continue;
                     }
+                    MessageError::IncorrectCommandId(msg) => panic!("Fatal error: Got {msg}"),
                 },
             };
             if let Err(MessageError::UnexpectedMessage(msg)) = circuit.handle_message(message).await

@@ -30,7 +30,7 @@ struct RawMessage {
 }
 
 impl RawMessage {
-    /// Parse a Header, but check that it matches the expected tag
+    /// Parse an entire message, but check that it matches the expected tag
     fn parse_id(command_id: u16, input: &[u8]) -> IResult<&[u8], RawMessage> {
         let (input, result) = RawMessage::parse(input)?;
         if result.command != command_id {
@@ -38,7 +38,54 @@ impl RawMessage {
         }
         Ok((input, result))
     }
+
+    async fn read(source: &mut TcpStream) -> Result<RawMessage, MessageError> {
+        let mut data = vec![0u8; 16];
+        source.read_exact(data.as_mut_slice()).await?;
+        let (input, (command, payload_size, field_1)) = (
+            be_u16::<&[u8], nom::error::Error<&[u8]>>,
+            be_u16,
+            be_u16::<&[u8], nom::error::Error<&[u8]>>,
+        )
+            .parse(data.as_slice())?;
+
+        // Handle packets that could be large
+        if payload_size == 0xFFFF {
+            let (_, (_, field_3, field_4, payload_size, field_2)) = (
+                take::<usize, &[u8], nom::error::Error<&[u8]>>(2usize),
+                be_u32,
+                be_u32,
+                be_u32,
+                be_u32,
+            )
+                .parse(input)?;
+            let mut payload = vec![0u8; payload_size as usize];
+            source.read_exact(&mut payload).await?;
+            Ok(RawMessage {
+                command,
+                field_1_data_type: field_1,
+                field_2_data_count: field_2,
+                field_3_parameter_1: field_3,
+                field_4_parameter_2: field_4,
+                payload,
+            })
+        } else {
+            let (_, (field_2, field_3, field_4)) =
+                (be_u16::<&[u8], nom::error::Error<&[u8]>>, be_u32, be_u32).parse(input)?;
+            let mut payload = vec![0u8; payload_size as usize];
+            source.read_exact(&mut payload).await?;
+            Ok(RawMessage {
+                command,
+                field_1_data_type: field_1,
+                field_2_data_count: field_2 as u32,
+                field_3_parameter_1: field_3,
+                field_4_parameter_2: field_4,
+                payload,
+            })
+        }
+    }
 }
+
 impl CAMessage for RawMessage {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         // Ensure that the payload is padded out to 8 byte multiple -
@@ -129,6 +176,7 @@ pub enum Message {
     AccessRights(AccessRights),
     ClientName(ClientName),
     HostName(HostName),
+    ServerDisconnect(ServerDisconnect),
     Echo,
 }
 
@@ -142,6 +190,8 @@ pub enum MessageError {
     UnknownCommandId(u16),
     #[error("Got a valid message but is not valid at this state: {0:?}")]
     UnexpectedMessage(Message),
+    #[error("Message command ID does not match expected")]
+    IncorrectCommandId(u16),
 }
 
 impl From<nom::Err<nom::error::Error<&[u8]>>> for MessageError {
@@ -181,6 +231,9 @@ impl Message {
             unknown => Err(MessageError::UnknownCommandId(unknown))?,
         })
     }
+    // pub async fn read_client_message(source: &mut TcpStream) -> Result<Self, MessageError> {
+    //     // let message = RawMessage::
+    // }
 
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         match self {
@@ -194,6 +247,7 @@ impl Message {
             Self::AccessRights(msg) => msg.write(writer),
             Self::ClientName(msg) => msg.write(writer),
             Self::HostName(msg) => msg.write(writer),
+            Self::ServerDisconnect(msg) => msg.write(writer),
         }
     }
 }
@@ -207,6 +261,77 @@ pub trait CAMessage {
         Self: Sized;
 
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
+}
+
+/// Basic DBR Data types, independent of category
+#[derive(Debug, Copy, Clone)]
+pub enum DBRBasicType {
+    String = 0,
+    Int = 1,
+    Float = 2,
+    Enum = 3,
+    Char = 4,
+    Long = 5,
+    Double = 6,
+}
+impl TryFrom<u16> for DBRBasicType {
+    type Error = ();
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            x if x == Self::String as u16 => Ok(Self::String),
+            x if x == Self::Int as u16 => Ok(Self::Int),
+            x if x == Self::Float as u16 => Ok(Self::Float),
+            x if x == Self::Enum as u16 => Ok(Self::Enum),
+            x if x == Self::Char as u16 => Ok(Self::Char),
+            x if x == Self::Long as u16 => Ok(Self::Long),
+            x if x == Self::Double as u16 => Ok(Self::Double),
+            _ => Err(()),
+        }
+    }
+}
+/// Mapping of DBR categories
+#[derive(Debug, Copy, Clone)]
+pub enum DBRCategory {
+    Basic = 0,
+    Status = 1,
+    Time = 2,
+    Graphics = 3,
+    Control = 4,
+}
+impl TryFrom<u16> for DBRCategory {
+    type Error = ();
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            x if x == Self::Basic as u16 => Ok(Self::Basic),
+            x if x == Self::Status as u16 => Ok(Self::Status),
+            x if x == Self::Time as u16 => Ok(Self::Time),
+            x if x == Self::Graphics as u16 => Ok(Self::Graphics),
+            x if x == Self::Control as u16 => Ok(Self::Control),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct DBRType {
+    basic_type: DBRBasicType,
+    category: DBRCategory,
+}
+
+impl TryFrom<u16> for DBRType {
+    type Error = ();
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Ok(Self {
+            basic_type: (value % 7).try_into()?,
+            category: (value / 7).try_into()?,
+        })
+    }
+}
+
+impl From<DBRType> for u16 {
+    fn from(value: DBRType) -> Self {
+        value.category as u16 * 7 + value.basic_type as u16
+    }
 }
 
 fn check_known_protocol<I>(version: u16, input: I) -> Result<(), Err<nom::error::Error<I>>> {
@@ -621,7 +746,7 @@ impl CAMessage for CreateChannel {
 
 #[derive(Debug)]
 pub struct CreateChannelResponse {
-    data_type: u16,
+    data_type: DBRType,
     data_count: u32,
     client_id: u32,
     server_id: u32,
@@ -636,7 +761,7 @@ impl CAMessage for CreateChannelResponse {
         Ok((
             input,
             CreateChannelResponse {
-                data_type: header.field_1_data_type,
+                data_type: header.field_1_data_type.try_into().unwrap(),
                 data_count: header.field_2_data_count,
                 client_id: header.field_3_parameter_1,
                 server_id: header.field_4_parameter_2,
@@ -647,7 +772,7 @@ impl CAMessage for CreateChannelResponse {
         Header {
             command: 18,
             payload_size: 0,
-            field_1_data_type: self.data_type,
+            field_1_data_type: self.data_type.into(),
             field_2_data_count: self.data_count,
             field_3_parameter_1: self.client_id,
             field_4_parameter_2: self.server_id,
@@ -791,6 +916,49 @@ impl CAMessage for HostName {
         .write(writer)
     }
 }
+
+#[derive(Debug)]
+pub struct ServerDisconnect {
+    client_id: u32,
+}
+
+impl CAMessage for ServerDisconnect {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, header) = RawMessage::parse_id(27, input)?;
+        Ok((
+            input,
+            ServerDisconnect {
+                client_id: header.field_3_parameter_1,
+            },
+        ))
+    }
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        Header {
+            command: 27,
+            field_3_parameter_1: self.client_id,
+            ..Default::default()
+        }
+        .write(writer)
+    }
+}
+
+impl TryFrom<RawMessage> for ServerDisconnect {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        if value.command != 27 {
+            return Err(MessageError::IncorrectCommandId(value.command));
+        }
+        Ok(Self {
+            client_id: value.field_3_parameter_1,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct ClearChannel {}
 
 enum ErrorSeverity {
     Warning = 0,
