@@ -84,6 +84,13 @@ impl RawMessage {
             })
         }
     }
+    fn payload_as_string(&self) -> String {
+        let input = self.payload.as_slice();
+        padded_string(input.len())(input).unwrap().1
+    }
+    fn payload_size(&self) -> usize {
+        self.payload.len()
+    }
 }
 
 impl CAMessage for RawMessage {
@@ -209,19 +216,15 @@ impl Message {
     /// so it is impossible to tell which is which purely from the
     /// contents of the message.
     pub async fn read_server_message(source: &mut TcpStream) -> Result<Self, MessageError> {
-        let mut header_buffer = vec![0; 16];
-        source.read_exact(header_buffer.as_mut_slice()).await?;
-        let (_, header) = Header::parse(&header_buffer).map_err(|_| {
-            io::Error::new(std::io::ErrorKind::InvalidData, "Failed to read header")
-        })?;
-        // Resize the buffer to hold the message payload
-        header_buffer.resize(16 + header.payload_size as usize, 0);
-        source.read_exact(&mut header_buffer[16..]).await.unwrap();
+        let message = RawMessage::read(source).await?;
 
-        // Read the message differently depending on what it is
-        let input = header_buffer.as_slice();
+        // Until everything implements TryFrom<RawMessage>...
+        let mut buf = Cursor::new(Vec::new());
+        message.write(&mut buf).unwrap();
+        let buf = buf.into_inner();
+        let input = buf.as_slice();
 
-        Ok(match header.command {
+        Ok(match message.command {
             0 => Self::Version(Version::parse(input)?.1),
             6 => Self::Search(Search::parse(input)?.1),
             18 => Self::CreateChannel(CreateChannel::parse(input)?.1),
@@ -393,17 +396,17 @@ impl CAMessage for RsrvIsUp {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse_id(0x0D, input)?;
+        let (input, raw) = RawMessage::parse_id(0x0D, input)?;
         Ok((
             input,
             RsrvIsUp {
-                server_port: header.field_2_data_count as u16,
-                beacon_id: header.field_3_parameter_1,
-                server_ip: match header.field_4_parameter_2 {
+                server_port: raw.field_2_data_count as u16,
+                beacon_id: raw.field_3_parameter_1,
+                server_ip: match raw.field_4_parameter_2 {
                     0u32 => None,
-                    _ => Some(Ipv4Addr::from(header.field_4_parameter_2)),
+                    _ => Some(Ipv4Addr::from(raw.field_4_parameter_2)),
                 },
-                protocol_version: header.field_1_data_type,
+                protocol_version: raw.field_1_data_type,
             },
         ))
     }
@@ -448,7 +451,7 @@ impl CAMessage for Version {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse_id(0x00, input)?;
+        let (input, header) = RawMessage::parse_id(0x00, input)?;
         Ok((
             input,
             Version {
@@ -458,107 +461,13 @@ impl CAMessage for Version {
         ))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        Header {
+        RawMessage {
             command: 0,
-            payload_size: 0,
             field_1_data_type: self.priority,
             field_2_data_count: EPICS_VERSION as u32,
-            field_3_parameter_1: 0,
-            field_4_parameter_2: 0,
+            ..Default::default()
         }
         .write(writer)
-    }
-}
-
-#[derive(Debug, Default)]
-struct Header {
-    command: u16,
-    payload_size: u32,
-    field_1_data_type: u16,
-    field_2_data_count: u32,
-    field_3_parameter_1: u32,
-    #[allow(dead_code)]
-    field_4_parameter_2: u32,
-}
-
-impl Header {
-    /// Parse a Header, but check that it matches the expected tag
-    fn parse_id(command_id: u16, input: &[u8]) -> IResult<&[u8], Header> {
-        let (input, result) = Header::parse(input)?;
-        if result.command != command_id {
-            return Err(Err::Error(Error::new(input, ErrorKind::Tag)));
-        }
-        Ok((input, result))
-    }
-    /// Size of header from a stream
-    fn size() -> usize {
-        16
-    }
-}
-
-impl CAMessage for Header {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        writer.write_all(&self.command.to_be_bytes())?;
-        if self.payload_size < 0xFFFF && self.field_2_data_count <= 0xFFFF {
-            writer.write_all(&(self.payload_size as u16).to_be_bytes())?;
-            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
-            writer.write_all(&(self.field_2_data_count as u16).to_be_bytes())?;
-            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
-            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
-        } else {
-            writer.write_all(&0xFFFFu32.to_be_bytes())?;
-            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
-            writer.write_all(&[0x0000])?;
-            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
-            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
-            writer.write_all(&self.payload_size.to_be_bytes())?;
-            writer.write_all(&self.field_2_data_count.to_be_bytes())?;
-        }
-        Ok(())
-    }
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, command) = be_u16(input)?;
-        let (input, payload) = be_u16(input)?;
-        // "Data Type" is always here, even in large packet headers
-        let (input, field_1) = be_u16(input)?;
-
-        // Handle packets that could be large
-        if payload == 0xFFFF {
-            let (input, _) = take(2usize)(input)?;
-            let (input, field_3) = be_u32(input)?;
-            let (input, field_4) = be_u32(input)?;
-            let (input, payload) = be_u32(input)?;
-            let (input, field_2) = be_u32(input)?;
-            Ok((
-                input,
-                Header {
-                    command,
-                    payload_size: payload,
-                    field_1_data_type: field_1,
-                    field_2_data_count: field_2,
-                    field_3_parameter_1: field_3,
-                    field_4_parameter_2: field_4,
-                },
-            ))
-        } else {
-            let (input, field_2) = be_u16(input)?;
-            let (input, field_3) = be_u32(input)?;
-            let (input, field_4) = be_u32(input)?;
-            Ok((
-                input,
-                Header {
-                    command,
-                    payload_size: payload as u32,
-                    field_1_data_type: field_1,
-                    field_2_data_count: field_2 as u32,
-                    field_3_parameter_1: field_3,
-                    field_4_parameter_2: field_4,
-                },
-            ))
-        }
     }
 }
 
@@ -593,37 +502,28 @@ impl Search {
 
 impl CAMessage for Search {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        let padded_name = pad_string(&self.channel_name);
-        Header {
+        RawMessage {
             command: 6,
-            payload_size: padded_name.len() as u32,
             field_1_data_type: if self.should_reply { 10 } else { 5 },
             field_2_data_count: EPICS_VERSION as u32,
             field_3_parameter_1: self.search_id,
             field_4_parameter_2: self.search_id,
+            payload: pad_string(&self.channel_name),
         }
-        .write(writer)?;
-        writer.write_all(&padded_name)?;
-        Ok(())
+        .write(writer)
     }
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse_id(0x06, input)?;
-
-        let should_reply = header.field_1_data_type == 10;
-        let protocol_version = header.field_2_data_count as u16;
-        let search_id = header.field_3_parameter_1;
-        let (input, channel_name) = padded_string(header.payload_size as usize)(input)?;
-
+        let raw = RawMessage::parse_id(0x06, input)?.1;
         Ok((
             input,
             Search {
-                should_reply,
-                search_id,
-                channel_name,
-                protocol_version,
+                should_reply: raw.field_1_data_type == 10,
+                protocol_version: raw.field_2_data_count as u16,
+                search_id: raw.field_3_parameter_1,
+                channel_name: raw.payload_as_string(),
             },
         ))
     }
@@ -644,7 +544,7 @@ impl CAMessage for SearchResponse {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse_id(0x06, input)?;
+        let (input, header) = RawMessage::parse_id(0x06, input)?;
 
         let mut response = SearchResponse {
             port_number: header.field_1_data_type,
@@ -655,10 +555,11 @@ impl CAMessage for SearchResponse {
             search_id: header.field_4_parameter_2,
             protocol_version: None,
         };
-        assert!(header.payload_size == 0 || header.payload_size == 8);
-        if header.payload_size == 8 {
-            let (input, version) = be_u16(input)?;
-            let (input, _) = take(6usize)(input)?;
+        assert!(header.payload_size() == 0 || header.payload_size() == 8);
+        if header.payload_size() == 8 {
+            let (_, version) =
+                be_u16::<&[u8], nom::error::Error<&[u8]>>(header.payload.as_slice()).unwrap();
+            // let (input, _) = take(6usize)(input)?;
             response.protocol_version = Some(version);
             Ok((input, response))
         } else {
@@ -666,13 +567,8 @@ impl CAMessage for SearchResponse {
         }
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        Header {
+        RawMessage {
             command: 0x06,
-            payload_size: if self.protocol_version.is_some() {
-                8
-            } else {
-                0
-            },
             field_1_data_type: self.port_number,
             field_2_data_count: 0,
             field_3_parameter_1: match self.server_ip {
@@ -680,14 +576,12 @@ impl CAMessage for SearchResponse {
                 Some(ip) => ip.to_bits(),
             },
             field_4_parameter_2: self.search_id,
+            payload: match self.protocol_version {
+                None => Vec::new(),
+                Some(v) => v.to_be_bytes().to_vec(),
+            },
         }
-        .write(writer)?;
-        // If we set a protocol version, that goes in the payload
-        if let Some(version) = self.protocol_version {
-            writer.write_all(&version.to_be_bytes())?;
-            writer.write_all(&[0, 0, 0, 0, 0, 0])?;
-        }
-        Ok(())
+        .write(writer)
     }
 }
 
@@ -716,31 +610,26 @@ impl CAMessage for CreateChannel {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse_id(18, input)?;
-        let (input, channel_name) = padded_string(header.payload_size as usize)(input)?;
+        let (input, header) = RawMessage::parse_id(18, input)?;
         Ok((
             input,
             CreateChannel {
                 client_id: header.field_3_parameter_1,
                 protocol_version: header.field_4_parameter_2,
-                channel_name,
+                channel_name: header.payload_as_string(),
             },
         ))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        let payload_size = (self.channel_name.len() + 1).div_ceil(8) as u32;
-        let channel_name = pad_string(&self.channel_name);
-        Header {
+        RawMessage {
             command: 18,
-            payload_size,
             field_1_data_type: 0,
             field_2_data_count: 0,
             field_3_parameter_1: self.client_id,
             field_4_parameter_2: self.protocol_version,
+            payload: pad_string(&self.channel_name),
         }
-        .write(writer)?;
-        writer.write_all(&channel_name)?;
-        Ok(())
+        .write(writer)
     }
 }
 
@@ -757,7 +646,7 @@ impl CAMessage for CreateChannelResponse {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse_id(18, input)?;
+        let (input, header) = RawMessage::parse_id(18, input)?;
         Ok((
             input,
             CreateChannelResponse {
@@ -769,13 +658,13 @@ impl CAMessage for CreateChannelResponse {
         ))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        Header {
+        RawMessage {
             command: 18,
-            payload_size: 0,
             field_1_data_type: self.data_type.into(),
             field_2_data_count: self.data_count,
             field_3_parameter_1: self.client_id,
             field_4_parameter_2: self.server_id,
+            ..Default::default()
         }
         .write(writer)
     }
@@ -819,7 +708,7 @@ impl CAMessage for AccessRights {
     where
         Self: Sized,
     {
-        let (input, header) = Header::parse_id(22, input)?;
+        let (input, header) = RawMessage::parse_id(22, input)?;
         Ok((
             input,
             AccessRights {
@@ -832,7 +721,7 @@ impl CAMessage for AccessRights {
         ))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        Header {
+        RawMessage {
             command: 22,
             field_3_parameter_1: self.client_id,
             field_4_parameter_2: self.access_rights as u32,
@@ -850,11 +739,11 @@ impl CAMessage for Echo {
     where
         Self: Sized,
     {
-        let (input, _) = Header::parse_id(23, input)?;
+        let (input, _) = RawMessage::parse_id(23, input)?;
         Ok((input, Echo))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        Header {
+        RawMessage {
             command: 23,
             ..Default::default()
         }
@@ -936,7 +825,7 @@ impl CAMessage for ServerDisconnect {
         ))
     }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        Header {
+        RawMessage {
             command: 27,
             field_3_parameter_1: self.client_id,
             ..Default::default()
