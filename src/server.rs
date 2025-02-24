@@ -15,79 +15,11 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    messages::{self, parse_search_packet, AsBytes, CAMessage, Message, MessageError},
+    messages::{
+        self, parse_search_packet, AsBytes, CAMessage, CreateChannel, Message, MessageError,
+    },
     new_reusable_udp_socket,
 };
-
-#[derive(Default)]
-struct Limits<T> {
-    upper: Option<T>,
-    lower: Option<T>,
-}
-
-#[derive(Default)]
-struct LimitSet<T> {
-    display_limits: Limits<T>,
-    warning_limits: Limits<T>,
-    alarm_limits: Limits<T>,
-}
-
-enum SingleOrVec<T> {
-    Single(T),
-    Vector(Vec<T>),
-}
-
-struct NumericDBR<T> {
-    status: i16,
-    severity: i16,
-    /// Only makes sense for FLOAT/DOUBLE, here to try and avoid duplication
-    precision: Option<u16>,
-    units: String,
-    limits: LimitSet<T>,
-    value: SingleOrVec<T>,
-    last_updated: Instant,
-}
-
-impl<T> Default for NumericDBR<T>
-where
-    T: Default,
-{
-    fn default() -> Self {
-        Self {
-            status: Default::default(),
-            severity: Default::default(),
-            precision: Default::default(),
-            units: Default::default(),
-            limits: Default::default(),
-            value: SingleOrVec::Single(T::default()),
-            last_updated: Instant::now(),
-        }
-    }
-}
-
-struct StringDBR {
-    status: i16,
-    severity: i16,
-    value: String,
-}
-struct EnumDBR {
-    status: i16,
-    severity: i16,
-    strings: HashMap<u16, String>,
-    value: u16,
-}
-
-enum Dbr {
-    Enum(EnumDBR),
-    String(StringDBR),
-    Char(NumericDBR<i8>),
-    Int(NumericDBR<i16>),
-    Long(NumericDBR<i32>),
-    Float(NumericDBR<f32>),
-    Double(NumericDBR<f64>),
-}
-
-type ChannelLibrary = Arc<Mutex<HashMap<String, Dbr>>>;
 
 pub struct Server {
     /// Broadcast port to sent beacons
@@ -101,7 +33,7 @@ pub struct Server {
     /// The beacon ID of the last beacon broadcast
     beacon_id: u32,
     circuits: Vec<Circuit>,
-    library: ChannelLibrary,
+    library: PVLibrary,
     shutdown: CancellationToken,
 }
 
@@ -114,7 +46,7 @@ impl Default for Server {
             last_beacon: Instant::now(),
             beacon_id: 0,
             circuits: Vec::new(),
-            library: ChannelLibrary::default(),
+            library: PVLibrary::default(),
             shutdown: CancellationToken::new(),
         }
     }
@@ -138,11 +70,11 @@ impl Server {
             beacon_port,
             ..Default::default()
         };
-        server
-            .library
-            .lock()
-            .unwrap()
-            .insert("something".to_string(), Dbr::Double(NumericDBR::default()));
+        // server
+        //     .library
+        //     .lock()
+        //     .unwrap()
+        //     .insert("something".to_string(), Dbr::Double(NumericDBR::default()));
 
         server.listen().await?;
         Ok(server)
@@ -270,14 +202,14 @@ struct Circuit {
     client_host_name: Option<String>,
     client_user_name: Option<String>,
     client_events_on: bool,
-    library: ChannelLibrary,
+    library: PVLibrary,
     stream: TcpStream,
+    channels: HashMap<u32, Channel>,
 }
 
 struct Channel {
     name: String,
     client_id: u32,
-    server_id: u32,
 }
 
 impl Circuit {
@@ -295,7 +227,7 @@ impl Circuit {
             }
         })
     }
-    async fn start(mut stream: TcpStream, library: ChannelLibrary) {
+    async fn start(mut stream: TcpStream, library: PVLibrary) {
         println!("Starting circuit with {:?}", stream.peer_addr());
         let client_version = Circuit::do_version_exchange(&mut stream).await.unwrap();
         println!("Got client version: {}", client_version);
@@ -308,6 +240,7 @@ impl Circuit {
             client_events_on: true,
             library,
             stream,
+            channels: HashMap::new(),
         };
         // Now, everything else is based on responding to events
         loop {
@@ -367,11 +300,101 @@ impl Circuit {
                 println!("Got client hostname: {}", name.name);
                 self.client_host_name = Some(name.name);
             }
-            Message::CreateChannel(chan) => {
-                println!("Got request to create channel to: {}", chan.channel_name);
+            Message::CreateChannel(message) => {
+                println!("Got request to create channel to: {}", message.channel_name);
+                let mut buffer = Vec::new();
+                for out_message in self.create_channel(message) {
+                    buffer.extend(out_message.as_bytes());
+                }
+                if !buffer.is_empty() {
+                    self.stream.write_all(&buffer).await?
+                }
             }
             msg => return Err(MessageError::UnexpectedMessage(msg)),
         };
         Ok(())
     }
+
+    fn create_channel(&mut self, message: CreateChannel) -> Vec<Message> {
+        let library = self.library.lock().unwrap();
+        if !library.contains_key(&message.channel_name) {
+            println!(
+                "Got a request for channel to '{}', which we do not have.",
+                message.channel_name
+            );
+            return vec![Message::CreateChannelFailure(message.respond_failure())];
+        }
+        Vec::new()
+    }
 }
+
+struct PV {}
+#[derive(Default)]
+struct Limits<T> {
+    upper: Option<T>,
+    lower: Option<T>,
+}
+
+#[derive(Default)]
+struct LimitSet<T> {
+    display_limits: Limits<T>,
+    warning_limits: Limits<T>,
+    alarm_limits: Limits<T>,
+}
+
+enum SingleOrVec<T> {
+    Single(T),
+    Vector(Vec<T>),
+}
+
+struct NumericDBR<T> {
+    status: i16,
+    severity: i16,
+    /// Only makes sense for FLOAT/DOUBLE, here to try and avoid duplication
+    precision: Option<u16>,
+    units: String,
+    limits: LimitSet<T>,
+    value: SingleOrVec<T>,
+    last_updated: Instant,
+}
+
+impl<T> Default for NumericDBR<T>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self {
+            status: Default::default(),
+            severity: Default::default(),
+            precision: Default::default(),
+            units: Default::default(),
+            limits: Default::default(),
+            value: SingleOrVec::Single(T::default()),
+            last_updated: Instant::now(),
+        }
+    }
+}
+
+struct StringDBR {
+    status: i16,
+    severity: i16,
+    value: String,
+}
+struct EnumDBR {
+    status: i16,
+    severity: i16,
+    strings: HashMap<u16, String>,
+    value: u16,
+}
+
+enum Dbr {
+    Enum(EnumDBR),
+    String(StringDBR),
+    Char(NumericDBR<i8>),
+    Int(NumericDBR<i16>),
+    Long(NumericDBR<i32>),
+    Float(NumericDBR<f32>),
+    Double(NumericDBR<f64>),
+}
+
+type PVLibrary = Arc<Mutex<HashMap<String, PV>>>;

@@ -213,13 +213,36 @@ pub enum Message {
     SearchResponse(SearchResponse),
     CreateChannel(CreateChannel),
     CreateChannelResponse(CreateChannelResponse),
+    CreateChannelFailure(CreateChannelFailure),
     AccessRights(AccessRights),
     ClientName(ClientName),
     HostName(HostName),
     ServerDisconnect(ServerDisconnect),
+    EventsOff,
+    EventsOn,
     Echo,
 }
 
+impl AsBytes for Message {
+    fn as_bytes(&self) -> Vec<u8> {
+        match self {
+            Message::Version(msg) => msg.as_bytes(),
+            Message::RsrvIsUp(msg) => msg.as_bytes(),
+            Message::Search(msg) => msg.as_bytes(),
+            Message::SearchResponse(msg) => msg.as_bytes(),
+            Message::CreateChannel(msg) => msg.as_bytes(),
+            Message::CreateChannelResponse(msg) => msg.as_bytes(),
+            Message::CreateChannelFailure(msg) => msg.as_bytes(),
+            Message::AccessRights(msg) => msg.as_bytes(),
+            Message::ClientName(msg) => msg.as_bytes(),
+            Message::HostName(msg) => msg.as_bytes(),
+            Message::ServerDisconnect(msg) => msg.as_bytes(),
+            Message::Echo => Echo.as_bytes(),
+            Message::EventsOff => EventsOff.as_bytes(),
+            Message::EventsOn => EventsOn.as_bytes(),
+        }
+    }
+}
 #[derive(Error, Debug)]
 pub enum MessageError {
     #[error("IO Error Occured: {0}")]
@@ -293,10 +316,13 @@ impl Message {
             Self::SearchResponse(msg) => msg.write(writer),
             Self::CreateChannel(msg) => msg.write(writer),
             Self::CreateChannelResponse(msg) => msg.write(writer),
+            Self::CreateChannelFailure(msg) => msg.write(writer),
             Self::AccessRights(msg) => msg.write(writer),
             Self::ClientName(msg) => msg.write(writer),
             Self::HostName(msg) => msg.write(writer),
             Self::ServerDisconnect(msg) => msg.write(writer),
+            Self::EventsOn => EventsOn.write(writer),
+            Self::EventsOff => EventsOff.write(writer),
         }
     }
 }
@@ -631,6 +657,14 @@ pub struct CreateChannel {
     pub channel_name: String,
 }
 
+impl CreateChannel {
+    pub fn respond_failure(&self) -> CreateChannelFailure {
+        CreateChannelFailure {
+            client_id: self.client_id,
+        }
+    }
+}
+
 impl TryFrom<RawMessage> for CreateChannel {
     type Error = MessageError;
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
@@ -658,10 +692,10 @@ impl CAMessage for CreateChannel {
 
 #[derive(Debug)]
 pub struct CreateChannelResponse {
-    data_type: DBRType,
-    data_count: u32,
-    client_id: u32,
-    server_id: u32,
+    pub data_type: DBRType,
+    pub data_count: u32,
+    pub client_id: u32,
+    pub server_id: u32,
 }
 
 impl TryFrom<RawMessage> for CreateChannelResponse {
@@ -685,6 +719,31 @@ impl CAMessage for CreateChannelResponse {
             field_2_data_count: self.data_count,
             field_3_parameter_1: self.client_id,
             field_4_parameter_2: self.server_id,
+            ..Default::default()
+        }
+        .write(writer)
+    }
+}
+
+#[derive(Debug)]
+pub struct CreateChannelFailure {
+    client_id: u32,
+}
+
+impl TryFrom<RawMessage> for CreateChannelFailure {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(26)?;
+        Ok(CreateChannelFailure {
+            client_id: value.field_3_parameter_1,
+        })
+    }
+}
+impl CAMessage for CreateChannelFailure {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 26,
+            field_3_parameter_1: self.client_id,
             ..Default::default()
         }
         .write(writer)
@@ -840,6 +899,46 @@ impl CAMessage for ServerDisconnect {
         RawMessage {
             command: 27,
             field_3_parameter_1: self.client_id,
+            ..Default::default()
+        }
+        .write(writer)
+    }
+}
+
+#[derive(Debug)]
+pub struct EventsOn;
+
+impl TryFrom<RawMessage> for EventsOn {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(9)?;
+        Ok(Self)
+    }
+}
+impl CAMessage for EventsOn {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 9,
+            ..Default::default()
+        }
+        .write(writer)
+    }
+}
+
+#[derive(Debug)]
+pub struct EventsOff;
+
+impl TryFrom<RawMessage> for EventsOff {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(8)?;
+        Ok(Self)
+    }
+}
+impl CAMessage for EventsOff {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 8,
             ..Default::default()
         }
         .write(writer)
