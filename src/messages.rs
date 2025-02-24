@@ -18,8 +18,19 @@ use tokio::{io::AsyncReadExt, net::TcpStream};
 
 const EPICS_VERSION: u16 = 13;
 
+/// A basic trait to tie nom parseability to the struct without a
+/// plethora of named functions.
+/// Also adds common interface for writing a message struct to a writer.
+pub trait CAMessage: TryFrom<RawMessage> {
+    fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized;
+
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
+}
+
 #[derive(Default)]
-struct RawMessage {
+pub struct RawMessage {
     command: u16,
     field_1_data_type: u16,
     field_2_data_count: u32,
@@ -90,6 +101,12 @@ impl RawMessage {
     }
     fn payload_size(&self) -> usize {
         self.payload.len()
+    }
+    fn expect_id(&self, id: u16) -> Result<(), MessageError> {
+        match self.command {
+            16 => Ok(()),
+            _ => Err(MessageError::IncorrectCommandId(id)),
+        }
     }
 }
 
@@ -199,6 +216,8 @@ pub enum MessageError {
     UnexpectedMessage(Message),
     #[error("Message command ID does not match expected")]
     IncorrectCommandId(u16),
+    #[error("Invalid message field: {0} == {1}")]
+    InvalidField(String, String),
 }
 
 impl From<nom::Err<nom::error::Error<&[u8]>>> for MessageError {
@@ -218,19 +237,13 @@ impl Message {
     pub async fn read_server_message(source: &mut TcpStream) -> Result<Self, MessageError> {
         let message = RawMessage::read(source).await?;
 
-        // Until everything implements TryFrom<RawMessage>...
-        let mut buf = Cursor::new(Vec::new());
-        message.write(&mut buf).unwrap();
-        let buf = buf.into_inner();
-        let input = buf.as_slice();
-
         Ok(match message.command {
-            0 => Self::Version(Version::parse(input)?.1),
-            6 => Self::Search(Search::parse(input)?.1),
-            18 => Self::CreateChannel(CreateChannel::parse(input)?.1),
+            0 => Self::Version(message.try_into()?),
+            6 => Self::Search(message.try_into()?),
+            18 => Self::CreateChannel(message.try_into()?),
             23 => Self::Echo,
-            20 => Self::ClientName(ClientName::parse(input)?.1),
-            21 => Self::HostName(HostName::parse(input)?.1),
+            20 => Self::ClientName(message.try_into()?),
+            21 => Self::HostName(message.try_into()?),
             unknown => Err(MessageError::UnknownCommandId(unknown))?,
         })
     }
@@ -253,17 +266,6 @@ impl Message {
             Self::ServerDisconnect(msg) => msg.write(writer),
         }
     }
-}
-
-/// A basic trait to tie nom parseability to the struct without a
-/// plethora of named functions.
-/// Also adds common interface for writing a message struct to a writer.
-pub trait CAMessage {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized;
-
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
 }
 
 /// Basic DBR Data types, independent of category
@@ -391,6 +393,22 @@ where
     }
 }
 
+impl TryFrom<RawMessage> for RsrvIsUp {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(0x0D)?;
+        Ok(RsrvIsUp {
+            server_port: value.field_2_data_count as u16,
+            beacon_id: value.field_3_parameter_1,
+            server_ip: match value.field_4_parameter_2 {
+                0u32 => None,
+                _ => Some(Ipv4Addr::from(value.field_4_parameter_2)),
+            },
+            protocol_version: value.field_1_data_type,
+        })
+    }
+}
+
 impl CAMessage for RsrvIsUp {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
@@ -445,7 +463,16 @@ impl Default for Version {
         }
     }
 }
-
+impl TryFrom<RawMessage> for Version {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(0)?;
+        Ok(Version {
+            priority: value.field_1_data_type,
+            protocol_version: value.field_2_data_count as u16,
+        })
+    }
+}
 impl CAMessage for Version {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
@@ -499,7 +526,18 @@ impl Search {
         }
     }
 }
-
+impl TryFrom<RawMessage> for Search {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(6)?;
+        Ok(Search {
+            should_reply: value.field_1_data_type == 10,
+            protocol_version: value.field_2_data_count as u16,
+            search_id: value.field_3_parameter_1,
+            channel_name: value.payload_as_string(),
+        })
+    }
+}
 impl CAMessage for Search {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
@@ -537,6 +575,31 @@ pub struct SearchResponse {
     pub server_ip: Option<Ipv4Addr>,
     /// Protocol version only present if this is being sent as UDP
     pub protocol_version: Option<u16>,
+}
+
+impl TryFrom<RawMessage> for SearchResponse {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(6)?;
+        assert!(value.payload_size() == 0 || value.payload_size() == 8);
+        Ok(SearchResponse {
+            port_number: value.field_1_data_type,
+            server_ip: match value.field_3_parameter_1 {
+                0xFFFFFFFFu32 => None,
+                i => Some(Ipv4Addr::from(i)),
+            },
+            search_id: value.field_4_parameter_2,
+            protocol_version: if value.payload_size() == 0 {
+                None
+            } else {
+                Some(
+                    be_u16::<&[u8], nom::error::Error<&[u8]>>(value.payload.as_slice())
+                        .unwrap()
+                        .1,
+                )
+            },
+        })
+    }
 }
 
 impl CAMessage for SearchResponse {
@@ -605,6 +668,17 @@ pub struct CreateChannel {
     pub channel_name: String,
 }
 
+impl TryFrom<RawMessage> for CreateChannel {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(18)?;
+        Ok(CreateChannel {
+            client_id: value.field_3_parameter_1,
+            protocol_version: value.field_4_parameter_2,
+            channel_name: value.payload_as_string(),
+        })
+    }
+}
 impl CAMessage for CreateChannel {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
@@ -639,6 +713,19 @@ pub struct CreateChannelResponse {
     data_count: u32,
     client_id: u32,
     server_id: u32,
+}
+
+impl TryFrom<RawMessage> for CreateChannelResponse {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(18)?;
+        Ok(CreateChannelResponse {
+            data_type: value.field_1_data_type.try_into().unwrap(),
+            data_count: value.field_2_data_count,
+            client_id: value.field_3_parameter_1,
+            server_id: value.field_4_parameter_2,
+        })
+    }
 }
 
 impl CAMessage for CreateChannelResponse {
@@ -679,14 +766,17 @@ enum AccessRight {
 }
 
 impl TryFrom<u32> for AccessRight {
-    type Error = ();
+    type Error = MessageError;
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(AccessRight::None),
             1 => Ok(AccessRight::Read),
             2 => Ok(AccessRight::Write),
             3 => Ok(AccessRight::ReadWrite),
-            _ => Err(()),
+            _ => Err(MessageError::InvalidField(
+                "AccessRight".to_owned(),
+                format!("{}", value),
+            )),
         }
     }
 }
@@ -701,6 +791,17 @@ impl TryFrom<u32> for AccessRight {
 pub struct AccessRights {
     client_id: u32,
     access_rights: AccessRight,
+}
+
+impl TryFrom<RawMessage> for AccessRights {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(22)?;
+        Ok(Self {
+            client_id: value.field_3_parameter_1,
+            access_rights: value.field_4_parameter_2.try_into()?,
+        })
+    }
 }
 
 impl CAMessage for AccessRights {
@@ -734,6 +835,14 @@ impl CAMessage for AccessRights {
 #[derive(Default)]
 pub struct Echo;
 
+impl TryFrom<RawMessage> for Echo {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(23)?;
+        Ok(Echo {})
+    }
+}
+
 impl CAMessage for Echo {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
@@ -755,6 +864,16 @@ impl CAMessage for Echo {
 #[derive(Debug)]
 pub struct ClientName {
     pub name: String,
+}
+
+impl TryFrom<RawMessage> for ClientName {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(20)?;
+        Ok(Self {
+            name: value.payload_as_string(),
+        })
+    }
 }
 
 impl CAMessage for ClientName {
@@ -783,7 +902,15 @@ impl CAMessage for ClientName {
 pub struct HostName {
     pub name: String,
 }
-
+impl TryFrom<RawMessage> for HostName {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(21)?;
+        Ok(Self {
+            name: value.payload_as_string(),
+        })
+    }
+}
 impl CAMessage for HostName {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
@@ -810,7 +937,15 @@ impl CAMessage for HostName {
 pub struct ServerDisconnect {
     client_id: u32,
 }
-
+impl TryFrom<RawMessage> for ServerDisconnect {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(27)?;
+        Ok(Self {
+            client_id: value.field_3_parameter_1,
+        })
+    }
+}
 impl CAMessage for ServerDisconnect {
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
@@ -831,18 +966,6 @@ impl CAMessage for ServerDisconnect {
             ..Default::default()
         }
         .write(writer)
-    }
-}
-
-impl TryFrom<RawMessage> for ServerDisconnect {
-    type Error = MessageError;
-    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
-        if value.command != 27 {
-            return Err(MessageError::IncorrectCommandId(value.command));
-        }
-        Ok(Self {
-            client_id: value.field_3_parameter_1,
-        })
     }
 }
 

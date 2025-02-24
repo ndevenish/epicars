@@ -333,6 +333,10 @@ impl Circuit {
                         continue;
                     }
                     MessageError::IncorrectCommandId(msg) => panic!("Fatal error: Got {msg}"),
+                    MessageError::InvalidField(key, value) => {
+                        println!("Got invalid message field: {key}={value}");
+                        continue;
+                    }
                 },
             };
             if let Err(MessageError::UnexpectedMessage(msg)) = circuit.handle_message(message).await
