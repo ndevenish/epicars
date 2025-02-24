@@ -140,6 +140,8 @@ pub enum MessageError {
     ParsingError(#[from] nom::Err<nom::error::Error<Vec<u8>>>),
     #[error("Unknown command ID: {0}")]
     UnknownCommandId(u16),
+    #[error("Got a valid message but is not valid at this state: {0:?}")]
+    UnexpectedMessage(Message),
 }
 
 impl From<nom::Err<nom::error::Error<&[u8]>>> for MessageError {

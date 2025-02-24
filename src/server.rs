@@ -234,7 +234,7 @@ impl Server {
             loop {
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
-                println!("Got search from {}", origin);
+                // println!("Got search from {}", origin);
                 if let Ok(searches) = parse_search_packet(msg_buf) {
                     let mut replies = Vec::new();
                     {
@@ -286,12 +286,12 @@ impl Server {
 
 struct Circuit {
     last_message: Instant,
-    /// We must have this for the circuit to count as ready
-    client_version: Option<u16>,
+    client_version: u16,
     client_host_name: Option<String>,
     client_user_name: Option<String>,
     client_events_on: bool,
     library: ChannelLibrary,
+    stream: TcpStream,
 }
 
 struct Channel {
@@ -301,37 +301,40 @@ struct Channel {
 }
 
 impl Circuit {
+    async fn do_version_exchange(stream: &mut TcpStream) -> Result<u16, MessageError> {
+        // Send our Version
+        stream
+            .write_all(messages::Version::default().as_bytes().as_ref())
+            .await?;
+        // Immediately receive a Version message back from the client
+        Ok(match Message::read_server_message(stream).await? {
+            Message::Version(v) => v.protocol_version,
+            err => {
+                // This is an error, we cannot receive anything until we get this
+                return Err(MessageError::UnexpectedMessage(err));
+            }
+        })
+    }
     async fn start(mut stream: TcpStream, library: ChannelLibrary) {
         println!("Starting circuit with {:?}", stream.peer_addr());
+        let client_version = Circuit::do_version_exchange(&mut stream).await.unwrap();
+        println!("Got client version: {}", client_version);
+        // Client version is the bare minimum we need to establish a valid circuit
         let mut circuit = Circuit {
             last_message: Instant::now(),
-            client_version: None,
+            client_version,
             client_host_name: None,
             client_user_name: None,
             client_events_on: true,
             library,
+            stream,
         };
-        // Immediately send a Version message
-        println!("Sending VERSION");
-        stream
-            .write_all(messages::Version::default().as_bytes().as_ref())
-            .await
-            .unwrap();
-        // Immediately receive a Version message from the client
-        println!("Waiting for server message");
-        match Message::read_server_message(&mut stream).await.unwrap() {
-            Message::Version(v) => circuit.client_version = Some(v.protocol_version),
-            _ => {
-                // This is an error, we cannot receive anything until we get this
-                panic!("Got unexpected message when expecting client version");
-            }
-        }
-        println!("Got client version: {}", circuit.client_version.unwrap());
         // Now, everything else is based on responding to events
         loop {
-            let message = match Message::read_server_message(&mut stream).await {
+            let message = match Message::read_server_message(&mut circuit.stream).await {
                 Ok(message) => message,
                 Err(err) => match err {
+                    // Handle various cases that could lead to this failing
                     MessageError::IO(io) => {
                         // Just fail the circuit completely, could inspect io.kind later
                         println!("IO Error reading server message: {}", io);
@@ -345,30 +348,41 @@ impl Circuit {
                         println!("Error: Incoming message parse error: {}", msg);
                         continue;
                     }
+                    MessageError::UnexpectedMessage(msg) => {
+                        println!("Error: Got valid but unexpected message from client: {msg:?}");
+                        continue;
+                    }
                 },
             };
-            match message {
-                Message::Echo => {
-                    let mut reply_buf = Cursor::new(Vec::new());
-                    messages::Echo.write(&mut reply_buf).unwrap();
-                    stream.write_all(&reply_buf.into_inner()).await.unwrap();
-                }
-                Message::ClientName(name) if circuit.client_user_name.is_none() => {
-                    println!("Got client username: {}", name.name);
-                    circuit.client_user_name = Some(name.name);
-                }
-                Message::HostName(name) if circuit.client_host_name.is_none() => {
-                    println!("Got client hostname: {}", name.name);
-                    circuit.client_host_name = Some(name.name);
-                }
-                Message::CreateChannel(chan) => {
-                    println!("Got request to create channel to: {}", chan.channel_name);
-                }
-                msg => panic!("Unexpected message: {:?}", msg),
-            };
+            circuit.handle_message(message).await;
         }
         // If out here, we are closing the channel
         println!("Closing channel");
-        let _ = stream.shutdown().await;
+        let _ = circuit.stream.shutdown().await;
+    }
+
+    async fn handle_message(&mut self, message: Message) {
+        match message {
+            Message::Echo => {
+                let mut reply_buf = Cursor::new(Vec::new());
+                messages::Echo.write(&mut reply_buf).unwrap();
+                self.stream
+                    .write_all(&reply_buf.into_inner())
+                    .await
+                    .unwrap();
+            }
+            Message::ClientName(name) if self.client_user_name.is_none() => {
+                println!("Got client username: {}", name.name);
+                self.client_user_name = Some(name.name);
+            }
+            Message::HostName(name) if self.client_host_name.is_none() => {
+                println!("Got client hostname: {}", name.name);
+                self.client_host_name = Some(name.name);
+            }
+            Message::CreateChannel(chan) => {
+                println!("Got request to create channel to: {}", chan.channel_name);
+            }
+            msg => panic!("Unexpected message: {:?}", msg),
+        };
     }
 }
