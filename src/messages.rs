@@ -29,7 +29,7 @@ pub trait CAMessage: TryFrom<RawMessage> {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct RawMessage {
     command: u16,
     field_1_data_type: u16,
@@ -554,7 +554,7 @@ impl CAMessage for Search {
     where
         Self: Sized,
     {
-        let raw = RawMessage::parse_id(0x06, input)?.1;
+        let (input, raw) = RawMessage::parse_id(0x06, input)?;
         Ok((
             input,
             Search {
