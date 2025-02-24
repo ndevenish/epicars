@@ -332,7 +332,9 @@ impl Circuit {
                         println!("Error: Got message from client that is invalid to receive on a server: {msg:?}");
                         continue;
                     }
-                    MessageError::IncorrectCommandId(msg) => panic!("Fatal error: Got {msg}"),
+                    MessageError::IncorrectCommandId(msg, expect) => {
+                        panic!("Fatal error: Got {msg} instead of {expect}")
+                    }
                     MessageError::InvalidField(key, value) => {
                         println!("Got invalid message field: {key}={value}");
                         continue;

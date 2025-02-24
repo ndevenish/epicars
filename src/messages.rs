@@ -111,7 +111,7 @@ impl RawMessage {
         if self.command == id {
             Ok(())
         } else {
-            Err(MessageError::IncorrectCommandId(id))
+            Err(MessageError::IncorrectCommandId(self.command, id))
         }
     }
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
@@ -222,7 +222,7 @@ pub enum Message {
 
 #[derive(Error, Debug)]
 pub enum MessageError {
-    #[error("IO Error Occured")]
+    #[error("IO Error Occured: {0}")]
     IO(#[from] io::Error),
     #[error("An error occured parsing a message")]
     ParsingError(#[from] nom::Err<nom::error::Error<Vec<u8>>>),
@@ -230,8 +230,8 @@ pub enum MessageError {
     UnknownCommandId(u16),
     #[error("Got a valid message but is not valid at this state: {0:?}")]
     UnexpectedMessage(Message),
-    #[error("Message command ID does not match expected")]
-    IncorrectCommandId(u16),
+    #[error("Message command ID ({0}) does not match expected ({1})")]
+    IncorrectCommandId(u16, u16),
     #[error("Invalid message field: {0} == {1}")]
     InvalidField(String, String),
 }
