@@ -22,10 +22,6 @@ const EPICS_VERSION: u16 = 13;
 /// plethora of named functions.
 /// Also adds common interface for writing a message struct to a writer.
 pub trait CAMessage: TryFrom<RawMessage> {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized;
-
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
 }
 
@@ -118,38 +114,6 @@ impl RawMessage {
             Err(MessageError::IncorrectCommandId(id))
         }
     }
-}
-
-impl CAMessage for RawMessage {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        // Ensure that the payload is padded out to 8 byte multiple -
-        // the protocol requires this.
-        let payload_size = self.payload.len().div_ceil(8) * 8;
-
-        writer.write_all(&self.command.to_be_bytes())?;
-        if payload_size < 0xFFFF && self.field_2_data_count <= 0xFFFF {
-            writer.write_all(&(payload_size as u16).to_be_bytes())?;
-            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
-            writer.write_all(&(self.field_2_data_count as u16).to_be_bytes())?;
-            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
-            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
-        } else {
-            writer.write_all(&0xFFFFu32.to_be_bytes())?;
-            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
-            writer.write_all(&[0x0000])?;
-            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
-            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
-            writer.write_all(&payload_size.to_be_bytes())?;
-            writer.write_all(&self.field_2_data_count.to_be_bytes())?;
-        }
-        writer.write_all(&self.payload)?;
-        let extra_bytes = payload_size - self.payload.len();
-        if extra_bytes > 0 {
-            writer.write_all(&vec![0; extra_bytes])?;
-        }
-
-        Ok(())
-    }
     fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
         Self: Sized,
@@ -197,6 +161,48 @@ impl CAMessage for RawMessage {
             ))
         }
     }
+}
+
+impl CAMessage for RawMessage {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        // Ensure that the payload is padded out to 8 byte multiple -
+        // the protocol requires this.
+        let payload_size = self.payload.len().div_ceil(8) * 8;
+
+        writer.write_all(&self.command.to_be_bytes())?;
+        if payload_size < 0xFFFF && self.field_2_data_count <= 0xFFFF {
+            writer.write_all(&(payload_size as u16).to_be_bytes())?;
+            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
+            writer.write_all(&(self.field_2_data_count as u16).to_be_bytes())?;
+            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
+            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
+        } else {
+            writer.write_all(&0xFFFFu32.to_be_bytes())?;
+            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
+            writer.write_all(&[0x0000])?;
+            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
+            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
+            writer.write_all(&payload_size.to_be_bytes())?;
+            writer.write_all(&self.field_2_data_count.to_be_bytes())?;
+        }
+        writer.write_all(&self.payload)?;
+        let extra_bytes = payload_size - self.payload.len();
+        if extra_bytes > 0 {
+            writer.write_all(&vec![0; extra_bytes])?;
+        }
+
+        Ok(())
+    }
+}
+
+fn parse_message<T>(input: &[u8]) -> IResult<&[u8], T, MessageError>
+where
+    T: CAMessage + TryFrom<RawMessage, Error = MessageError>,
+{
+    let (i, r) = RawMessage::parse(input)
+        .map_err(|e| nom::Err::Error(MessageError::ParsingError(e.to_owned())))?;
+    let v = r.try_into().map_err(|e| nom::Err::Error(e))?;
+    Ok((i, v))
 }
 
 #[derive(Debug)]
@@ -420,25 +426,6 @@ impl TryFrom<RawMessage> for RsrvIsUp {
 }
 
 impl CAMessage for RsrvIsUp {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, raw) = RawMessage::parse_id(0x0D, input)?;
-        Ok((
-            input,
-            RsrvIsUp {
-                server_port: raw.field_2_data_count as u16,
-                beacon_id: raw.field_3_parameter_1,
-                server_ip: match raw.field_4_parameter_2 {
-                    0u32 => None,
-                    _ => Some(Ipv4Addr::from(raw.field_4_parameter_2)),
-                },
-                protocol_version: raw.field_1_data_type,
-            },
-        ))
-    }
-
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&13_u16.to_be_bytes())?;
         writer.write_all(&0_u16.to_be_bytes())?;
@@ -485,19 +472,6 @@ impl TryFrom<RawMessage> for Version {
 }
 
 impl CAMessage for Version {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, header) = RawMessage::parse_id(0x00, input)?;
-        Ok((
-            input,
-            Version {
-                priority: header.field_1_data_type,
-                protocol_version: header.field_2_data_count as u16,
-            },
-        ))
-    }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 0,
@@ -561,21 +535,6 @@ impl CAMessage for Search {
         }
         .write(writer)
     }
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, raw) = RawMessage::parse_id(0x06, input)?;
-        Ok((
-            input,
-            Search {
-                should_reply: raw.field_1_data_type == 10,
-                protocol_version: raw.field_2_data_count as u16,
-                search_id: raw.field_3_parameter_1,
-                channel_name: raw.payload_as_string(),
-            },
-        ))
-    }
 }
 
 #[derive(Debug)]
@@ -614,32 +573,6 @@ impl TryFrom<RawMessage> for SearchResponse {
 }
 
 impl CAMessage for SearchResponse {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, header) = RawMessage::parse_id(0x06, input)?;
-
-        let mut response = SearchResponse {
-            port_number: header.field_1_data_type,
-            server_ip: match header.field_3_parameter_1 {
-                0xFFFFFFFFu32 => None,
-                i => Some(Ipv4Addr::from(i)),
-            },
-            search_id: header.field_4_parameter_2,
-            protocol_version: None,
-        };
-        assert!(header.payload_size() == 0 || header.payload_size() == 8);
-        if header.payload_size() == 8 {
-            let (_, version) =
-                be_u16::<&[u8], nom::error::Error<&[u8]>>(header.payload.as_slice()).unwrap();
-            // let (input, _) = take(6usize)(input)?;
-            response.protocol_version = Some(version);
-            Ok((input, response))
-        } else {
-            Ok((input, response))
-        }
-    }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 0x06,
@@ -659,9 +592,9 @@ impl CAMessage for SearchResponse {
     }
 }
 
-pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, nom::error::Error<&[u8]>> {
+pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, MessageError> {
     // Starts with a version packet
-    let (input, _) = Version::parse(input).finish()?;
+    let (input, _) = parse_message::<Version>(input).finish()?;
     // Then a stream of multiple messages
     let (_, messages) = all_consuming(many0(Search::parse)).parse(input).finish()?;
 
@@ -691,20 +624,6 @@ impl TryFrom<RawMessage> for CreateChannel {
     }
 }
 impl CAMessage for CreateChannel {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, header) = RawMessage::parse_id(18, input)?;
-        Ok((
-            input,
-            CreateChannel {
-                client_id: header.field_3_parameter_1,
-                protocol_version: header.field_4_parameter_2,
-                channel_name: header.payload_as_string(),
-            },
-        ))
-    }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 18,
@@ -740,21 +659,6 @@ impl TryFrom<RawMessage> for CreateChannelResponse {
 }
 
 impl CAMessage for CreateChannelResponse {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, header) = RawMessage::parse_id(18, input)?;
-        Ok((
-            input,
-            CreateChannelResponse {
-                data_type: header.field_1_data_type.try_into().unwrap(),
-                data_count: header.field_2_data_count,
-                client_id: header.field_3_parameter_1,
-                server_id: header.field_4_parameter_2,
-            },
-        ))
-    }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 18,
@@ -816,22 +720,6 @@ impl TryFrom<RawMessage> for AccessRights {
 }
 
 impl CAMessage for AccessRights {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, header) = RawMessage::parse_id(22, input)?;
-        Ok((
-            input,
-            AccessRights {
-                client_id: header.field_3_parameter_1,
-                access_rights: header
-                    .field_4_parameter_2
-                    .try_into()
-                    .map_err(|_| Err::Error(Error::new(input, ErrorKind::Verify)))?,
-            },
-        ))
-    }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 22,
@@ -855,13 +743,6 @@ impl TryFrom<RawMessage> for Echo {
 }
 
 impl CAMessage for Echo {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, _) = RawMessage::parse_id(23, input)?;
-        Ok((input, Echo))
-    }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 23,
@@ -888,17 +769,6 @@ impl TryFrom<RawMessage> for ClientName {
 }
 
 impl CAMessage for ClientName {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, message) = RawMessage::parse_id(20, input)?;
-        // Unwrapping here as otherwise it might return a reference to the (local) message
-        // - we _know_ that the data is limited by vec length so this should not be an issue...
-        let (_, client_name) = padded_string(message.payload.len())(&message.payload).unwrap();
-
-        Ok((input, ClientName { name: client_name }))
-    }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 20,
@@ -923,17 +793,6 @@ impl TryFrom<RawMessage> for HostName {
     }
 }
 impl CAMessage for HostName {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, message) = RawMessage::parse_id(21, input)?;
-        // Unwrapping here as otherwise it might return a reference to the (local) message
-        // - we _know_ that the data is limited by vec length so this should not be an issue...
-        let (_, client_name) = padded_string(message.payload.len())(&message.payload).unwrap();
-
-        Ok((input, HostName { name: client_name }))
-    }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 21,
@@ -958,18 +817,6 @@ impl TryFrom<RawMessage> for ServerDisconnect {
     }
 }
 impl CAMessage for ServerDisconnect {
-    fn parse(input: &[u8]) -> IResult<&[u8], Self>
-    where
-        Self: Sized,
-    {
-        let (input, header) = RawMessage::parse_id(27, input)?;
-        Ok((
-            input,
-            ServerDisconnect {
-                client_id: header.field_3_parameter_1,
-            },
-        ))
-    }
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 27,
