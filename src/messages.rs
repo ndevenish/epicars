@@ -103,9 +103,10 @@ impl RawMessage {
         self.payload.len()
     }
     fn expect_id(&self, id: u16) -> Result<(), MessageError> {
-        match self.command {
-            16 => Ok(()),
-            _ => Err(MessageError::IncorrectCommandId(id)),
+        if self.command == id {
+            Ok(())
+        } else {
+            Err(MessageError::IncorrectCommandId(id))
         }
     }
 }
