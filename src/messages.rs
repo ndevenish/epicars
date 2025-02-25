@@ -10,7 +10,7 @@ use nom::{
     combinator::all_consuming,
     error::{Error, ErrorKind, ParseError},
     multi::many0,
-    number::complete::{be_u16, be_u32},
+    number::complete::{be_f32, be_u16, be_u32},
     Err, Finish, IResult, Parser,
 };
 use thiserror::Error;
@@ -207,39 +207,41 @@ where
 
 #[derive(Debug)]
 pub enum Message {
-    Version(Version),
+    AccessRights(AccessRights),
+    ClearChannel(ClearChannel),
+    ClientName(ClientName),
+    CreateChannel(CreateChannel),
+    CreateChannelFailure(CreateChannelFailure),
+    CreateChannelResponse(CreateChannelResponse),
+    Echo,
+    EventsOff,
+    EventsOn,
+    HostName(HostName),
     RsrvIsUp(RsrvIsUp),
     Search(Search),
     SearchResponse(SearchResponse),
-    CreateChannel(CreateChannel),
-    CreateChannelResponse(CreateChannelResponse),
-    CreateChannelFailure(CreateChannelFailure),
-    AccessRights(AccessRights),
-    ClientName(ClientName),
-    HostName(HostName),
     ServerDisconnect(ServerDisconnect),
-    EventsOff,
-    EventsOn,
-    Echo,
+    Version(Version),
 }
 
 impl AsBytes for Message {
     fn as_bytes(&self) -> Vec<u8> {
         match self {
-            Message::Version(msg) => msg.as_bytes(),
-            Message::RsrvIsUp(msg) => msg.as_bytes(),
-            Message::Search(msg) => msg.as_bytes(),
-            Message::SearchResponse(msg) => msg.as_bytes(),
-            Message::CreateChannel(msg) => msg.as_bytes(),
-            Message::CreateChannelResponse(msg) => msg.as_bytes(),
-            Message::CreateChannelFailure(msg) => msg.as_bytes(),
             Message::AccessRights(msg) => msg.as_bytes(),
+            Message::ClearChannel(msg) => msg.as_bytes(),
             Message::ClientName(msg) => msg.as_bytes(),
-            Message::HostName(msg) => msg.as_bytes(),
-            Message::ServerDisconnect(msg) => msg.as_bytes(),
+            Message::CreateChannel(msg) => msg.as_bytes(),
+            Message::CreateChannelFailure(msg) => msg.as_bytes(),
+            Message::CreateChannelResponse(msg) => msg.as_bytes(),
             Message::Echo => Echo.as_bytes(),
             Message::EventsOff => EventsOff.as_bytes(),
             Message::EventsOn => EventsOn.as_bytes(),
+            Message::HostName(msg) => msg.as_bytes(),
+            Message::RsrvIsUp(msg) => msg.as_bytes(),
+            Message::Search(msg) => msg.as_bytes(),
+            Message::SearchResponse(msg) => msg.as_bytes(),
+            Message::ServerDisconnect(msg) => msg.as_bytes(),
+            Message::Version(msg) => msg.as_bytes(),
         }
     }
 }
@@ -262,6 +264,15 @@ pub enum MessageError {
 impl From<nom::Err<nom::error::Error<&[u8]>>> for MessageError {
     fn from(err: nom::Err<nom::error::Error<&[u8]>>) -> Self {
         MessageError::ParsingError(err.to_owned())
+    }
+}
+impl From<nom::Err<MessageError>> for MessageError {
+    fn from(value: nom::Err<MessageError>) -> Self {
+        match value {
+            Err::Error(err) => err,
+            Err::Failure(err) => err,
+            _ => panic!("Not sure how to handle"),
+        }
     }
 }
 
@@ -296,6 +307,9 @@ impl Message {
         Ok(match message.command {
             0 => Self::Version(message.try_into()?),
             6 => Self::Search(message.try_into()?),
+            8 => Self::EventsOff,
+            9 => Self::EventsOn,
+            12 => Self::ClearChannel(message.try_into()?),
             18 => Self::CreateChannel(message.try_into()?),
             23 => Self::Echo,
             20 => Self::ClientName(message.try_into()?),
@@ -309,20 +323,21 @@ impl Message {
 
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         match self {
+            Self::AccessRights(msg) => msg.write(writer),
+            Self::ClearChannel(msg) => msg.write(writer),
+            Self::ClientName(msg) => msg.write(writer),
+            Self::CreateChannel(msg) => msg.write(writer),
+            Self::CreateChannelFailure(msg) => msg.write(writer),
+            Self::CreateChannelResponse(msg) => msg.write(writer),
             Self::Echo => Echo.write(writer),
-            Self::Version(msg) => msg.write(writer),
+            Self::EventsOff => EventsOff.write(writer),
+            Self::EventsOn => EventsOn.write(writer),
+            Self::HostName(msg) => msg.write(writer),
             Self::RsrvIsUp(msg) => msg.write(writer),
             Self::Search(msg) => msg.write(writer),
             Self::SearchResponse(msg) => msg.write(writer),
-            Self::CreateChannel(msg) => msg.write(writer),
-            Self::CreateChannelResponse(msg) => msg.write(writer),
-            Self::CreateChannelFailure(msg) => msg.write(writer),
-            Self::AccessRights(msg) => msg.write(writer),
-            Self::ClientName(msg) => msg.write(writer),
-            Self::HostName(msg) => msg.write(writer),
             Self::ServerDisconnect(msg) => msg.write(writer),
-            Self::EventsOn => EventsOn.write(writer),
-            Self::EventsOff => EventsOff.write(writer),
+            Self::Version(msg) => msg.write(writer),
         }
     }
 }
@@ -946,7 +961,79 @@ impl CAMessage for EventsOff {
 }
 
 #[derive(Debug)]
-struct ClearChannel {}
+pub struct ClearChannel {
+    pub server_id: u32,
+    pub client_id: u32,
+}
+impl TryFrom<RawMessage> for ClearChannel {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(12)?;
+        Ok(ClearChannel {
+            server_id: value.field_3_parameter_1,
+            client_id: value.field_4_parameter_2,
+        })
+    }
+}
+impl CAMessage for ClearChannel {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 12,
+            field_3_parameter_1: self.server_id,
+            field_4_parameter_2: self.client_id,
+            ..Default::default()
+        }
+        .write(writer)
+    }
+}
+
+#[derive(Debug)]
+pub struct EventAdd {
+    data_type: DBRType,
+    server_id: u32,
+    subscription_id: u32,
+    mask: u16,
+}
+
+impl TryFrom<RawMessage> for EventAdd {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(1)?;
+        if value.payload_size() != 16 {
+            return Err(MessageError::InvalidField(
+                "Payload".to_string(),
+                "not 16 bytes".to_string(),
+            ));
+        }
+        let (_, (_, _, _, mask)) = (be_f32::<&[u8], MessageError>, be_f32, be_f32, be_u16)
+            .parse(value.payload.as_slice())?;
+        Ok(EventAdd {
+            data_type: DBRType::try_from(value.field_1_data_type).map_err(|_| {
+                MessageError::InvalidField(
+                    "Data Type".to_string(),
+                    format!("{}", value.field_1_data_type),
+                )
+            })?,
+            server_id: value.field_3_parameter_1,
+            subscription_id: value.field_4_parameter_2,
+            mask,
+        })
+    }
+}
+#[derive(Debug)]
+pub struct EventCancel {}
+
+#[derive(Debug)]
+pub struct ReadNotify {}
+
+#[derive(Debug)]
+pub struct WriteChannel {}
+
+#[derive(Debug)]
+pub struct WriteNotify {}
+
+#[derive(Debug)]
+pub struct EventAddResponse {}
 
 enum ErrorSeverity {
     Warning = 0,
