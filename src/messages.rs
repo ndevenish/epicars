@@ -214,6 +214,7 @@ pub enum Message {
     CreateChannelFailure(CreateChannelFailure),
     CreateChannelResponse(CreateChannelResponse),
     Echo,
+    EventAdd(EventAdd),
     EventsOff,
     EventsOn,
     HostName(HostName),
@@ -234,6 +235,7 @@ impl AsBytes for Message {
             Message::CreateChannelFailure(msg) => msg.as_bytes(),
             Message::CreateChannelResponse(msg) => msg.as_bytes(),
             Message::Echo => Echo.as_bytes(),
+            Message::EventAdd(message) => message.as_bytes(),
             Message::EventsOff => EventsOff.as_bytes(),
             Message::EventsOn => EventsOn.as_bytes(),
             Message::HostName(msg) => msg.as_bytes(),
@@ -306,6 +308,7 @@ impl Message {
 
         Ok(match message.command {
             0 => Self::Version(message.try_into()?),
+            1 => Self::EventAdd(message.try_into()?),
             6 => Self::Search(message.try_into()?),
             8 => Self::EventsOff,
             9 => Self::EventsOn,
@@ -330,6 +333,7 @@ impl Message {
             Self::CreateChannelFailure(msg) => msg.write(writer),
             Self::CreateChannelResponse(msg) => msg.write(writer),
             Self::Echo => Echo.write(writer),
+            Self::EventAdd(msg) => msg.write(writer),
             Self::EventsOff => EventsOff.write(writer),
             Self::EventsOn => EventsOn.write(writer),
             Self::HostName(msg) => msg.write(writer),
@@ -990,6 +994,7 @@ impl CAMessage for ClearChannel {
 #[derive(Debug)]
 pub struct EventAdd {
     data_type: DBRType,
+    data_count: u32,
     server_id: u32,
     subscription_id: u32,
     mask: u16,
@@ -1014,10 +1019,27 @@ impl TryFrom<RawMessage> for EventAdd {
                     format!("{}", value.field_1_data_type),
                 )
             })?,
+            data_count: value.field_2_data_count,
             server_id: value.field_3_parameter_1,
             subscription_id: value.field_4_parameter_2,
             mask,
         })
+    }
+}
+
+impl CAMessage for EventAdd {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        let mut payload = vec![0u8; 12];
+        payload.extend_from_slice(&self.mask.to_be_bytes());
+        RawMessage {
+            command: 1,
+            field_1_data_type: self.data_type.into(),
+            field_2_data_count: self.data_count,
+            field_3_parameter_1: self.server_id,
+            field_4_parameter_2: self.subscription_id,
+            payload,
+        }
+        .write(writer)
     }
 }
 #[derive(Debug)]
