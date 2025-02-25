@@ -1,10 +1,16 @@
 use std::time::Duration;
 
-use epics::server::Server;
+use epics::server::{AddBuilderPV, ServerBuilder};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() {
-    Server::new(5065).await.unwrap();
+    let _server = ServerBuilder::new()
+        .beacon_port(5065)
+        .add_pv("Something", 3)
+        .start()
+        .await
+        .unwrap();
+
     println!("Entering main() infinite loop");
     loop {
         tokio::time::sleep(Duration::from_secs(120)).await;

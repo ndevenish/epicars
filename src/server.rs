@@ -11,6 +11,7 @@ use std::{
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream, UdpSocket},
+    sync::{broadcast, mpsc, oneshot, watch},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -33,7 +34,7 @@ pub struct Server {
     /// The beacon ID of the last beacon broadcast
     beacon_id: u32,
     circuits: Vec<Circuit>,
-    library: PVLibrary,
+    library: Arc<Mutex<PVLibrary>>,
     shutdown: CancellationToken,
 }
 
@@ -46,7 +47,7 @@ impl Default for Server {
             last_beacon: Instant::now(),
             beacon_id: 0,
             circuits: Vec::new(),
-            library: PVLibrary::default(),
+            library: Arc::<Mutex<PVLibrary>>::default(),
             shutdown: CancellationToken::new(),
         }
     }
@@ -65,9 +66,8 @@ fn get_broadcast_ips() -> Vec<Ipv4Addr> {
 }
 
 impl Server {
-    pub async fn new(beacon_port: u16) -> io::Result<Self> {
+    pub async fn new() -> io::Result<Self> {
         let server = Server {
-            beacon_port,
             ..Default::default()
         };
         // server
@@ -80,7 +80,7 @@ impl Server {
         Ok(server)
     }
 
-    pub async fn listen(&self) -> Result<(), std::io::Error> {
+    async fn listen(&self) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port.unwrap_or(40000);
 
@@ -202,7 +202,7 @@ struct Circuit {
     client_host_name: Option<String>,
     client_user_name: Option<String>,
     client_events_on: bool,
-    library: PVLibrary,
+    library: Arc<Mutex<PVLibrary>>,
     stream: TcpStream,
     channels: HashMap<u32, Channel>,
 }
@@ -227,7 +227,7 @@ impl Circuit {
             }
         })
     }
-    async fn start(mut stream: TcpStream, library: PVLibrary) {
+    async fn start(mut stream: TcpStream, library: Arc<Mutex<PVLibrary>>) {
         println!("Starting circuit with {:?}", stream.peer_addr());
         let client_version = Circuit::do_version_exchange(&mut stream).await.unwrap();
         println!("Got client version: {}", client_version);
@@ -328,7 +328,6 @@ impl Circuit {
     }
 }
 
-struct PV {}
 #[derive(Default)]
 struct Limits<T> {
     upper: Option<T>,
@@ -342,6 +341,7 @@ struct LimitSet<T> {
     alarm_limits: Limits<T>,
 }
 
+#[derive(Clone, Debug)]
 enum SingleOrVec<T> {
     Single(T),
     Vector(Vec<T>),
@@ -396,5 +396,126 @@ enum Dbr {
     Float(NumericDBR<f32>),
     Double(NumericDBR<f64>),
 }
+impl Dbr {
+    // fn value_default(&self) -> DbrValue {
+    //     match self {
+    //         Dbr::Enum(_) => DbrValue::Enum(0),
+    //         Dbr::String(_) => DbrValue::String(String::new()),
+    //         Dbr::Char(_) => DbrValue::Char(0),
+    //         Dbr::Int(_) => DbrValue::Int(0),
+    //         Dbr::Long(_) => DbrValue::Long(0),
+    //         Dbr::Float(_) => DbrValue::Float(0.0),
+    //         Dbr::Double(_) => DbrValue::Double(0.0),
+    //     }
+    // }
+    fn get_value(&self) -> DbrValue {
+        match self {
+            Dbr::Enum(dbr) => DbrValue::Enum(dbr.value),
+            Dbr::String(dbr) => DbrValue::String(dbr.value.clone()),
+            Dbr::Char(dbr) => DbrValue::Char(dbr.value.clone()),
+            Dbr::Int(dbr) => DbrValue::Int(dbr.value.clone()),
+            Dbr::Long(dbr) => DbrValue::Long(dbr.value.clone()),
+            Dbr::Float(dbr) => DbrValue::Float(dbr.value.clone()),
+            Dbr::Double(dbr) => DbrValue::Double(dbr.value.clone()),
+        }
+    }
+}
 
-type PVLibrary = Arc<Mutex<HashMap<String, PV>>>;
+#[derive(Clone)]
+enum DbrValue {
+    Enum(u16),
+    String(String),
+    Char(SingleOrVec<i8>),
+    Int(SingleOrVec<i16>),
+    Long(SingleOrVec<i32>),
+    Float(SingleOrVec<f32>),
+    Double(SingleOrVec<f64>),
+}
+
+type PVLibrary = HashMap<String, PV>;
+
+pub struct ServerBuilder {
+    beacon_port: u16,
+    search_port: u16,
+    connection_port: Option<u16>,
+    library: PVLibrary,
+}
+
+impl Default for ServerBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl ServerBuilder {
+    pub fn new() -> ServerBuilder {
+        ServerBuilder {
+            beacon_port: 5065,
+            search_port: 5064,
+            connection_port: None,
+            library: Default::default(),
+        }
+    }
+    pub fn beacon_port(mut self, port: u16) -> ServerBuilder {
+        self.beacon_port = port;
+        self
+    }
+    pub fn search_port(mut self, port: u16) -> ServerBuilder {
+        self.search_port = port;
+        self
+    }
+    pub fn connection_port(mut self, port: u16) -> ServerBuilder {
+        self.connection_port = Some(port);
+        self
+    }
+    pub async fn start(&self) -> io::Result<Server> {
+        let server = Server {
+            beacon_port: self.beacon_port,
+            search_port: self.search_port,
+            connection_port: self.connection_port,
+            ..Default::default()
+        };
+        server.listen().await?;
+        Ok(server)
+    }
+}
+
+struct PV {
+    name: String,
+    record: Dbr,
+    // Writing new values - sender to write, receiver to pick them up on the server
+    write_tx: mpsc::Sender<(DbrValue, Option<oneshot::Receiver<()>>)>,
+    write_rx: mpsc::Receiver<(DbrValue, Option<oneshot::Receiver<()>>)>,
+    watch_tx: watch::Sender<DbrValue>,
+    broadcast_tx: broadcast::Sender<DbrValue>,
+}
+
+impl PV {
+    fn new(name: &str, record: Dbr) -> Self {
+        let (write_tx, write_rx) = mpsc::channel(256);
+        PV {
+            name: name.to_owned(),
+            write_tx,
+            write_rx,
+            watch_tx: watch::channel(record.get_value()).0,
+            broadcast_tx: broadcast::channel(256).0,
+            record,
+        }
+    }
+}
+
+pub trait AddBuilderPV<T> {
+    fn add_pv(self, name: &str, initial_value: T) -> Self;
+}
+impl AddBuilderPV<i32> for ServerBuilder {
+    fn add_pv(mut self, name: &str, initial_value: i32) -> Self {
+        let pv = PV::new(
+            name,
+            Dbr::Long(NumericDBR {
+                value: SingleOrVec::Single(initial_value),
+                ..Default::default()
+            }),
+        );
+        self.library.insert(name.to_owned(), pv);
+        self
+    }
+}
