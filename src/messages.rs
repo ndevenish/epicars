@@ -397,8 +397,8 @@ impl TryFrom<u16> for DBRCategory {
 
 #[derive(Debug, Copy, Clone)]
 pub struct DBRType {
-    basic_type: DBRBasicType,
-    category: DBRCategory,
+    pub basic_type: DBRBasicType,
+    pub category: DBRCategory,
 }
 
 impl TryFrom<u16> for DBRType {
@@ -770,7 +770,7 @@ impl CAMessage for CreateChannelFailure {
 }
 
 #[derive(Debug, Copy, Clone)]
-enum AccessRight {
+pub enum AccessRight {
     None = 0,
     Read = 1,
     Write = 2,
@@ -801,8 +801,8 @@ impl TryFrom<u32> for AccessRight {
 /// so last received value must be stored.
 #[derive(Debug)]
 pub struct AccessRights {
-    client_id: u32,
-    access_rights: AccessRight,
+    pub client_id: u32,
+    pub access_rights: AccessRight,
 }
 
 impl TryFrom<RawMessage> for AccessRights {

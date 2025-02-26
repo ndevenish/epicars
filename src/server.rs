@@ -17,7 +17,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     messages::{
-        self, parse_search_packet, AsBytes, CAMessage, CreateChannel, Message, MessageError,
+        self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
+        CreateChannelResponse, DBRBasicType, DBRCategory, DBRType, Message, MessageError,
     },
     new_reusable_udp_socket,
 };
@@ -198,11 +199,14 @@ struct Circuit {
     library: Arc<Mutex<PVLibrary>>,
     stream: TcpStream,
     channels: HashMap<u32, Channel>,
+    cancelled: CancellationToken,
+    next_channel_id: u32,
 }
 
 struct Channel {
     name: String,
     client_id: u32,
+    server_id: u32,
 }
 
 impl Circuit {
@@ -235,6 +239,8 @@ impl Circuit {
             library,
             stream,
             channels: HashMap::new(),
+            cancelled: CancellationToken::new(),
+            next_channel_id: 0,
         };
         // Now, everything else is based on responding to events
         loop {
@@ -247,8 +253,8 @@ impl Circuit {
                         println!("{id}: IO Error reading server message: {}", io);
                         break;
                     }
-                    MessageError::UnknownCommandId(id) => {
-                        println!("{id}: Error: Receieved unknown command id: {id}");
+                    MessageError::UnknownCommandId(command_id) => {
+                        println!("{id}: Error: Receieved unknown command id: {command_id}");
                         continue;
                     }
                     MessageError::ParsingError(msg) => {
@@ -276,6 +282,7 @@ impl Circuit {
         }
         // If out here, we are closing the channel
         println!("{id}: Closing circuit");
+        circuit.cancelled.cancel();
         let _ = circuit.stream.shutdown().await;
     }
 
@@ -304,6 +311,7 @@ impl Circuit {
                 for out_message in self.create_channel(message) {
                     buffer.extend(out_message.as_bytes());
                 }
+                // Write the results of channel creation
                 if !buffer.is_empty() {
                     self.stream.write_all(&buffer).await?
                 }
@@ -322,7 +330,28 @@ impl Circuit {
             );
             return vec![Message::CreateChannelFailure(message.respond_failure())];
         }
-        Vec::new()
+        let pv = &library[&message.channel_name];
+        let access_rights = AccessRights {
+            client_id: message.client_id,
+            access_rights: pv.get_access_right(),
+        };
+        let id = self.next_channel_id;
+        self.next_channel_id += 1;
+        let createchan = CreateChannelResponse {
+            data_count: pv.record.get_count() as u32,
+            data_type: pv.record.get_native_type(),
+            client_id: message.client_id,
+            server_id: id,
+        };
+        println!(
+            "{}:{}: Opening {:?} channel to {}",
+            self.id, id, access_rights.access_rights, message.channel_name
+        );
+        // We have this channel, send the initial
+        vec![
+            Message::AccessRights(access_rights),
+            Message::CreateChannelResponse(createchan),
+        ]
     }
 }
 
@@ -356,7 +385,14 @@ struct NumericDBR<T> {
     value: SingleOrVec<T>,
     last_updated: Instant,
 }
-
+impl<T> NumericDBR<T> {
+    fn get_count(&self) -> usize {
+        match &self.value {
+            &SingleOrVec::Single(_) => 1,
+            SingleOrVec::Vector(v) => v.len(),
+        }
+    }
+}
 impl<T> Default for NumericDBR<T>
 where
     T: Default,
@@ -408,6 +444,17 @@ impl Dbr {
     //         Dbr::Double(_) => DbrValue::Double(0.0),
     //     }
     // }
+    fn get_count(&self) -> usize {
+        match self {
+            Dbr::Enum(_) => 1,
+            Dbr::String(_) => 1,
+            Dbr::Char(dbr) => dbr.get_count(),
+            Dbr::Int(dbr) => dbr.get_count(),
+            Dbr::Long(dbr) => dbr.get_count(),
+            Dbr::Float(dbr) => dbr.get_count(),
+            Dbr::Double(dbr) => dbr.get_count(),
+        }
+    }
     fn get_value(&self) -> DbrValue {
         match self {
             Dbr::Enum(dbr) => DbrValue::Enum(dbr.value),
@@ -417,6 +464,20 @@ impl Dbr {
             Dbr::Long(dbr) => DbrValue::Long(dbr.value.clone()),
             Dbr::Float(dbr) => DbrValue::Float(dbr.value.clone()),
             Dbr::Double(dbr) => DbrValue::Double(dbr.value.clone()),
+        }
+    }
+    fn get_native_type(&self) -> DBRType {
+        DBRType {
+            basic_type: match self {
+                Dbr::Enum(_) => DBRBasicType::Enum,
+                Dbr::String(_) => DBRBasicType::String,
+                Dbr::Char(_) => DBRBasicType::Char,
+                Dbr::Int(_) => DBRBasicType::Int,
+                Dbr::Long(_) => DBRBasicType::Long,
+                Dbr::Float(_) => DBRBasicType::Float,
+                Dbr::Double(_) => DBRBasicType::Double,
+            },
+            category: DBRCategory::Basic,
         }
     }
 }
@@ -496,6 +557,10 @@ struct PV {
 }
 
 impl PV {
+    fn get_access_right(&self) -> messages::AccessRight {
+        messages::AccessRight::ReadWrite
+    }
+
     fn new(name: &str, record: Dbr) -> Self {
         let (write_tx, write_rx) = mpsc::channel(256);
         PV {
