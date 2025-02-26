@@ -170,10 +170,8 @@ impl Server {
 
     fn handle_tcp_connections(&mut self, listener: TcpListener) {
         let library = self.library.clone();
-        let id = self.next_circuit_id;
-        self.next_circuit_id += 1;
-
         tokio::spawn(async move {
+            let mut id = 0;
             loop {
                 println!(
                     "Waiting to accept TCP connections on {}",
@@ -185,6 +183,7 @@ impl Server {
                 tokio::spawn(async move {
                     Circuit::start(id, connection, circuit_library).await;
                 });
+                id += 1;
             }
         });
     }
