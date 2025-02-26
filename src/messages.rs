@@ -8,7 +8,7 @@ use std::{
 use nom::{
     bytes::complete::take,
     combinator::all_consuming,
-    error::{Error, ErrorKind, ParseError},
+    error::{ErrorKind, ParseError},
     multi::many0,
     number::complete::{be_f32, be_u16, be_u32},
     Err, Finish, IResult, Parser,
@@ -46,15 +46,6 @@ pub struct RawMessage {
 }
 
 impl RawMessage {
-    /// Parse an entire message, but check that it matches the expected tag
-    fn parse_id(command_id: u16, input: &[u8]) -> IResult<&[u8], RawMessage> {
-        let (input, result) = RawMessage::parse(input)?;
-        if result.command != command_id {
-            return Err(Err::Error(Error::new(input, ErrorKind::Tag)));
-        }
-        Ok((input, result))
-    }
-
     async fn read(source: &mut TcpStream) -> Result<RawMessage, MessageError> {
         let mut data = vec![0u8; 16];
         source.read_exact(data.as_mut_slice()).await?;
@@ -320,30 +311,6 @@ impl Message {
             unknown => Err(MessageError::UnknownCommandId(unknown))?,
         })
     }
-    // pub async fn read_client_message(source: &mut TcpStream) -> Result<Self, MessageError> {
-    //     // let message = RawMessage::
-    // }
-
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        match self {
-            Self::AccessRights(msg) => msg.write(writer),
-            Self::ClearChannel(msg) => msg.write(writer),
-            Self::ClientName(msg) => msg.write(writer),
-            Self::CreateChannel(msg) => msg.write(writer),
-            Self::CreateChannelFailure(msg) => msg.write(writer),
-            Self::CreateChannelResponse(msg) => msg.write(writer),
-            Self::Echo => Echo.write(writer),
-            Self::EventAdd(msg) => msg.write(writer),
-            Self::EventsOff => EventsOff.write(writer),
-            Self::EventsOn => EventsOn.write(writer),
-            Self::HostName(msg) => msg.write(writer),
-            Self::RsrvIsUp(msg) => msg.write(writer),
-            Self::Search(msg) => msg.write(writer),
-            Self::SearchResponse(msg) => msg.write(writer),
-            Self::ServerDisconnect(msg) => msg.write(writer),
-            Self::Version(msg) => msg.write(writer),
-        }
-    }
 }
 
 /// Basic DBR Data types, independent of category
@@ -414,14 +381,6 @@ impl TryFrom<u16> for DBRType {
 impl From<DBRType> for u16 {
     fn from(value: DBRType) -> Self {
         value.category as u16 * 7 + value.basic_type as u16
-    }
-}
-
-fn check_known_protocol<I>(version: u16, input: I) -> Result<(), Err<nom::error::Error<I>>> {
-    if version != EPICS_VERSION {
-        Err(Err::Failure(Error::new(input, ErrorKind::Tag)))
-    } else {
-        Ok(())
     }
 }
 
