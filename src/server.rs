@@ -19,7 +19,7 @@ use crate::{
     database::{Dbr, DbrValue, NumericDBR, SingleOrVec},
     messages::{
         self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
-        CreateChannelResponse, Message, MessageError,
+        CreateChannelResponse, Message, MessageError, RawMessage,
     },
     new_reusable_udp_socket,
 };
@@ -324,6 +324,14 @@ impl Circuit {
             }
             Message::ReadNotify(msg) => {
                 println!("{id}:{}: ReadNotify request", msg.server_id);
+                let m: RawMessage = {
+                    let pv = self.channels[&msg.server_id].pv.lock().unwrap();
+                    // Read the data into a Vec<u8>
+                    let data_count = 0;
+                    let data = Vec::new();
+                    (&msg.respond(data_count, data)).into()
+                };
+                self.stream.write_all(&m.as_bytes()).await?;
             }
             msg => return Err(MessageError::UnexpectedMessage(msg)),
         };

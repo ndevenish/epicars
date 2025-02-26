@@ -795,7 +795,7 @@ impl CAMessage for HostName {
 
 #[derive(Debug)]
 pub struct ServerDisconnect {
-    client_id: u32,
+    pub client_id: u32,
 }
 impl TryFrom<RawMessage> for ServerDisconnect {
     type Error = MessageError;
@@ -946,6 +946,17 @@ pub struct ReadNotify {
     pub client_ioid: u32,
 }
 
+impl ReadNotify {
+    pub fn respond(&self, data_count: usize, data: Vec<u8>) -> ReadNotifyResponse {
+        ReadNotifyResponse {
+            data_type: self.data_type,
+            data_count: data_count as u32,
+            client_ioid: self.client_ioid,
+            server_id: self.server_id,
+            data,
+        }
+    }
+}
 impl TryFrom<RawMessage> for ReadNotify {
     type Error = MessageError;
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
@@ -989,6 +1000,19 @@ pub struct ReadNotifyResponse {
     server_id: u32,
     client_ioid: u32,
     data: Vec<u8>,
+}
+
+impl From<&ReadNotifyResponse> for RawMessage {
+    fn from(value: &ReadNotifyResponse) -> Self {
+        RawMessage {
+            command: 15,
+            field_1_data_type: value.data_type.into(),
+            field_2_data_count: value.data_count,
+            field_3_parameter_1: value.server_id,
+            field_4_parameter_2: value.client_ioid,
+            payload: value.data.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
