@@ -66,20 +66,6 @@ fn get_broadcast_ips() -> Vec<Ipv4Addr> {
 }
 
 impl Server {
-    pub async fn new() -> io::Result<Self> {
-        let server = Server {
-            ..Default::default()
-        };
-        // server
-        //     .library
-        //     .lock()
-        //     .unwrap()
-        //     .insert("something".to_string(), Dbr::Double(NumericDBR::default()));
-
-        server.listen().await?;
-        Ok(server)
-    }
-
     async fn listen(&self) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port.unwrap_or(40000);
@@ -146,11 +132,12 @@ impl Server {
             loop {
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
-                // println!("Got search from {}", origin);
                 if let Ok(searches) = parse_search_packet(msg_buf) {
+                    // println!("Got search from {}", origin);
                     let mut replies = Vec::new();
                     {
                         let server_names = server_names.lock().unwrap();
+                        // println!("Known pvs: {:?}", server_names);
                         for search in searches {
                             if server_names.contains_key(&search.channel_name) {
                                 // println!("Request match! Can provide {}", search.channel_name);
@@ -328,13 +315,13 @@ impl Circuit {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Limits<T> {
     upper: Option<T>,
     lower: Option<T>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct LimitSet<T> {
     display_limits: Limits<T>,
     warning_limits: Limits<T>,
@@ -347,6 +334,7 @@ enum SingleOrVec<T> {
     Vector(Vec<T>),
 }
 
+#[derive(Debug)]
 struct NumericDBR<T> {
     status: i16,
     severity: i16,
@@ -374,19 +362,20 @@ where
         }
     }
 }
-
+#[derive(Debug)]
 struct StringDBR {
     status: i16,
     severity: i16,
     value: String,
 }
+#[derive(Debug)]
 struct EnumDBR {
     status: i16,
     severity: i16,
     strings: HashMap<u16, String>,
     value: u16,
 }
-
+#[derive(Debug)]
 enum Dbr {
     Enum(EnumDBR),
     String(StringDBR),
@@ -421,7 +410,7 @@ impl Dbr {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum DbrValue {
     Enum(u16),
     String(String),
@@ -474,11 +463,17 @@ impl ServerBuilder {
             connection_port: self.connection_port,
             ..Default::default()
         };
+        server.library.lock().unwrap().insert(
+            "something".to_string(),
+            PV::new("something", Dbr::Double(NumericDBR::default())),
+        );
+
         server.listen().await?;
         Ok(server)
     }
 }
 
+#[derive(Debug)]
 struct PV {
     name: String,
     record: Dbr,
