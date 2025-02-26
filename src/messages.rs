@@ -16,6 +16,8 @@ use nom::{
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, net::TcpStream};
 
+use crate::database::DBRType;
+
 const EPICS_VERSION: u16 = 13;
 
 /// A basic trait to tie nom parseability to the struct without a
@@ -209,6 +211,7 @@ pub enum Message {
     EventsOff,
     EventsOn,
     HostName(HostName),
+    ReadNotify(ReadNotify),
     RsrvIsUp(RsrvIsUp),
     Search(Search),
     SearchResponse(SearchResponse),
@@ -230,6 +233,7 @@ impl AsBytes for Message {
             Message::EventsOff => EventsOff.as_bytes(),
             Message::EventsOn => EventsOn.as_bytes(),
             Message::HostName(msg) => msg.as_bytes(),
+            Message::ReadNotify(msg) => msg.as_bytes(),
             Message::RsrvIsUp(msg) => msg.as_bytes(),
             Message::Search(msg) => msg.as_bytes(),
             Message::SearchResponse(msg) => msg.as_bytes(),
@@ -304,83 +308,13 @@ impl Message {
             8 => Self::EventsOff,
             9 => Self::EventsOn,
             12 => Self::ClearChannel(message.try_into()?),
+            15 => Self::ReadNotify(message.try_into()?),
             18 => Self::CreateChannel(message.try_into()?),
             23 => Self::Echo,
             20 => Self::ClientName(message.try_into()?),
             21 => Self::HostName(message.try_into()?),
             unknown => Err(MessageError::UnknownCommandId(unknown))?,
         })
-    }
-}
-
-/// Basic DBR Data types, independent of category
-#[derive(Debug, Copy, Clone)]
-pub enum DBRBasicType {
-    String = 0,
-    Int = 1,
-    Float = 2,
-    Enum = 3,
-    Char = 4,
-    Long = 5,
-    Double = 6,
-}
-impl TryFrom<u16> for DBRBasicType {
-    type Error = ();
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        match value {
-            x if x == Self::String as u16 => Ok(Self::String),
-            x if x == Self::Int as u16 => Ok(Self::Int),
-            x if x == Self::Float as u16 => Ok(Self::Float),
-            x if x == Self::Enum as u16 => Ok(Self::Enum),
-            x if x == Self::Char as u16 => Ok(Self::Char),
-            x if x == Self::Long as u16 => Ok(Self::Long),
-            x if x == Self::Double as u16 => Ok(Self::Double),
-            _ => Err(()),
-        }
-    }
-}
-/// Mapping of DBR categories
-#[derive(Debug, Copy, Clone)]
-pub enum DBRCategory {
-    Basic = 0,
-    Status = 1,
-    Time = 2,
-    Graphics = 3,
-    Control = 4,
-}
-impl TryFrom<u16> for DBRCategory {
-    type Error = ();
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        match value {
-            x if x == Self::Basic as u16 => Ok(Self::Basic),
-            x if x == Self::Status as u16 => Ok(Self::Status),
-            x if x == Self::Time as u16 => Ok(Self::Time),
-            x if x == Self::Graphics as u16 => Ok(Self::Graphics),
-            x if x == Self::Control as u16 => Ok(Self::Control),
-            _ => Err(()),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct DBRType {
-    pub basic_type: DBRBasicType,
-    pub category: DBRCategory,
-}
-
-impl TryFrom<u16> for DBRType {
-    type Error = ();
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        Ok(Self {
-            basic_type: (value % 7).try_into()?,
-            category: (value / 7).try_into()?,
-        })
-    }
-}
-
-impl From<DBRType> for u16 {
-    fn from(value: DBRType) -> Self {
-        value.category as u16 * 7 + value.basic_type as u16
     }
 }
 
@@ -1005,7 +939,57 @@ impl CAMessage for EventAdd {
 pub struct EventCancel {}
 
 #[derive(Debug)]
-pub struct ReadNotify {}
+pub struct ReadNotify {
+    pub data_type: DBRType,
+    pub data_count: u32,
+    pub server_id: u32,
+    pub client_ioid: u32,
+}
+
+impl TryFrom<RawMessage> for ReadNotify {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(15)?;
+        Ok(ReadNotify {
+            data_type: value.field_1_data_type.try_into().map_err(|_| {
+                MessageError::InvalidField(
+                    "data type".to_owned(),
+                    format!("{}", value.field_1_data_type),
+                )
+            })?,
+            data_count: value.field_2_data_count,
+            server_id: value.field_3_parameter_1,
+            client_ioid: value.field_4_parameter_2,
+        })
+    }
+}
+
+impl From<&ReadNotify> for RawMessage {
+    fn from(value: &ReadNotify) -> Self {
+        RawMessage {
+            command: 15,
+            field_1_data_type: value.data_type.into(),
+            field_2_data_count: value.data_count,
+            field_3_parameter_1: value.server_id,
+            field_4_parameter_2: value.client_ioid,
+            ..Default::default()
+        }
+    }
+}
+
+impl CAMessage for ReadNotify {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage::from(self).write(writer)
+    }
+}
+
+pub struct ReadNotifyResponse {
+    data_type: DBRType,
+    data_count: u32,
+    server_id: u32,
+    client_ioid: u32,
+    data: Vec<u8>,
+}
 
 #[derive(Debug)]
 pub struct WriteChannel {}

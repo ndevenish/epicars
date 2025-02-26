@@ -3,6 +3,7 @@ use std::{io, net::ToSocketAddrs};
 use socket2::{Domain, Protocol, Type};
 
 pub mod client;
+pub mod database;
 pub mod messages;
 pub mod server;
 
