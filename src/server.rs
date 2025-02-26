@@ -33,6 +33,7 @@ pub struct Server {
     last_beacon: Instant,
     /// The beacon ID of the last beacon broadcast
     beacon_id: u32,
+    next_circuit_id: u64,
     circuits: Vec<Circuit>,
     library: Arc<Mutex<PVLibrary>>,
     shutdown: CancellationToken,
@@ -49,6 +50,7 @@ impl Default for Server {
             circuits: Vec::new(),
             library: Arc::<Mutex<PVLibrary>>::default(),
             shutdown: CancellationToken::new(),
+            next_circuit_id: 0,
         }
     }
 }
@@ -66,7 +68,7 @@ fn get_broadcast_ips() -> Vec<Ipv4Addr> {
 }
 
 impl Server {
-    async fn listen(&self) -> Result<(), std::io::Error> {
+    async fn listen(&mut self) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port.unwrap_or(40000);
 
@@ -164,8 +166,11 @@ impl Server {
         });
     }
 
-    fn handle_tcp_connections(&self, listener: TcpListener) {
+    fn handle_tcp_connections(&mut self, listener: TcpListener) {
         let library = self.library.clone();
+        let id = self.next_circuit_id;
+        self.next_circuit_id += 1;
+
         tokio::spawn(async move {
             loop {
                 println!(
@@ -176,7 +181,7 @@ impl Server {
                 println!("  Got new stream from {}", client);
                 let circuit_library = library.clone();
                 tokio::spawn(async move {
-                    Circuit::start(connection, circuit_library).await;
+                    Circuit::start(id, connection, circuit_library).await;
                 });
             }
         });
@@ -184,6 +189,7 @@ impl Server {
 }
 
 struct Circuit {
+    id: u64,
     last_message: Instant,
     client_version: u16,
     client_host_name: Option<String>,
@@ -214,12 +220,13 @@ impl Circuit {
             }
         })
     }
-    async fn start(mut stream: TcpStream, library: Arc<Mutex<PVLibrary>>) {
-        println!("Starting circuit with {:?}", stream.peer_addr());
+    async fn start(id: u64, mut stream: TcpStream, library: Arc<Mutex<PVLibrary>>) {
+        println!("{id}: Starting circuit with {:?}", stream.peer_addr());
         let client_version = Circuit::do_version_exchange(&mut stream).await.unwrap();
-        println!("Got client version: {}", client_version);
+        println!("{id}: Got client version: {}", client_version);
         // Client version is the bare minimum we need to establish a valid circuit
         let mut circuit = Circuit {
+            id,
             last_message: Instant::now(),
             client_version,
             client_host_name: None,
@@ -237,42 +244,43 @@ impl Circuit {
                     // Handle various cases that could lead to this failing
                     MessageError::IO(io) => {
                         // Just fail the circuit completely, could inspect io.kind later
-                        println!("IO Error reading server message: {}", io);
+                        println!("{id}: IO Error reading server message: {}", io);
                         break;
                     }
                     MessageError::UnknownCommandId(id) => {
-                        println!("Error: Receieved unknown command id: {id}");
+                        println!("{id}: Error: Receieved unknown command id: {id}");
                         continue;
                     }
                     MessageError::ParsingError(msg) => {
-                        println!("Error: Incoming message parse error: {}", msg);
+                        println!("{id}: Error: Incoming message parse error: {}", msg);
                         continue;
                     }
                     MessageError::UnexpectedMessage(msg) => {
-                        println!("Error: Got message from client that is invalid to receive on a server: {msg:?}");
+                        println!("{id}: Error: Got message from client that is invalid to receive on a server: {msg:?}");
                         continue;
                     }
                     MessageError::IncorrectCommandId(msg, expect) => {
-                        panic!("Fatal error: Got {msg} instead of {expect}")
+                        panic!("{id}: Fatal error: Got {msg} instead of {expect}")
                     }
                     MessageError::InvalidField(key, value) => {
-                        println!("Got invalid message field: {key}={value}");
+                        println!("{id}: Got invalid message field: {key}={value}");
                         continue;
                     }
                 },
             };
             if let Err(MessageError::UnexpectedMessage(msg)) = circuit.handle_message(message).await
             {
-                println!("Error: Unexpected message: {:?}", msg);
+                println!("{id}: Error: Unexpected message: {:?}", msg);
                 continue;
             }
         }
         // If out here, we are closing the channel
-        println!("Closing channel");
+        println!("{id}: Closing circuit");
         let _ = circuit.stream.shutdown().await;
     }
 
     async fn handle_message(&mut self, message: Message) -> Result<(), MessageError> {
+        let id = self.id;
         match message {
             Message::Echo => {
                 let mut reply_buf = Cursor::new(Vec::new());
@@ -280,15 +288,18 @@ impl Circuit {
                 self.stream.write_all(&reply_buf.into_inner()).await?
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {
-                println!("Got client username: {}", name.name);
+                println!("{id}: Got client username: {}", name.name);
                 self.client_user_name = Some(name.name);
             }
             Message::HostName(name) if self.client_host_name.is_none() => {
-                println!("Got client hostname: {}", name.name);
+                println!("{id}: Got client hostname: {}", name.name);
                 self.client_host_name = Some(name.name);
             }
             Message::CreateChannel(message) => {
-                println!("Got request to create channel to: {}", message.channel_name);
+                println!(
+                    "{id}: Got request to create channel to: {}",
+                    message.channel_name
+                );
                 let mut buffer = Vec::new();
                 for out_message in self.create_channel(message) {
                     buffer.extend(out_message.as_bytes());
@@ -457,7 +468,7 @@ impl ServerBuilder {
         self
     }
     pub async fn start(&self) -> io::Result<Server> {
-        let server = Server {
+        let mut server = Server {
             beacon_port: self.beacon_port,
             search_port: self.search_port,
             connection_port: self.connection_port,
