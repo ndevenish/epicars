@@ -6,7 +6,7 @@ use epics::server::{AddBuilderPV, ServerBuilder};
 async fn main() {
     let _server = ServerBuilder::new()
         .beacon_port(5065)
-        .add_pv("Something", 3)
+        .add_pv("something", 3)
         .start()
         .await
         .unwrap();

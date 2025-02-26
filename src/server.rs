@@ -391,18 +391,14 @@ impl ServerBuilder {
         self.connection_port = Some(port);
         self
     }
-    pub async fn start(&self) -> io::Result<Server> {
+    pub async fn start(self) -> io::Result<Server> {
         let mut server = Server {
             beacon_port: self.beacon_port,
             search_port: self.search_port,
             connection_port: self.connection_port,
+            library: Arc::new(Mutex::new(self.library)),
             ..Default::default()
         };
-        server.library.lock().unwrap().insert(
-            "something".to_string(),
-            PV::new("something", Dbr::Double(NumericDBR::default())),
-        );
-
         server.listen().await?;
         Ok(server)
     }
