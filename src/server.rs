@@ -308,27 +308,41 @@ impl Circuit {
                     message.channel_name
                 );
                 let mut buffer = Vec::new();
-                for out_message in self.create_channel(message) {
+                let (messages, channel) = self.create_channel(message);
+                for out_message in messages {
                     buffer.extend(out_message.as_bytes());
                 }
                 // Write the results of channel creation
                 if !buffer.is_empty() {
                     self.stream.write_all(&buffer).await?
                 }
+                if let Ok(channel) = channel {
+                    self.channels.insert(channel.server_id, channel);
+                }
+            }
+            Message::ClearChannel(message) => {
+                println!("{id}:{}: Request to clear channel", message.server_id);
+                self.channels.remove(&message.server_id);
+            }
+            Message::ReadNotify(msg) => {
+                println!("{id}:{}: ReadNotify request", msg.server_id);
             }
             msg => return Err(MessageError::UnexpectedMessage(msg)),
         };
         Ok(())
     }
 
-    fn create_channel(&mut self, message: CreateChannel) -> Vec<Message> {
+    fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel, ()>) {
         let library = self.library.lock().unwrap();
         if !library.contains_key(&message.channel_name) {
             println!(
                 "Got a request for channel to '{}', which we do not have.",
                 message.channel_name
             );
-            return vec![Message::CreateChannelFailure(message.respond_failure())];
+            return (
+                vec![Message::CreateChannelFailure(message.respond_failure())],
+                Err(()),
+            );
         }
         let pv = &library[&message.channel_name];
         let access_rights = AccessRights {
@@ -348,10 +362,17 @@ impl Circuit {
             self.id, id, access_rights.access_rights, message.channel_name
         );
         // We have this channel, send the initial
-        vec![
-            Message::AccessRights(access_rights),
-            Message::CreateChannelResponse(createchan),
-        ]
+        (
+            vec![
+                Message::AccessRights(access_rights),
+                Message::CreateChannelResponse(createchan),
+            ],
+            Ok(Channel {
+                name: message.channel_name,
+                server_id: id,
+                client_id: message.client_id,
+            }),
+        )
     }
 }
 
