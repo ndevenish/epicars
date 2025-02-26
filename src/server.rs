@@ -50,7 +50,7 @@ impl Default for Server {
             last_beacon: Instant::now(),
             beacon_id: 0,
             circuits: Vec::new(),
-            library: Arc::<Mutex<PVLibrary>>::default(),
+            library: Default::default(),
             shutdown: CancellationToken::new(),
             next_circuit_id: 0,
         }
@@ -199,7 +199,6 @@ struct Circuit {
     library: Arc<Mutex<PVLibrary>>,
     stream: TcpStream,
     channels: HashMap<u32, Channel>,
-    cancelled: CancellationToken,
     next_channel_id: u32,
 }
 
@@ -207,6 +206,7 @@ struct Channel {
     name: String,
     client_id: u32,
     server_id: u32,
+    pv: Arc<Mutex<PV>>,
 }
 
 impl Circuit {
@@ -239,7 +239,6 @@ impl Circuit {
             library,
             stream,
             channels: HashMap::new(),
-            cancelled: CancellationToken::new(),
             next_channel_id: 0,
         };
         // Now, everything else is based on responding to events
@@ -282,7 +281,6 @@ impl Circuit {
         }
         // If out here, we are closing the channel
         println!("{id}: Closing circuit");
-        circuit.cancelled.cancel();
         let _ = circuit.stream.shutdown().await;
     }
 
@@ -344,7 +342,8 @@ impl Circuit {
                 Err(()),
             );
         }
-        let pv = &library[&message.channel_name];
+        let pv_arc = &library[&message.channel_name];
+        let pv = pv_arc.lock().unwrap();
         let access_rights = AccessRights {
             client_id: message.client_id,
             access_rights: pv.get_access_right(),
@@ -371,18 +370,17 @@ impl Circuit {
                 name: message.channel_name,
                 server_id: id,
                 client_id: message.client_id,
+                pv: pv_arc.clone(),
             }),
         )
     }
 }
 
-type PVLibrary = HashMap<String, PV>;
-
 pub struct ServerBuilder {
     beacon_port: u16,
     search_port: u16,
     connection_port: Option<u16>,
-    library: PVLibrary,
+    library: HashMap<String, PV>,
 }
 
 impl Default for ServerBuilder {
@@ -416,13 +414,20 @@ impl ServerBuilder {
             beacon_port: self.beacon_port,
             search_port: self.search_port,
             connection_port: self.connection_port,
-            library: Arc::new(Mutex::new(self.library)),
+            library: Arc::new(Mutex::new(
+                self.library
+                    .into_iter()
+                    .map(|(k, v)| (k, Arc::new(Mutex::new(v))))
+                    .collect(),
+            )),
             ..Default::default()
         };
         server.listen().await?;
         Ok(server)
     }
 }
+
+type PVLibrary = HashMap<String, Arc<Mutex<PV>>>;
 
 #[derive(Debug)]
 struct PV {
