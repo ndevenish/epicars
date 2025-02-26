@@ -256,6 +256,8 @@ pub enum MessageError {
     IncorrectCommandId(u16, u16),
     #[error("Invalid message field: {0} == {1}")]
     InvalidField(String, String),
+    #[error("Error: {0}")]
+    ErrorResponse(ErrorCondition),
 }
 
 impl From<nom::Err<nom::error::Error<&[u8]>>> for MessageError {
@@ -1032,7 +1034,8 @@ enum ErrorSeverity {
     Severe = 4,
 }
 
-enum ErrorCondition {
+#[derive(Debug)]
+pub enum ErrorCondition {
     Normal = 0,
     AllocMem = 6,
     TooLarge = 9,
@@ -1108,6 +1111,9 @@ impl ErrorCondition {
             Self::UnrespTmo => ErrorSeverity::Warning,
         }
     }
+    fn eca_code(&self) -> u32 {
+        (&self as usize) as u32
+    }
 }
 impl std::fmt::Display for ErrorCondition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1150,18 +1156,46 @@ impl std::fmt::Display for ErrorCondition {
     }
 }
 
-struct ECAError {
-    error_message: String,
-    client_id: u32,
-    condition: ErrorCondition,
-    original_request: Message,
+pub struct ECAError {
+    pub error_message: String,
+    pub client_id: u32,
+    pub condition: ErrorCondition,
+    pub original_request: Message,
 }
 
-// impl CAMessage for ECAError {
-//     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-//         // Work out how big our message payload is
-//     }
-// }
+impl ECAError {
+    pub fn new(condition: ErrorCondition, client_id: u32, original_request: Message) -> ECAError {
+        ECAError {
+            error_message: format!("{}", condition),
+            client_id,
+            condition,
+            original_request: original_request,
+        }
+    }
+}
+
+impl TryFrom<&RawMessage> for ECAError {
+    type Error = MessageError;
+    fn try_from(value: &RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(11)?;
+        ECAError {
+            client_id: value.field_3_parameter_1,
+            // condition: ErrorCondition.
+        }
+    }
+}
+impl CAMessage for ECAError {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 11,
+            field_1_data_type: 0,
+            field_2_data_count: 0,
+            field_3_parameter_1: self.client_id,
+            field_4_parameter_2: self.condition as u32,
+        }
+        .write(writer)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

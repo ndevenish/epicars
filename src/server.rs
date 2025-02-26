@@ -324,14 +324,15 @@ impl Circuit {
             }
             Message::ReadNotify(msg) => {
                 println!("{id}:{}: ReadNotify request", msg.server_id);
-                let m: RawMessage = {
+                match {
                     let pv = self.channels[&msg.server_id].pv.lock().unwrap();
                     // Read the data into a Vec<u8>
                     let data_count = 0;
                     let data = Vec::new();
                     (&msg.respond(data_count, data)).into()
-                };
-                self.stream.write_all(&m.as_bytes()).await?;
+                } {
+                    Ok(r) => self.stream.write_all(&r.as_bytes()).await?,
+                }
             }
             msg => return Err(MessageError::UnexpectedMessage(msg)),
         };

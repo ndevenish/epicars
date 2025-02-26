@@ -2,6 +2,8 @@
 
 use std::{collections::HashMap, time::Instant};
 
+use crate::messages::{ErrorCondition, MessageError};
+
 #[derive(Default, Debug)]
 pub struct Limits<T> {
     upper: Option<T>,
@@ -127,6 +129,16 @@ impl Dbr {
             category: DBRCategory::Basic,
         }
     }
+    pub fn encode_value(
+        &self,
+        data_type: DBRType,
+        data_count: usize,
+    ) -> Result<(usize, Vec<u8>), ErrorCondition> {
+        if data_type.category != DBRCategory::Basic {
+            return Err(ErrorCondition::BadType);
+        }
+        Ok((0, Vec::new()))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -167,7 +179,7 @@ impl TryFrom<u16> for DBRBasicType {
     }
 }
 /// Mapping of DBR categories
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum DBRCategory {
     Basic = 0,
     Status = 1,
