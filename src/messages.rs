@@ -42,7 +42,6 @@ pub struct RawMessage {
     field_1_data_type: u16,
     field_2_data_count: u32,
     field_3_parameter_1: u32,
-    #[allow(dead_code)]
     field_4_parameter_2: u32,
     payload: Vec<u8>,
 }
@@ -111,75 +110,28 @@ impl RawMessage {
     where
         Self: Sized,
     {
-        let (input, command) = be_u16(input)?;
-        let (input, payload_size) = be_u16(input)?;
-        // "Data Type" is always here, even in large packet headers
-        let (input, field_1) = be_u16(input)?;
-
-        // Handle packets that could be large
-        if payload_size == 0xFFFF {
-            let (input, _) = take(2usize)(input)?;
-            let (input, field_3) = be_u32(input)?;
-            let (input, field_4) = be_u32(input)?;
-            let (input, payload_size) = be_u32(input)?;
-            let (input, field_2) = be_u32(input)?;
-            let (input, payload) = take(payload_size)(input)?;
-
-            Ok((
-                input,
-                RawMessage {
-                    command,
-                    field_1_data_type: field_1,
-                    field_2_data_count: field_2,
-                    field_3_parameter_1: field_3,
-                    field_4_parameter_2: field_4,
-                    payload: payload.to_vec(),
-                },
-            ))
-        } else {
-            let (input, field_2) = be_u16(input)?;
-            let (input, field_3) = be_u32(input)?;
-            let (input, field_4) = be_u32(input)?;
-            let (input, payload) = take(payload_size)(input)?;
-            Ok((
-                input,
-                RawMessage {
-                    command,
-                    field_1_data_type: field_1,
-                    field_2_data_count: field_2 as u32,
-                    field_3_parameter_1: field_3,
-                    field_4_parameter_2: field_4,
-                    payload: payload.to_vec(),
-                },
-            ))
-        }
+        let (input, header) = MessageHeader::parse(input)?;
+        let (input, payload) = take(header.payload_size)(input)?;
+        Ok((
+            input,
+            RawMessage {
+                command: header.command,
+                payload: payload.to_vec(),
+                field_1_data_type: header.field_1_data_type,
+                field_2_data_count: header.field_2_data_count,
+                field_3_parameter_1: header.field_3_parameter_1,
+                field_4_parameter_2: header.field_4_parameter_2,
+            },
+        ))
     }
 }
 
 impl CAMessage for RawMessage {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        // Ensure that the payload is padded out to 8 byte multiple -
-        // the protocol requires this.
-        let payload_size = self.payload.len().div_ceil(8) * 8;
+        let header: MessageHeader = self.into();
 
-        writer.write_all(&self.command.to_be_bytes())?;
-        if payload_size < 0xFFFF && self.field_2_data_count <= 0xFFFF {
-            writer.write_all(&(payload_size as u16).to_be_bytes())?;
-            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
-            writer.write_all(&(self.field_2_data_count as u16).to_be_bytes())?;
-            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
-            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
-        } else {
-            writer.write_all(&0xFFFFu32.to_be_bytes())?;
-            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
-            writer.write_all(&[0x0000])?;
-            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
-            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
-            writer.write_all(&payload_size.to_be_bytes())?;
-            writer.write_all(&self.field_2_data_count.to_be_bytes())?;
-        }
         writer.write_all(&self.payload)?;
-        let extra_bytes = payload_size - self.payload.len();
+        let extra_bytes = header.payload_size as usize - self.payload.len();
         if extra_bytes > 0 {
             writer.write_all(&vec![0; extra_bytes])?;
         }
@@ -198,6 +150,112 @@ where
     Ok((i, v))
 }
 
+/// Parsing message headers, without attempting to read the payload
+struct MessageHeader {
+    pub command: u16,
+    pub payload_size: u32,
+    pub field_1_data_type: u16,
+    pub field_2_data_count: u32,
+    pub field_3_parameter_1: u32,
+    pub field_4_parameter_2: u32,
+}
+
+impl MessageHeader {
+    pub fn parse(input: &[u8]) -> IResult<&[u8], Self>
+    where
+        Self: Sized,
+    {
+        let (input, command) = be_u16(input)?;
+        let (input, payload_size) = be_u16(input)?;
+        // "Data Type" is always here, even in large packet headers
+        let (input, field_1) = be_u16(input)?;
+
+        // Handle packets that could be large
+        if payload_size == 0xFFFF {
+            let (input, _) = take(2usize)(input)?;
+            let (input, field_3) = be_u32(input)?;
+            let (input, field_4) = be_u32(input)?;
+            let (input, payload_size) = be_u32(input)?;
+            let (input, field_2) = be_u32(input)?;
+
+            Ok((
+                input,
+                Self {
+                    command,
+                    payload_size,
+                    field_1_data_type: field_1,
+                    field_2_data_count: field_2,
+                    field_3_parameter_1: field_3,
+                    field_4_parameter_2: field_4,
+                },
+            ))
+        } else {
+            let (input, field_2) = be_u16(input)?;
+            let (input, field_3) = be_u32(input)?;
+            let (input, field_4) = be_u32(input)?;
+            Ok((
+                input,
+                Self {
+                    command,
+                    field_1_data_type: field_1,
+                    field_2_data_count: field_2 as u32,
+                    field_3_parameter_1: field_3,
+                    field_4_parameter_2: field_4,
+                    payload_size: payload_size as u32,
+                },
+            ))
+        }
+    }
+}
+
+impl From<&RawMessage> for MessageHeader {
+    fn from(value: &RawMessage) -> Self {
+        Self {
+            command: value.command,
+            field_1_data_type: value.field_1_data_type,
+            field_2_data_count: value.field_2_data_count,
+            field_3_parameter_1: value.field_3_parameter_1,
+            field_4_parameter_2: value.field_4_parameter_2,
+            payload_size: value.payload_size() as u32,
+        }
+    }
+}
+impl From<RawMessage> for MessageHeader {
+    fn from(value: RawMessage) -> Self {
+        Self {
+            command: value.command,
+            field_1_data_type: value.field_1_data_type,
+            field_2_data_count: value.field_2_data_count,
+            field_3_parameter_1: value.field_3_parameter_1,
+            field_4_parameter_2: value.field_4_parameter_2,
+            payload_size: value.payload_size() as u32,
+        }
+    }
+}
+
+impl CAMessage for MessageHeader {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        let payload_size = self.payload_size.div_ceil(8) * 8;
+
+        writer.write_all(&self.command.to_be_bytes())?;
+        if payload_size < 0xFFFF && self.field_2_data_count <= 0xFFFF {
+            writer.write_all(&(payload_size as u16).to_be_bytes())?;
+            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
+            writer.write_all(&(self.field_2_data_count as u16).to_be_bytes())?;
+            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
+            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
+        } else {
+            writer.write_all(&0xFFFFu32.to_be_bytes())?;
+            writer.write_all(&self.field_1_data_type.to_be_bytes())?;
+            writer.write_all(&[0x0000])?;
+            writer.write_all(&self.field_3_parameter_1.to_be_bytes())?;
+            writer.write_all(&self.field_4_parameter_2.to_be_bytes())?;
+            writer.write_all(&payload_size.to_be_bytes())?;
+            writer.write_all(&self.field_2_data_count.to_be_bytes())?;
+        }
+        Ok(())
+    }
+}
 #[derive(Debug)]
 pub enum Message {
     AccessRights(AccessRights),
@@ -1160,7 +1218,7 @@ pub struct ECAError {
     pub error_message: String,
     pub client_id: u32,
     pub condition: ErrorCondition,
-    pub original_request: Message,
+    pub original_request: MessageHeader,
 }
 
 impl ECAError {
@@ -1169,7 +1227,7 @@ impl ECAError {
             error_message: format!("{}", condition),
             client_id,
             condition,
-            original_request: original_request,
+            original_request: original_request.into().into(),
         }
     }
 }
