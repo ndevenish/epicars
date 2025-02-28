@@ -137,6 +137,7 @@ impl RawMessage {
 impl CAMessage for RawMessage {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         let header: MessageHeader = self.into();
+        header.write(writer)?;
 
         writer.write_all(&self.payload)?;
         let extra_bytes = header.payload_size as usize - self.payload.len();
