@@ -136,11 +136,12 @@ impl RawMessage {
 
 impl CAMessage for RawMessage {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        let payload_size = self.payload.len().div_ceil(8) * 8;
         let header: MessageHeader = self.into();
         header.write(writer)?;
 
         writer.write_all(&self.payload)?;
-        let extra_bytes = header.payload_size as usize - self.payload.len();
+        let extra_bytes = payload_size - self.payload.len();
         if extra_bytes > 0 {
             writer.write_all(&vec![0; extra_bytes])?;
         }
@@ -1387,6 +1388,13 @@ mod tests {
         // Check parsing something that isn't a search
         let raw = b"\x00\x00\x00 \x00\x05\x00\r\x00\x00\x00\x01\x00";
         assert!(Search::parse(raw).is_err());
+
+        // Try responding
+        let response = search.respond(None, 12345, true).as_bytes();
+        assert!(!response.is_empty());
+        let raw_response = RawMessage::parse(response.as_slice()).unwrap().1;
+        println!("Raw result: {:?}", raw_response);
+
         // let raw = []
         // Saw this fail?
         let raw = [
