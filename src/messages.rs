@@ -11,7 +11,7 @@ use nom::{
     error::{ErrorKind, ParseError},
     multi::many0,
     number::complete::{be_f32, be_u16, be_u32},
-    Err, Finish, IResult, Parser,
+    Err, IResult, Parser,
 };
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, net::TcpStream};
@@ -1371,10 +1371,9 @@ mod tests {
         let ver = all_consuming(Version::parse).parse(raw).unwrap().1;
         println!("Version: {:?}", ver);
         assert_eq!(ver.priority, 1);
-        let mut writer = Cursor::new(Vec::new());
-        ver.write(&mut writer).unwrap();
-        assert_eq!(writer.stream_position().unwrap(), 16);
-        assert_eq!(writer.into_inner(), raw);
+        let bytes = ver.as_bytes();
+        assert_eq!(bytes.len(), 16);
+        assert_eq!(bytes, raw);
     }
 
     #[test]
