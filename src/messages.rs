@@ -151,7 +151,7 @@ where
 }
 
 /// Parsing message headers, without attempting to read the payload
-struct MessageHeader {
+pub struct MessageHeader {
     pub command: u16,
     pub payload_size: u32,
     pub field_1_data_type: u16,
@@ -161,6 +161,14 @@ struct MessageHeader {
 }
 
 impl MessageHeader {
+    pub fn header_size(&self) -> usize {
+        if self.payload_size < 0xFFFF && self.field_2_data_count <= 0xFFFF {
+            16
+        } else {
+            32
+        }
+    }
+
     pub fn parse(input: &[u8]) -> IResult<&[u8], Self>
     where
         Self: Sized,
@@ -312,8 +320,8 @@ pub enum MessageError {
     UnexpectedMessage(Message),
     #[error("Message command ID ({0}) does not match expected ({1})")]
     IncorrectCommandId(u16, u16),
-    #[error("Invalid message field: {0} == {1}")]
-    InvalidField(String, String),
+    #[error("Invalid message field: {0}")]
+    InvalidField(String),
     #[error("Error: {0}")]
     ErrorResponse(ErrorCondition),
 }
@@ -738,10 +746,9 @@ impl TryFrom<u32> for AccessRight {
             1 => Ok(AccessRight::Read),
             2 => Ok(AccessRight::Write),
             3 => Ok(AccessRight::ReadWrite),
-            _ => Err(MessageError::InvalidField(
-                "AccessRight".to_owned(),
-                format!("{}", value),
-            )),
+            _ => Err(MessageError::InvalidField(format!(
+                "Invalid AccessRight: {value}"
+            ))),
         }
     }
 }
@@ -959,18 +966,17 @@ impl TryFrom<RawMessage> for EventAdd {
         value.expect_id(1)?;
         if value.payload_size() != 16 {
             return Err(MessageError::InvalidField(
-                "Payload".to_string(),
-                "not 16 bytes".to_string(),
+                "Payload not 16 bytes".to_string(),
             ));
         }
         let (_, (_, _, _, mask)) = (be_f32::<&[u8], MessageError>, be_f32, be_f32, be_u16)
             .parse(value.payload.as_slice())?;
         Ok(EventAdd {
             data_type: DBRType::try_from(value.field_1_data_type).map_err(|_| {
-                MessageError::InvalidField(
-                    "Data Type".to_string(),
-                    format!("{}", value.field_1_data_type),
-                )
+                MessageError::InvalidField(format!(
+                    "Invalid Data Type Value: {}",
+                    value.field_1_data_type
+                ))
             })?,
             data_count: value.field_2_data_count,
             server_id: value.field_3_parameter_1,
@@ -1023,10 +1029,10 @@ impl TryFrom<RawMessage> for ReadNotify {
         value.expect_id(15)?;
         Ok(ReadNotify {
             data_type: value.field_1_data_type.try_into().map_err(|_| {
-                MessageError::InvalidField(
-                    "data type".to_owned(),
-                    format!("{}", value.field_1_data_type),
-                )
+                MessageError::InvalidField(format!(
+                    "Invalid data type value: {}",
+                    value.field_1_data_type
+                ))
             })?,
             data_count: value.field_2_data_count,
             server_id: value.field_3_parameter_1,
@@ -1075,6 +1081,26 @@ impl From<&ReadNotifyResponse> for RawMessage {
     }
 }
 
+impl TryFrom<RawMessage> for ReadNotifyResponse {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(15)?;
+        Ok(ReadNotifyResponse {
+            data_type: DBRType::try_from(value.field_1_data_type)
+                .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
+            data_count: value.field_2_data_count,
+            server_id: value.field_3_parameter_1,
+            client_ioid: value.field_4_parameter_2,
+            data: value.payload,
+        })
+    }
+}
+
+impl CAMessage for ReadNotifyResponse {
+    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage::from(self).write(writer)
+    }
+}
 #[derive(Debug)]
 pub struct WriteChannel {}
 
@@ -1092,7 +1118,7 @@ enum ErrorSeverity {
     Severe = 4,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum ErrorCondition {
     Normal = 0,
     AllocMem = 6,
@@ -1170,7 +1196,7 @@ impl ErrorCondition {
         }
     }
     fn eca_code(&self) -> u32 {
-        (&self as usize) as u32
+        *self as u32
     }
 }
 impl std::fmt::Display for ErrorCondition {
@@ -1214,6 +1240,51 @@ impl std::fmt::Display for ErrorCondition {
     }
 }
 
+impl TryFrom<u32> for ErrorCondition {
+    type Error = MessageError;
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            x if x == Self::Normal as u32 => Ok(Self::Normal),
+            x if x == Self::AllocMem as u32 => Ok(Self::AllocMem),
+            x if x == Self::TooLarge as u32 => Ok(Self::TooLarge),
+            x if x == Self::Timeout as u32 => Ok(Self::Timeout),
+            x if x == Self::BadType as u32 => Ok(Self::BadType),
+            x if x == Self::Internal as u32 => Ok(Self::Internal),
+            x if x == Self::DblClFail as u32 => Ok(Self::DblClFail),
+            x if x == Self::GetFail as u32 => Ok(Self::GetFail),
+            x if x == Self::PutFail as u32 => Ok(Self::PutFail),
+            x if x == Self::BadCount as u32 => Ok(Self::BadCount),
+            x if x == Self::BadStr as u32 => Ok(Self::BadStr),
+            x if x == Self::Disconn as u32 => Ok(Self::Disconn),
+            x if x == Self::EvDisallow as u32 => Ok(Self::EvDisallow),
+            x if x == Self::BadMonId as u32 => Ok(Self::BadMonId),
+            x if x == Self::BadMask as u32 => Ok(Self::BadMask),
+            x if x == Self::IoDone as u32 => Ok(Self::IoDone),
+            x if x == Self::IoInProgress as u32 => Ok(Self::IoInProgress),
+            x if x == Self::BadSyncGrp as u32 => Ok(Self::BadSyncGrp),
+            x if x == Self::PutCbInProg as u32 => Ok(Self::PutCbInProg),
+            x if x == Self::NoRdAccess as u32 => Ok(Self::NoRdAccess),
+            x if x == Self::NoWtAccess as u32 => Ok(Self::NoWtAccess),
+            x if x == Self::Anachronism as u32 => Ok(Self::Anachronism),
+            x if x == Self::NoSearchAddr as u32 => Ok(Self::NoSearchAddr),
+            x if x == Self::NoConvert as u32 => Ok(Self::NoConvert),
+            x if x == Self::BadChId as u32 => Ok(Self::BadChId),
+            x if x == Self::BadFuncPtr as u32 => Ok(Self::BadFuncPtr),
+            x if x == Self::IsAttached as u32 => Ok(Self::IsAttached),
+            x if x == Self::UnavailInServ as u32 => Ok(Self::UnavailInServ),
+            x if x == Self::ChanDestroy as u32 => Ok(Self::ChanDestroy),
+            x if x == Self::BadPriority as u32 => Ok(Self::BadPriority),
+            x if x == Self::NotThreaded as u32 => Ok(Self::NotThreaded),
+            x if x == Self::Array16kClient as u32 => Ok(Self::Array16kClient),
+            x if x == Self::ConnSeqTmo as u32 => Ok(Self::ConnSeqTmo),
+            x if x == Self::UnrespTmo as u32 => Ok(Self::UnrespTmo),
+            _ => Err(MessageError::InvalidField(format!(
+                "ErrorCondition {value} unrecognised"
+            ))),
+        }
+    }
+}
+
 pub struct ECAError {
     pub error_message: String,
     pub client_id: u32,
@@ -1223,11 +1294,15 @@ pub struct ECAError {
 
 impl ECAError {
     pub fn new(condition: ErrorCondition, client_id: u32, original_request: Message) -> ECAError {
+        let header = MessageHeader::parse(original_request.as_bytes().as_slice())
+            .unwrap()
+            .1;
+
         ECAError {
             error_message: format!("{}", condition),
             client_id,
             condition,
-            original_request: original_request.into().into(),
+            original_request: header,
         }
     }
 }
@@ -1236,12 +1311,25 @@ impl TryFrom<&RawMessage> for ECAError {
     type Error = MessageError;
     fn try_from(value: &RawMessage) -> Result<Self, Self::Error> {
         value.expect_id(11)?;
-        ECAError {
+
+        let (i, header) = MessageHeader::parse(value.payload.as_slice())?;
+
+        Ok(ECAError {
             client_id: value.field_3_parameter_1,
-            // condition: ErrorCondition.
-        }
+            condition: ErrorCondition::try_from(value.field_4_parameter_2)?,
+            original_request: header,
+            error_message: padded_string(i.len())(i)?.1,
+        })
     }
 }
+impl TryFrom<RawMessage> for ECAError {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        let m: Self = value.try_into()?;
+        Ok(m)
+    }
+}
+
 impl CAMessage for ECAError {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
@@ -1249,7 +1337,8 @@ impl CAMessage for ECAError {
             field_1_data_type: 0,
             field_2_data_count: 0,
             field_3_parameter_1: self.client_id,
-            field_4_parameter_2: self.condition as u32,
+            field_4_parameter_2: self.condition.eca_code(),
+            payload: self.original_request.as_bytes().to_vec(),
         }
         .write(writer)
     }

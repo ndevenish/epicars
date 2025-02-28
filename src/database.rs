@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, time::Instant};
 
-use crate::messages::{ErrorCondition, MessageError};
+use crate::messages::ErrorCondition;
 
 #[derive(Default, Debug)]
 pub struct Limits<T> {

@@ -19,7 +19,8 @@ use crate::{
     database::{Dbr, DbrValue, NumericDBR, SingleOrVec},
     messages::{
         self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
-        CreateChannelResponse, Message, MessageError, RawMessage,
+        CreateChannelResponse, ECAError, ErrorCondition, Message, MessageError, ReadNotify,
+        ReadNotifyResponse,
     },
     new_reusable_udp_socket,
 };
@@ -245,33 +246,39 @@ impl Circuit {
         loop {
             let message = match Message::read_server_message(&mut circuit.stream).await {
                 Ok(message) => message,
-                Err(err) => match err {
-                    // Handle various cases that could lead to this failing
-                    MessageError::IO(io) => {
-                        // Just fail the circuit completely, could inspect io.kind later
-                        println!("{id}: IO Error reading server message: {}", io);
-                        break;
+                Err(err) => {
+                    match err {
+                        // Handle various cases that could lead to this failing
+                        MessageError::IO(io) => {
+                            // Just fail the circuit completely, could inspect io.kind later
+                            println!("{id}: IO Error reading server message: {}", io);
+                            break;
+                        }
+                        MessageError::UnknownCommandId(command_id) => {
+                            println!("{id}: Error: Receieved unknown command id: {command_id}");
+                            continue;
+                        }
+                        MessageError::ParsingError(msg) => {
+                            println!("{id}: Error: Incoming message parse error: {}", msg);
+                            continue;
+                        }
+                        MessageError::UnexpectedMessage(msg) => {
+                            println!("{id}: Error: Got message from client that is invalid to receive on a server: {msg:?}");
+                            continue;
+                        }
+                        MessageError::IncorrectCommandId(msg, expect) => {
+                            panic!("{id}: Fatal error: Got {msg} instead of {expect}")
+                        }
+                        MessageError::InvalidField(message) => {
+                            println!("{id}: Got invalid message field: {message}");
+                            continue;
+                        }
+                        MessageError::ErrorResponse(message) => {
+                            println!("{id}: Got reading server messages generated error response: {message}");
+                            continue;
+                        }
                     }
-                    MessageError::UnknownCommandId(command_id) => {
-                        println!("{id}: Error: Receieved unknown command id: {command_id}");
-                        continue;
-                    }
-                    MessageError::ParsingError(msg) => {
-                        println!("{id}: Error: Incoming message parse error: {}", msg);
-                        continue;
-                    }
-                    MessageError::UnexpectedMessage(msg) => {
-                        println!("{id}: Error: Got message from client that is invalid to receive on a server: {msg:?}");
-                        continue;
-                    }
-                    MessageError::IncorrectCommandId(msg, expect) => {
-                        panic!("{id}: Fatal error: Got {msg} instead of {expect}")
-                    }
-                    MessageError::InvalidField(key, value) => {
-                        println!("{id}: Got invalid message field: {key}={value}");
-                        continue;
-                    }
-                },
+                }
             };
             if let Err(MessageError::UnexpectedMessage(msg)) = circuit.handle_message(message).await
             {
@@ -324,19 +331,26 @@ impl Circuit {
             }
             Message::ReadNotify(msg) => {
                 println!("{id}:{}: ReadNotify request", msg.server_id);
-                match {
-                    let pv = self.channels[&msg.server_id].pv.lock().unwrap();
-                    // Read the data into a Vec<u8>
-                    let data_count = 0;
-                    let data = Vec::new();
-                    (&msg.respond(data_count, data)).into()
-                } {
+                match self.do_read(&msg) {
                     Ok(r) => self.stream.write_all(&r.as_bytes()).await?,
+                    Err(e) => {
+                        // Send an error in response to the read
+                        let err = ECAError::new(e, msg.client_ioid, Message::ReadNotify(msg));
+                        self.stream.write_all(&err.as_bytes()).await?
+                    }
                 }
             }
             msg => return Err(MessageError::UnexpectedMessage(msg)),
-        };
+        }
         Ok(())
+    }
+
+    fn do_read(&self, request: &ReadNotify) -> Result<ReadNotifyResponse, ErrorCondition> {
+        let pv = self.channels[&request.server_id].pv.lock().unwrap();
+        // Read the data into a Vec<u8>
+        let data_count = 0;
+        let data = Vec::new();
+        Ok(request.respond(data_count, data))
     }
 
     fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel, ()>) {
