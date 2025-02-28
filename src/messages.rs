@@ -25,6 +25,14 @@ const EPICS_VERSION: u16 = 13;
 /// Also adds common interface for writing a message struct to a writer.
 pub trait CAMessage: TryFrom<RawMessage> {
     fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
+    fn parse(input: &[u8]) -> IResult<&[u8], Self> {
+        let (i, raw) = RawMessage::parse(input)?;
+        let converted: Self = raw
+            .try_into()
+            .map_err(|_| nom::Err::Error(nom::error::Error::new(input, ErrorKind::IsNot)))?;
+
+        Ok((i, converted))
+    }
 }
 
 /// Represents the content of any message
@@ -138,16 +146,6 @@ impl CAMessage for RawMessage {
 
         Ok(())
     }
-}
-
-fn parse_message<T>(input: &[u8]) -> IResult<&[u8], T, MessageError>
-where
-    T: CAMessage + TryFrom<RawMessage, Error = MessageError>,
-{
-    let (i, r) = RawMessage::parse(input)
-        .map_err(|e| nom::Err::Error(MessageError::ParsingError(e.to_owned())))?;
-    let v = r.try_into().map_err(nom::Err::Error)?;
-    Ok((i, v))
 }
 
 /// Parsing message headers, without attempting to read the payload
@@ -617,11 +615,9 @@ impl CAMessage for SearchResponse {
 
 pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, MessageError> {
     // Starts with a version packet
-    let (input, _) = parse_message::<Version>(input).finish()?;
+    let (input, _) = Version::parse(input)?;
     // Then a stream of multiple messages
-    let (_, messages) = all_consuming(many0(parse_message::<Search>))
-        .parse(input)
-        .finish()?;
+    let (_, messages) = all_consuming(many0(Search::parse)).parse(input)?;
 
     Ok(messages)
 }
@@ -1353,7 +1349,7 @@ mod tests {
         let raw_beacon = b"\x00\x0d\x00\x00\x00\x0d\x92\x32\x00\x06\xde\xde\xac\x17\x7c\xcf";
         // let mut reader = Cursor::new(raw_beacon);
         // let beacon: CA_PROTO_RSRV_IS_UP = reader.read_be().unwrap();
-        let (_, beacon) = RsrvIsUp::parse(raw_beacon).unwrap();
+        let beacon: RsrvIsUp = RawMessage::parse(raw_beacon).unwrap().1.try_into().unwrap();
         assert_eq!(beacon.server_port, 37426);
         assert_eq!(beacon.beacon_id, 450270);
         assert_eq!(
@@ -1372,7 +1368,7 @@ mod tests {
     fn parse_version() {
         let raw = b"\x00\x00\x00\x00\x00\x01\x00\x0d\x00\x00\x00\x00\x00\x00\x00\x00";
         // let mut reader = Cursor::new(raw);
-        let (_, ver) = Version::parse(raw).unwrap();
+        let ver = all_consuming(Version::parse).parse(raw).unwrap().1;
         println!("Version: {:?}", ver);
         assert_eq!(ver.priority, 1);
         let mut writer = Cursor::new(Vec::new());
@@ -1384,7 +1380,7 @@ mod tests {
     #[test]
     fn parse_search() {
         let raw = b"\x00\x06\x00 \x00\x05\x00\r\x00\x00\x00\x01\x00\x00\x00\x01ME02P-MO-ALIGN-01:Z:TEMPAAAAAAA\x00";
-        let (_, search) = Search::parse(raw).unwrap();
+        let search = all_consuming(Search::parse).parse(raw).unwrap().1;
         assert_eq!(search.channel_name, "ME02P-MO-ALIGN-01:Z:TEMPAAAAAAA");
         assert!(!search.should_reply);
         assert_eq!(search.search_id, 1);
