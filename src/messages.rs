@@ -3,6 +3,7 @@
 use std::{
     io::{self, Cursor, Write},
     net::Ipv4Addr,
+    ops::Shl,
 };
 
 use nom::{
@@ -1016,7 +1017,7 @@ impl ReadNotify {
             data_type: self.data_type,
             data_count: data_count as u32,
             client_ioid: self.client_ioid,
-            server_id: self.server_id,
+            status_id: ErrorCondition::Normal.eca_code(),
             data,
         }
     }
@@ -1061,7 +1062,7 @@ impl CAMessage for ReadNotify {
 pub struct ReadNotifyResponse {
     data_type: DBRType,
     data_count: u32,
-    server_id: u32,
+    status_id: u32,
     client_ioid: u32,
     data: Vec<u8>,
 }
@@ -1072,7 +1073,7 @@ impl From<&ReadNotifyResponse> for RawMessage {
             command: 15,
             field_1_data_type: value.data_type.into(),
             field_2_data_count: value.data_count,
-            field_3_parameter_1: value.server_id,
+            field_3_parameter_1: value.status_id,
             field_4_parameter_2: value.client_ioid,
             payload: value.data.clone(),
         }
@@ -1087,7 +1088,7 @@ impl TryFrom<RawMessage> for ReadNotifyResponse {
             data_type: DBRType::try_from(value.field_1_data_type)
                 .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
             data_count: value.field_2_data_count,
-            server_id: value.field_3_parameter_1,
+            status_id: value.field_3_parameter_1,
             client_ioid: value.field_4_parameter_2,
             data: value.payload,
         })
@@ -1194,7 +1195,8 @@ impl ErrorCondition {
         }
     }
     fn eca_code(&self) -> u32 {
-        *self as u32
+        let val = *self as u32;
+        val.shl(3) + (self.get_severity() as u32)
     }
 }
 impl std::fmt::Display for ErrorCondition {
