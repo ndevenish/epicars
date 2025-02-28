@@ -70,13 +70,28 @@ fn get_broadcast_ips() -> Vec<Ipv4Addr> {
         .collect()
 }
 
+async fn try_bind_ports(
+    request_port: Option<u16>,
+) -> Result<tokio::net::TcpListener, std::io::Error> {
+    match request_port {
+        None => {
+            // Try binding TCP 5064
+            if let Ok(socket) = tokio::net::TcpListener::bind("0.0.0.0:5064").await {
+                return Ok(socket);
+            }
+            tokio::net::TcpListener::bind("0.0.0.0:0").await
+        }
+        Some(port) => tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await,
+    }
+}
+
 impl Server {
     async fn listen(&mut self) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
-        let request_port = self.connection_port.unwrap_or(40000);
+        let request_port = self.connection_port;
 
-        let connection_socket =
-            tokio::net::TcpListener::bind(format!("0.0.0.0:{}", request_port)).await?;
+        // Try to bind 5064
+        let connection_socket = try_bind_ports(request_port).await?;
 
         let listen_port = connection_socket.local_addr().unwrap().port();
 
