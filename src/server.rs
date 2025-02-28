@@ -330,7 +330,7 @@ impl Circuit {
                 self.channels.remove(&message.server_id);
             }
             Message::ReadNotify(msg) => {
-                println!("{id}:{}: ReadNotify request", msg.server_id);
+                println!("{id}:{}: ReadNotify request: {:?}", msg.server_id, msg);
                 match self.do_read(&msg) {
                     Ok(r) => self.stream.write_all(&r.as_bytes()).await?,
                     Err(e) => {
@@ -349,7 +349,7 @@ impl Circuit {
         let pv = self.channels[&request.server_id].pv.lock().unwrap();
         // Read the data into a Vec<u8>
         let data_count = 0;
-        let data = Vec::new();
+        let data = 42u32.to_be_bytes().to_vec();
         Ok(request.respond(data_count, data))
     }
 
