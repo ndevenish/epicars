@@ -363,8 +363,11 @@ impl Circuit {
     fn do_read(&self, request: &ReadNotify) -> Result<ReadNotifyResponse, ErrorCondition> {
         let pv = self.channels[&request.server_id].pv.lock().unwrap();
         // Read the data into a Vec<u8>
-        let data_count = 1;
-        let data = 42u32.to_be_bytes().to_vec();
+        let (data_count, data) = pv
+            .record
+            .encode_value(request.data_type, request.data_count as usize)?;
+        // let data_count = 1;
+        // let data = 42u32.to_be_bytes().to_vec();
         Ok(request.respond(data_count, data))
     }
 

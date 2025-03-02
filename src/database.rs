@@ -1,6 +1,11 @@
 #![allow(dead_code)]
 
-use std::{collections::HashMap, time::Instant};
+// let EPICS_EPOCH = UNIX_EPOCH
+use std::{
+    collections::HashMap,
+    io::{Cursor, Write},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::messages::ErrorCondition;
 
@@ -32,7 +37,7 @@ pub struct NumericDBR<T> {
     pub units: String,
     pub limits: LimitSet<T>,
     pub value: SingleOrVec<T>,
-    pub last_updated: Instant,
+    pub last_updated: SystemTime,
 }
 impl<T> NumericDBR<T> {
     fn get_count(&self) -> usize {
@@ -54,7 +59,7 @@ where
             units: Default::default(),
             limits: Default::default(),
             value: SingleOrVec::Single(T::default()),
-            last_updated: Instant::now(),
+            last_updated: SystemTime::now(),
         }
     }
 }
@@ -63,6 +68,7 @@ pub struct StringDBR {
     status: i16,
     severity: i16,
     value: String,
+    last_updated: SystemTime,
 }
 #[derive(Debug)]
 pub struct EnumDBR {
@@ -70,6 +76,7 @@ pub struct EnumDBR {
     severity: i16,
     strings: HashMap<u16, String>,
     value: u16,
+    last_updated: SystemTime,
 }
 #[derive(Debug)]
 pub enum Dbr {
@@ -81,18 +88,8 @@ pub enum Dbr {
     Float(NumericDBR<f32>),
     Double(NumericDBR<f64>),
 }
+
 impl Dbr {
-    // fn value_default(&self) -> DbrValue {
-    //     match self {
-    //         Dbr::Enum(_) => DbrValue::Enum(0),
-    //         Dbr::String(_) => DbrValue::String(String::new()),
-    //         Dbr::Char(_) => DbrValue::Char(0),
-    //         Dbr::Int(_) => DbrValue::Int(0),
-    //         Dbr::Long(_) => DbrValue::Long(0),
-    //         Dbr::Float(_) => DbrValue::Float(0.0),
-    //         Dbr::Double(_) => DbrValue::Double(0.0),
-    //     }
-    // }
     pub fn get_count(&self) -> usize {
         match self {
             Dbr::Enum(_) => 1,
@@ -129,14 +126,80 @@ impl Dbr {
             category: DBRCategory::Basic,
         }
     }
+    fn get_status(&self) -> (i16, i16) {
+        match self {
+            Dbr::Enum(dbr) => (dbr.status, dbr.severity),
+            Dbr::String(dbr) => (dbr.status, dbr.severity),
+            Dbr::Char(dbr) => (dbr.status, dbr.severity),
+            Dbr::Int(dbr) => (dbr.status, dbr.severity),
+            Dbr::Long(dbr) => (dbr.status, dbr.severity),
+            Dbr::Float(dbr) => (dbr.status, dbr.severity),
+            Dbr::Double(dbr) => (dbr.status, dbr.severity),
+        }
+    }
+    fn get_last_updated(&self) -> SystemTime {
+        match self {
+            Dbr::Enum(dbr) => dbr.last_updated,
+            Dbr::String(dbr) => dbr.last_updated,
+            Dbr::Char(dbr) => dbr.last_updated,
+            Dbr::Int(dbr) => dbr.last_updated,
+            Dbr::Long(dbr) => dbr.last_updated,
+            Dbr::Float(dbr) => dbr.last_updated,
+            Dbr::Double(dbr) => dbr.last_updated,
+        }
+    }
+
     pub fn encode_value(
         &self,
         data_type: DBRType,
         data_count: usize,
     ) -> Result<(usize, Vec<u8>), ErrorCondition> {
+        let mut metadata = Cursor::new(Vec::new());
+        // Status, severity always come first, if requested
         if data_type.category != DBRCategory::Basic {
+            // Write the status metadata
+            let (status, severity) = self.get_status();
+            metadata.write_all(&status.to_be_bytes()).unwrap();
+            metadata.write_all(&severity.to_be_bytes()).unwrap();
+        }
+        // Only TIME category writes timestamp information
+        if data_type.category == DBRCategory::Time {
+            let unix_time = self.get_last_updated().duration_since(UNIX_EPOCH).unwrap();
+
+            let time_s = unix_time.as_secs() as i32 - 631152000i32;
+            let time_ns = unix_time.subsec_nanos();
+            metadata.write_all(&time_s.to_be_bytes()).unwrap();
+            metadata.write_all(&time_ns.to_be_bytes()).unwrap();
+        }
+        // For now, we don't understand the CTRL structures well enough
+        if data_type.category == DBRCategory::Control {
             return Err(ErrorCondition::BadType);
         }
+        if data_type.category == DBRCategory::Graphics {
+            // Enum, String are special... handle those later
+            match data_type.basic_type {
+                DBRBasicType::Enum | DBRBasicType::String => {
+                    println!("Ignoring request for graphical string or enum");
+                    return Err(ErrorCondition::BadType);
+                }
+                _ => {}
+            }
+        }
+        // Handle padding via lookup table
+        let padding = match (data_type.category, data_type.basic_type) {
+            (DBRCategory::Status, DBRBasicType::Char) => 1,
+            (DBRCategory::Status, DBRBasicType::Double) => 4,
+            (DBRCategory::Time, DBRBasicType::Int) => 2,
+            (DBRCategory::Time, DBRBasicType::Enum) => 2,
+            (DBRCategory::Time, DBRBasicType::Char) => 3,
+            (DBRCategory::Time, DBRBasicType::Double) => 4,
+            (DBRCategory::Graphics, DBRBasicType::Float) => 2,
+            (DBRCategory::Graphics, DBRBasicType::Char) => 1,
+            (DBRCategory::Control, DBRBasicType::Char) => 1,
+            _ => 0,
+        };
+        metadata.write_all(&vec![0u8; padding]).unwrap();
+
         Ok((0, Vec::new()))
     }
 }
