@@ -185,20 +185,23 @@ impl Dbr {
                 _ => {}
             }
         }
-        // Handle padding via lookup table
-        let padding = match (data_type.category, data_type.basic_type) {
-            (DBRCategory::Status, DBRBasicType::Char) => 1,
-            (DBRCategory::Status, DBRBasicType::Double) => 4,
-            (DBRCategory::Time, DBRBasicType::Int) => 2,
-            (DBRCategory::Time, DBRBasicType::Enum) => 2,
-            (DBRCategory::Time, DBRBasicType::Char) => 3,
-            (DBRCategory::Time, DBRBasicType::Double) => 4,
-            (DBRCategory::Graphics, DBRBasicType::Float) => 2,
-            (DBRCategory::Graphics, DBRBasicType::Char) => 1,
-            (DBRCategory::Control, DBRBasicType::Char) => 1,
-            _ => 0,
+        // Handle insertion of padding
+        metadata
+            .write_all(&vec![0u8; data_type.get_metadata_padding()])
+            .unwrap();
+
+        // Finally... fetching of raw data. Let's start by doing all the
+        // matching here, as we don't need to worry about types to hold
+        // the cross-conversions.
+        let converted_type = match data_type.basic_type {
+            DBRBasicType::Char => {}
+            DBRBasicType::Int => {}
+            DBRBasicType::Long => {}
+            DBRBasicType::Float => {}
+            DBRBasicType::Double => {}
+            DBRBasicType::String => {}
+            DBRBasicType::Enum => {}
         };
-        metadata.write_all(&vec![0u8; padding]).unwrap();
 
         Ok((0, Vec::new()))
     }
@@ -283,5 +286,22 @@ impl TryFrom<u16> for DBRType {
 impl From<DBRType> for u16 {
     fn from(value: DBRType) -> Self {
         value.category as u16 * 7 + value.basic_type as u16
+    }
+}
+
+impl DBRType {
+    fn get_metadata_padding(&self) -> usize {
+        match (self.category, self.basic_type) {
+            (DBRCategory::Status, DBRBasicType::Char) => 1,
+            (DBRCategory::Status, DBRBasicType::Double) => 4,
+            (DBRCategory::Time, DBRBasicType::Int) => 2,
+            (DBRCategory::Time, DBRBasicType::Enum) => 2,
+            (DBRCategory::Time, DBRBasicType::Char) => 3,
+            (DBRCategory::Time, DBRBasicType::Double) => 4,
+            (DBRCategory::Graphics, DBRBasicType::Float) => 2,
+            (DBRCategory::Graphics, DBRBasicType::Char) => 1,
+            (DBRCategory::Control, DBRBasicType::Char) => 1,
+            _ => 0,
+        }
     }
 }
