@@ -10,7 +10,7 @@ use std::{
 
 use crate::messages::ErrorCondition;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Limits<T> {
     upper: Option<T>,
     lower: Option<T>,
@@ -38,7 +38,7 @@ impl<T> Limits<T> {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct LimitSet<T> {
     display_limits: Limits<T>,
     warning_limits: Limits<T>,
@@ -104,7 +104,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NumericDBR<T>
 where
     T: ToBytes,
@@ -285,7 +285,12 @@ impl Dbr {
         // matching here, as we don't need to worry about types to hold
         // the cross-conversions.
         let converted_type = match data_type.basic_type {
-            DBRBasicType::Char => {}
+            DBRBasicType::Char => match self {
+                Dbr::Char(val) => Dbr::Char(val.clone()),
+                Dbr::Int(val) => {
+                    Dbr::Char(val.convert_to().map_err(|_| ErrorCondition::NoConvert)?)
+                }
+            },
             DBRBasicType::Int => {}
             DBRBasicType::Long => {}
             DBRBasicType::Float => {}
