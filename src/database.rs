@@ -335,6 +335,14 @@ impl From<DBRType> for u16 {
 }
 
 impl DBRType {
+    /// Give the lookup for the padding for each DBR type
+    ///
+    /// When encoding a return packet, there is a datatype-specific
+    /// padding to be inserted between the metadata about the value and
+    /// the actual value itself. This is given as a lookup table rather
+    /// than a calculations.
+    ///
+    /// See https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types
     fn get_metadata_padding(&self) -> usize {
         match (self.category, self.basic_type) {
             (DBRCategory::Status, DBRBasicType::Char) => 1,
