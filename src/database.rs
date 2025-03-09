@@ -22,14 +22,78 @@ pub struct LimitSet<T> {
     alarm_limits: Limits<T>,
 }
 
+/// Trait so that we can impose generic bounds on basic scalars that
+/// are supported by EPICS.
+pub trait ToBeBytes {
+    fn to_be_bytes(&self) -> Vec<u8>;
+}
+
+/// Quick Macro to declare this for a given numeric type
+macro_rules! impl_to_be_bytes {
+    ($t:ty) => {
+        impl ToBeBytes for $t {
+            fn to_be_bytes(&self) -> Vec<u8> {
+                <$t>::to_be_bytes(*self).to_vec()
+            }
+        }
+    };
+}
+
+// .. and do this for everything CA handles
+impl_to_be_bytes!(i8);
+impl_to_be_bytes!(i16);
+impl_to_be_bytes!(i32);
+impl_to_be_bytes!(f32);
+impl_to_be_bytes!(f64);
+
 #[derive(Clone, Debug)]
-pub enum SingleOrVec<T> {
+pub enum SingleOrVec<T>
+where
+    T: ToBeBytes,
+{
     Single(T),
     Vector(Vec<T>),
 }
 
+impl<T> SingleOrVec<T>
+where
+    T: ToBeBytes,
+{
+    /// Encode this value as a byte array
+    fn as_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::Single(val) => val.to_be_bytes().to_vec(),
+            Self::Vector(vec) => vec.iter().flat_map(|f| f.to_be_bytes()).collect(),
+        }
+    }
+    fn get_count(&self) -> usize {
+        match self {
+            SingleOrVec::Single(_) => 1,
+            SingleOrVec::Vector(v) => v.len(),
+        }
+    }
+    /// Convert to an equivalent SingleOrVec for a different type. This
+    /// will convert safely e.g. will fail if it cannot be represented
+    /// in the new type.
+    fn convert_to<U: ToBeBytes + for<'a> TryFrom<&'a T>>(&self) -> Result<SingleOrVec<U>, ()> {
+        Ok(match self {
+            Self::Single(val) => SingleOrVec::Single(U::try_from(val).map_err(|_| ())?),
+
+            Self::Vector(vec) => SingleOrVec::Vector(
+                vec.iter()
+                    .map(U::try_from)
+                    .map(|x| x.map_err(|_| ()))
+                    .collect::<Result<Vec<U>, ()>>()?,
+            ),
+        })
+    }
+}
+
 #[derive(Debug)]
-pub struct NumericDBR<T> {
+pub struct NumericDBR<T>
+where
+    T: ToBeBytes,
+{
     pub status: i16,
     pub severity: i16,
     /// Only makes sense for FLOAT/DOUBLE, here to try and avoid duplication
@@ -39,17 +103,18 @@ pub struct NumericDBR<T> {
     pub value: SingleOrVec<T>,
     pub last_updated: SystemTime,
 }
-impl<T> NumericDBR<T> {
+impl<T> NumericDBR<T>
+where
+    T: ToBeBytes,
+{
     fn get_count(&self) -> usize {
-        match &self.value {
-            &SingleOrVec::Single(_) => 1,
-            SingleOrVec::Vector(v) => v.len(),
-        }
+        self.value.get_count()
     }
 }
+
 impl<T> Default for NumericDBR<T>
 where
-    T: Default,
+    T: Default + ToBeBytes,
 {
     fn default() -> Self {
         Self {
