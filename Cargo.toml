@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 nom = "8.0.0"
+num = "0.4.3"
 pnet = { version = "0.35.0", default-features = false, features = [
     "pnet_datalink",
     "std",

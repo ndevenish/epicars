@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 // let EPICS_EPOCH = UNIX_EPOCH
+use num::traits::ToBytes;
 use std::{
     collections::HashMap,
     io::{Cursor, Write},
@@ -22,34 +23,10 @@ pub struct LimitSet<T> {
     alarm_limits: Limits<T>,
 }
 
-/// Trait so that we can impose generic bounds on basic scalars that
-/// are supported by EPICS.
-pub trait ToBeBytes {
-    fn to_be_bytes(&self) -> Vec<u8>;
-}
-
-/// Quick Macro to declare this for a given numeric type
-macro_rules! impl_to_be_bytes {
-    ($t:ty) => {
-        impl ToBeBytes for $t {
-            fn to_be_bytes(&self) -> Vec<u8> {
-                <$t>::to_be_bytes(*self).to_vec()
-            }
-        }
-    };
-}
-
-// .. and do this for everything CA handles
-impl_to_be_bytes!(i8);
-impl_to_be_bytes!(i16);
-impl_to_be_bytes!(i32);
-impl_to_be_bytes!(f32);
-impl_to_be_bytes!(f64);
-
 #[derive(Clone, Debug)]
 pub enum SingleOrVec<T>
 where
-    T: ToBeBytes,
+    T: ToBytes,
 {
     Single(T),
     Vector(Vec<T>),
@@ -57,13 +34,16 @@ where
 
 impl<T> SingleOrVec<T>
 where
-    T: ToBeBytes,
+    T: ToBytes,
 {
     /// Encode this value as a byte array
     fn as_bytes(&self) -> Vec<u8> {
         match self {
-            Self::Single(val) => val.to_be_bytes().to_vec(),
-            Self::Vector(vec) => vec.iter().flat_map(|f| f.to_be_bytes()).collect(),
+            Self::Single(val) => val.to_be_bytes().as_ref().to_vec(),
+            Self::Vector(vec) => vec
+                .iter()
+                .flat_map(|f| f.to_be_bytes().as_ref().to_vec())
+                .collect(),
         }
     }
     fn get_count(&self) -> usize {
@@ -75,7 +55,7 @@ where
     /// Convert to an equivalent SingleOrVec for a different type. This
     /// will convert safely e.g. will fail if it cannot be represented
     /// in the new type.
-    fn convert_to<U: ToBeBytes + for<'a> TryFrom<&'a T>>(&self) -> Result<SingleOrVec<U>, ()> {
+    fn convert_to<U: ToBytes + for<'a> TryFrom<&'a T>>(&self) -> Result<SingleOrVec<U>, ()> {
         Ok(match self {
             Self::Single(val) => SingleOrVec::Single(U::try_from(val).map_err(|_| ())?),
 
@@ -92,7 +72,7 @@ where
 #[derive(Debug)]
 pub struct NumericDBR<T>
 where
-    T: ToBeBytes,
+    T: ToBytes,
 {
     pub status: i16,
     pub severity: i16,
@@ -105,7 +85,7 @@ where
 }
 impl<T> NumericDBR<T>
 where
-    T: ToBeBytes,
+    T: ToBytes,
 {
     fn get_count(&self) -> usize {
         self.value.get_count()
@@ -114,7 +94,7 @@ where
 
 impl<T> Default for NumericDBR<T>
 where
-    T: Default + ToBeBytes,
+    T: Default + ToBytes,
 {
     fn default() -> Self {
         Self {
