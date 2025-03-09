@@ -16,11 +16,46 @@ pub struct Limits<T> {
     lower: Option<T>,
 }
 
+impl<T> Limits<T> {
+    fn convert_to<U>(&self) -> Result<Limits<U>, ()>
+    where
+        U: for<'a> TryFrom<&'a T>,
+    {
+        Ok(Limits {
+            upper: self
+                .upper
+                .as_ref()
+                .map(U::try_from)
+                .transpose()
+                .map_err(|_| ())?,
+            lower: self
+                .lower
+                .as_ref()
+                .map(U::try_from)
+                .transpose()
+                .map_err(|_| ())?,
+        })
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct LimitSet<T> {
     display_limits: Limits<T>,
     warning_limits: Limits<T>,
     alarm_limits: Limits<T>,
+}
+
+impl<T> LimitSet<T> {
+    fn convert_to<U>(&self) -> Result<LimitSet<U>, ()>
+    where
+        U: for<'a> TryFrom<&'a T>,
+    {
+        Ok(LimitSet {
+            display_limits: self.display_limits.convert_to()?,
+            warning_limits: self.warning_limits.convert_to()?,
+            alarm_limits: self.alarm_limits.convert_to()?,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +124,17 @@ where
 {
     fn get_count(&self) -> usize {
         self.value.get_count()
+    }
+    fn convert_to<U: ToBytes + for<'a> TryFrom<&'a T>>(&self) -> Result<NumericDBR<U>, ()> {
+        Ok(NumericDBR {
+            value: self.value.convert_to()?,
+            status: self.status,
+            severity: self.severity,
+            precision: self.precision.clone(),
+            units: self.units.clone(),
+            last_updated: self.last_updated.clone(),
+            limits: self.limits.convert_to()?,
+        })
     }
 }
 
