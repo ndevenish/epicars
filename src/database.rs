@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
+use nom::Err;
 // let EPICS_EPOCH = UNIX_EPOCH
-use num::traits::ToBytes;
+use num::{traits::ToBytes, Num, NumCast};
 use std::{
     collections::HashMap,
+    convert::TryFrom,
     io::{Cursor, Write},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -17,23 +19,14 @@ pub struct Limits<T> {
 }
 
 impl<T> Limits<T> {
-    fn convert_to<U>(&self) -> Result<Limits<U>, ()>
+    fn convert_to<U>(&self) -> Result<Limits<U>, ErrorCondition>
     where
-        U: for<'a> TryFrom<&'a T>,
+        U: NumCast,
+        T: Copy + NumCast,
     {
         Ok(Limits {
-            upper: self
-                .upper
-                .as_ref()
-                .map(U::try_from)
-                .transpose()
-                .map_err(|_| ())?,
-            lower: self
-                .lower
-                .as_ref()
-                .map(U::try_from)
-                .transpose()
-                .map_err(|_| ())?,
+            upper: self.upper.map(U::from).ok_or(ErrorCondition::NoConvert)?,
+            lower: self.lower.map(U::from).ok_or(ErrorCondition::NoConvert)?,
         })
     }
 }
@@ -46,9 +39,10 @@ pub struct LimitSet<T> {
 }
 
 impl<T> LimitSet<T> {
-    fn convert_to<U>(&self) -> Result<LimitSet<U>, ()>
+    fn convert_to<U>(&self) -> Result<LimitSet<U>, ErrorCondition>
     where
-        U: for<'a> TryFrom<&'a T>,
+        U: NumCast,
+        T: Copy + NumCast,
     {
         Ok(LimitSet {
             display_limits: self.display_limits.convert_to()?,
@@ -61,7 +55,7 @@ impl<T> LimitSet<T> {
 #[derive(Clone, Debug)]
 pub enum SingleOrVec<T>
 where
-    T: ToBytes,
+    T: ToBytes + NumCast + Copy,
 {
     Single(T),
     Vector(Vec<T>),
@@ -69,7 +63,7 @@ where
 
 impl<T> SingleOrVec<T>
 where
-    T: ToBytes,
+    T: ToBytes + NumCast + Copy,
 {
     /// Encode this value as a byte array
     fn as_bytes(&self) -> Vec<u8> {
@@ -90,15 +84,18 @@ where
     /// Convert to an equivalent SingleOrVec for a different type. This
     /// will convert safely e.g. will fail if it cannot be represented
     /// in the new type.
-    fn convert_to<U: ToBytes + for<'a> TryFrom<&'a T>>(&self) -> Result<SingleOrVec<U>, ()> {
+    fn convert_to<U: ToBytes + NumCast + Copy>(&self) -> Result<SingleOrVec<U>, ErrorCondition> {
         Ok(match self {
-            Self::Single(val) => SingleOrVec::Single(U::try_from(val).map_err(|_| ())?),
+            Self::Single(val) => {
+                SingleOrVec::Single(U::from(*val).ok_or(ErrorCondition::NoConvert)?)
+            }
 
             Self::Vector(vec) => SingleOrVec::Vector(
                 vec.iter()
-                    .map(U::try_from)
-                    .map(|x| x.map_err(|_| ()))
-                    .collect::<Result<Vec<U>, ()>>()?,
+                    .copied()
+                    .map(U::from)
+                    .map(|x| x.ok_or(ErrorCondition::NoConvert))
+                    .collect::<Result<Vec<U>, ErrorCondition>>()?,
             ),
         })
     }
@@ -107,7 +104,7 @@ where
 #[derive(Debug, Clone)]
 pub struct NumericDBR<T>
 where
-    T: ToBytes,
+    T: ToBytes + NumCast + Copy,
 {
     pub status: i16,
     pub severity: i16,
@@ -120,12 +117,12 @@ where
 }
 impl<T> NumericDBR<T>
 where
-    T: ToBytes,
+    T: ToBytes + Copy + NumCast,
 {
     fn get_count(&self) -> usize {
         self.value.get_count()
     }
-    fn convert_to<U: ToBytes + for<'a> TryFrom<&'a T>>(&self) -> Result<NumericDBR<U>, ()> {
+    fn convert_to<U: ToBytes + Copy + NumCast>(&self) -> Result<NumericDBR<U>, ErrorCondition> {
         Ok(NumericDBR {
             value: self.value.convert_to()?,
             status: self.status,
@@ -140,7 +137,7 @@ where
 
 impl<T> Default for NumericDBR<T>
 where
-    T: Default + ToBytes,
+    T: Default + ToBytes + Copy + NumCast,
 {
     fn default() -> Self {
         Self {
@@ -169,6 +166,21 @@ pub struct EnumDBR {
     value: u16,
     last_updated: SystemTime,
 }
+
+impl EnumDBR {
+    fn to_numeric<T: Default + ToBytes + NumCast + Copy>(
+        &self,
+    ) -> Result<NumericDBR<T>, ErrorCondition> {
+        Ok(NumericDBR {
+            value: SingleOrVec::Single(NumCast::from(self.value).ok_or(ErrorCondition::NoConvert)?),
+            severity: self.severity,
+            status: self.status,
+            last_updated: self.last_updated,
+            ..Default::default()
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum Dbr {
     Enum(EnumDBR),
@@ -287,9 +299,12 @@ impl Dbr {
         let converted_type = match data_type.basic_type {
             DBRBasicType::Char => match self {
                 Dbr::Char(val) => Dbr::Char(val.clone()),
-                Dbr::Int(val) => {
-                    Dbr::Char(val.convert_to().map_err(|_| ErrorCondition::NoConvert)?)
-                }
+                Dbr::Int(val) => Dbr::Char(val.convert_to()?),
+                Dbr::Long(val) => Dbr::Char(val.convert_to()?),
+                Dbr::Float(val) => Dbr::Char(val.convert_to()?),
+                Dbr::Double(val) => Dbr::Char(val.convert_to()?),
+                Dbr::String(val) => return Err(ErrorCondition::NoConvert),
+                Dbr::Enum(val) => Dbr::Char(val.to_numeric()?.convert_to()?),
             },
             DBRBasicType::Int => {}
             DBRBasicType::Long => {}
