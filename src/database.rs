@@ -306,8 +306,24 @@ impl Dbr {
                 Dbr::String(val) => return Err(ErrorCondition::NoConvert),
                 Dbr::Enum(val) => Dbr::Char(val.to_numeric()?.convert_to()?),
             },
-            DBRBasicType::Int => {}
-            DBRBasicType::Long => {}
+            DBRBasicType::Int => match self {
+                Dbr::Char(val) => Dbr::Int(val.convert_to()?),
+                Dbr::Int(val) => Dbr::Int(val.clone()),
+                Dbr::Long(val) => Dbr::Int(val.convert_to()?),
+                Dbr::Float(val) => Dbr::Int(val.convert_to()?),
+                Dbr::Double(val) => Dbr::Int(val.convert_to()?),
+                Dbr::String(val) => return Err(ErrorCondition::NoConvert),
+                Dbr::Enum(val) => Dbr::Int(val.to_numeric()?.convert_to()?),
+            },
+            DBRBasicType::Long => match self {
+                Dbr::Char(val) => Dbr::Long(val.convert_to()?),
+                Dbr::Int(val) => Dbr::Long(val.convert_to()?),
+                Dbr::Long(val) => Dbr::Long(val.clone()),
+                Dbr::Float(val) => Dbr::Long(val.convert_to()?),
+                Dbr::Double(val) => Dbr::Long(val.convert_to()?),
+                Dbr::String(val) => return Err(ErrorCondition::NoConvert),
+                Dbr::Enum(val) => Dbr::Long(val.to_numeric()?.convert_to()?),
+            },
             DBRBasicType::Float => {}
             DBRBasicType::Double => {}
             DBRBasicType::String => {}
