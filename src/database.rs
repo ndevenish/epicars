@@ -91,8 +91,8 @@ where
             Self::Single(val) => val.to_be_bytes().as_ref().to_vec(),
             Self::Vector(vec) => vec
                 .iter()
-                .flat_map(|f| f.to_be_bytes().as_ref().to_vec())
                 .take(elements.unwrap_or(vec.len()))
+                .flat_map(|f| f.to_be_bytes().as_ref().to_vec())
                 .collect(),
         }
     }
@@ -523,5 +523,32 @@ impl DBRType {
             (DBRCategory::Control, DBRBasicType::Char) => 1,
             _ => 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_or_vec() {
+        let v = SingleOrVec::Single(500i32);
+        assert!(v.convert_to::<i16>().is_ok());
+        assert!(v.convert_to::<i8>().is_err());
+        assert_eq!(v.as_bytes(None), vec![0x00, 0x00, 0x01, 0xF4]);
+        assert_eq!(
+            v.convert_to::<i16>().unwrap().as_bytes(None),
+            vec![0x01, 0xF4]
+        );
+
+        let v = SingleOrVec::Vector(vec![500f32, 12f32]);
+        assert_eq!(v.get_count(), 2);
+        assert_eq!(
+            v.as_bytes(None),
+            vec![500f32, 12f32]
+                .iter()
+                .flat_map(|v| v.to_be_bytes())
+                .collect::<Vec<u8>>()
+        );
     }
 }
