@@ -541,14 +541,32 @@ mod tests {
             vec![0x01, 0xF4]
         );
 
-        let v = SingleOrVec::Vector(vec![500f32, 12f32]);
+        let data = vec![500.23f32, 12.7f32];
+        let v = SingleOrVec::Vector(data.clone());
         assert_eq!(v.get_count(), 2);
         assert_eq!(
             v.as_bytes(None),
-            vec![500f32, 12f32]
-                .iter()
+            data.iter()
                 .flat_map(|v| v.to_be_bytes())
                 .collect::<Vec<u8>>()
+        );
+        assert_eq!(
+            v.as_bytes(Some(1)),
+            data.iter()
+                .take(1)
+                .flat_map(|v| v.to_be_bytes())
+                .collect::<Vec<u8>>()
+        );
+        // Try converting this to an int with truncation
+        let v = v.convert_to::<i16>().unwrap();
+        assert_eq!(v.as_bytes(None), vec![0x01, 0xf4, 0x00, 0x0c]);
+
+        assert_eq!(
+            SingleOrVec::Single(455.9f32)
+                .convert_to::<i32>()
+                .unwrap()
+                .as_bytes(Some(5)),
+            vec![0x00, 0x00, 0x01, 0xc7]
         );
     }
 }
