@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use nom::Err;
+use nom::{error::Error, Err};
 // let EPICS_EPOCH = UNIX_EPOCH
 use num::{traits::ToBytes, Num, NumCast};
 use std::{
@@ -12,7 +12,7 @@ use std::{
 
 use crate::messages::ErrorCondition;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Limits<T> {
     upper: Option<T>,
     lower: Option<T>,
@@ -30,8 +30,16 @@ impl<T> Limits<T> {
         })
     }
 }
+impl<T> Default for Limits<T> {
+    fn default() -> Self {
+        Self {
+            upper: None,
+            lower: None,
+        }
+    }
+}
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct LimitSet<T> {
     display_limits: Limits<T>,
     warning_limits: Limits<T>,
@@ -49,6 +57,15 @@ impl<T> LimitSet<T> {
             warning_limits: self.warning_limits.convert_to()?,
             alarm_limits: self.alarm_limits.convert_to()?,
         })
+    }
+}
+impl<T> Default for LimitSet<T> {
+    fn default() -> Self {
+        LimitSet {
+            display_limits: Limits::default(),
+            warning_limits: Limits::default(),
+            alarm_limits: Limits::default(),
+        }
     }
 }
 
@@ -158,7 +175,7 @@ pub struct StringDBR {
     value: String,
     last_updated: SystemTime,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EnumDBR {
     status: i16,
     severity: i16,
@@ -168,15 +185,15 @@ pub struct EnumDBR {
 }
 
 impl EnumDBR {
-    fn to_numeric<T: Default + ToBytes + NumCast + Copy>(
-        &self,
-    ) -> Result<NumericDBR<T>, ErrorCondition> {
+    fn to_numeric<T: ToBytes + NumCast + Copy>(&self) -> Result<NumericDBR<T>, ErrorCondition> {
         Ok(NumericDBR {
             value: SingleOrVec::Single(NumCast::from(self.value).ok_or(ErrorCondition::NoConvert)?),
             severity: self.severity,
             status: self.status,
             last_updated: self.last_updated,
-            ..Default::default()
+            precision: None,
+            units: String::new(),
+            limits: LimitSet::default(),
         })
     }
 }
@@ -303,8 +320,8 @@ impl Dbr {
                 Dbr::Long(val) => Dbr::Char(val.convert_to()?),
                 Dbr::Float(val) => Dbr::Char(val.convert_to()?),
                 Dbr::Double(val) => Dbr::Char(val.convert_to()?),
-                Dbr::String(val) => return Err(ErrorCondition::NoConvert),
-                Dbr::Enum(val) => Dbr::Char(val.to_numeric()?.convert_to()?),
+                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
+                Dbr::Enum(val) => Dbr::Char(val.to_numeric::<i8>()?.convert_to()?),
             },
             DBRBasicType::Int => match self {
                 Dbr::Char(val) => Dbr::Int(val.convert_to()?),
@@ -312,8 +329,8 @@ impl Dbr {
                 Dbr::Long(val) => Dbr::Int(val.convert_to()?),
                 Dbr::Float(val) => Dbr::Int(val.convert_to()?),
                 Dbr::Double(val) => Dbr::Int(val.convert_to()?),
-                Dbr::String(val) => return Err(ErrorCondition::NoConvert),
-                Dbr::Enum(val) => Dbr::Int(val.to_numeric()?.convert_to()?),
+                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
+                Dbr::Enum(val) => Dbr::Int(val.to_numeric::<i16>()?.convert_to()?),
             },
             DBRBasicType::Long => match self {
                 Dbr::Char(val) => Dbr::Long(val.convert_to()?),
@@ -321,13 +338,32 @@ impl Dbr {
                 Dbr::Long(val) => Dbr::Long(val.clone()),
                 Dbr::Float(val) => Dbr::Long(val.convert_to()?),
                 Dbr::Double(val) => Dbr::Long(val.convert_to()?),
-                Dbr::String(val) => return Err(ErrorCondition::NoConvert),
-                Dbr::Enum(val) => Dbr::Long(val.to_numeric()?.convert_to()?),
+                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
+                Dbr::Enum(val) => Dbr::Long(val.to_numeric::<i32>()?.convert_to()?),
             },
-            DBRBasicType::Float => {}
-            DBRBasicType::Double => {}
-            DBRBasicType::String => {}
-            DBRBasicType::Enum => {}
+            DBRBasicType::Float => match self {
+                Dbr::Char(val) => Dbr::Float(val.convert_to()?),
+                Dbr::Int(val) => Dbr::Float(val.convert_to()?),
+                Dbr::Long(val) => Dbr::Float(val.convert_to()?),
+                Dbr::Float(val) => Dbr::Float(val.clone()),
+                Dbr::Double(val) => Dbr::Float(val.convert_to()?),
+                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
+                Dbr::Enum(val) => Dbr::Float(val.to_numeric::<f32>()?.convert_to()?),
+            },
+            DBRBasicType::Double => match self {
+                Dbr::Char(val) => Dbr::Double(val.convert_to()?),
+                Dbr::Int(val) => Dbr::Double(val.convert_to()?),
+                Dbr::Long(val) => Dbr::Double(val.convert_to()?),
+                Dbr::Float(val) => Dbr::Double(val.convert_to()?),
+                Dbr::Double(val) => Dbr::Double(val.clone()),
+                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
+                Dbr::Enum(val) => Dbr::Double(val.to_numeric::<f64>()?.convert_to()?),
+            },
+            DBRBasicType::String => return Err(ErrorCondition::UnavailInServ),
+            DBRBasicType::Enum => match self {
+                Dbr::Enum(val) => Dbr::Enum(val.clone()),
+                _ => return Err(ErrorCondition::NoConvert),
+            },
         };
 
         Ok((0, Vec::new()))
