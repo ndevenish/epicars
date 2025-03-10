@@ -2,6 +2,7 @@
 
 use num::{traits::ToBytes, NumCast};
 use std::{
+    cmp,
     collections::HashMap,
     convert::TryFrom,
     io::{Cursor, Write},
@@ -81,12 +82,17 @@ where
     T: ToBytes + NumCast + Copy,
 {
     /// Encode this value as a byte array
-    fn as_bytes(&self) -> Vec<u8> {
+    ///
+    /// Only the first `elements` values will be encoded, or the whole
+    /// dataset if the elements value is `None`. Note that if elements
+    /// is zero then no data will be returned.
+    fn as_bytes(&self, elements: Option<usize>) -> Vec<u8> {
         match self {
             Self::Single(val) => val.to_be_bytes().as_ref().to_vec(),
             Self::Vector(vec) => vec
                 .iter()
                 .flat_map(|f| f.to_be_bytes().as_ref().to_vec())
+                .take(elements.unwrap_or(vec.len()))
                 .collect(),
         }
     }
@@ -368,7 +374,11 @@ impl Dbr {
         // the cross-conversions.
         let converted = self.convert_to(data_type.basic_type)?;
 
-        Ok((0, Vec::new()))
+        Ok(converted.get_value().encode_value(if data_count == 0 {
+            None
+        } else {
+            Some(data_count)
+        }))
     }
 }
 
@@ -383,6 +393,43 @@ pub enum DbrValue {
     Double(SingleOrVec<f64>),
 }
 
+impl DbrValue {
+    fn get_count(&self) -> usize {
+        match self {
+            DbrValue::Enum(_) => 1,
+            DbrValue::String(_) => unimplemented!(),
+            DbrValue::Char(val) => val.get_count(),
+            DbrValue::Int(val) => val.get_count(),
+            DbrValue::Long(val) => val.get_count(),
+            DbrValue::Float(val) => val.get_count(),
+            DbrValue::Double(val) => val.get_count(),
+        }
+    }
+    /// Encode the value contents of a DBR into a byte vector
+    ///
+    /// If max_elems is zero, then no data will be returned. If it is
+    /// `None`, then all data will be returned.
+    fn encode_value(&self, max_elems: Option<usize>) -> (usize, Vec<u8>) {
+        let elements = if let Some(max_elem) = max_elems {
+            cmp::min(max_elem, self.get_count())
+        } else {
+            self.get_count()
+        };
+
+        (
+            elements,
+            match self {
+                DbrValue::Enum(val) => val.to_be_bytes().to_vec(),
+                DbrValue::String(_) => unimplemented!(),
+                DbrValue::Char(val) => val.as_bytes(Some(elements)),
+                DbrValue::Int(val) => val.as_bytes(Some(elements)),
+                DbrValue::Long(val) => val.as_bytes(Some(elements)),
+                DbrValue::Float(val) => val.as_bytes(Some(elements)),
+                DbrValue::Double(val) => val.as_bytes(Some(elements)),
+            },
+        )
+    }
+}
 /// Basic DBR Data types, independent of category
 #[derive(Debug, Copy, Clone)]
 pub enum DBRBasicType {
