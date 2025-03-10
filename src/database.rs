@@ -1,8 +1,6 @@
 #![allow(dead_code)]
 
-use nom::{error::Error, Err};
-// let EPICS_EPOCH = UNIX_EPOCH
-use num::{traits::ToBytes, Num, NumCast};
+use num::{traits::ToBytes, NumCast};
 use std::{
     collections::HashMap,
     convert::TryFrom,
@@ -144,9 +142,9 @@ where
             value: self.value.convert_to()?,
             status: self.status,
             severity: self.severity,
-            precision: self.precision.clone(),
+            precision: self.precision,
             units: self.units.clone(),
-            last_updated: self.last_updated.clone(),
+            last_updated: self.last_updated,
             limits: self.limits.convert_to()?,
         })
     }
