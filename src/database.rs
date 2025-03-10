@@ -269,51 +269,8 @@ impl Dbr {
         }
     }
 
-    pub fn encode_value(
-        &self,
-        data_type: DBRType,
-        data_count: usize,
-    ) -> Result<(usize, Vec<u8>), ErrorCondition> {
-        let mut metadata = Cursor::new(Vec::new());
-        // Status, severity always come first, if requested
-        if data_type.category != DBRCategory::Basic {
-            // Write the status metadata
-            let (status, severity) = self.get_status();
-            metadata.write_all(&status.to_be_bytes()).unwrap();
-            metadata.write_all(&severity.to_be_bytes()).unwrap();
-        }
-        // Only TIME category writes timestamp information
-        if data_type.category == DBRCategory::Time {
-            let unix_time = self.get_last_updated().duration_since(UNIX_EPOCH).unwrap();
-
-            let time_s = unix_time.as_secs() as i32 - 631152000i32;
-            let time_ns = unix_time.subsec_nanos();
-            metadata.write_all(&time_s.to_be_bytes()).unwrap();
-            metadata.write_all(&time_ns.to_be_bytes()).unwrap();
-        }
-        // For now, we don't understand the CTRL structures well enough
-        if data_type.category == DBRCategory::Control {
-            return Err(ErrorCondition::BadType);
-        }
-        if data_type.category == DBRCategory::Graphics {
-            // Enum, String are special... handle those later
-            match data_type.basic_type {
-                DBRBasicType::Enum | DBRBasicType::String => {
-                    println!("Ignoring request for graphical string or enum");
-                    return Err(ErrorCondition::BadType);
-                }
-                _ => {}
-            }
-        }
-        // Handle insertion of padding
-        metadata
-            .write_all(&vec![0u8; data_type.get_metadata_padding()])
-            .unwrap();
-
-        // Finally... fetching of raw data. Let's start by doing all the
-        // matching here, as we don't need to worry about types to hold
-        // the cross-conversions.
-        let converted_type = match data_type.basic_type {
+    pub fn convert_to(&self, basic_type: DBRBasicType) -> Result<Dbr, ErrorCondition> {
+        Ok(match basic_type {
             DBRBasicType::Char => match self {
                 Dbr::Char(val) => Dbr::Char(val.clone()),
                 Dbr::Int(val) => Dbr::Char(val.convert_to()?),
@@ -364,7 +321,54 @@ impl Dbr {
                 Dbr::Enum(val) => Dbr::Enum(val.clone()),
                 _ => return Err(ErrorCondition::NoConvert),
             },
-        };
+        })
+    }
+
+    pub fn encode_value(
+        &self,
+        data_type: DBRType,
+        data_count: usize,
+    ) -> Result<(usize, Vec<u8>), ErrorCondition> {
+        let mut metadata = Cursor::new(Vec::new());
+        // Status, severity always come first, if requested
+        if data_type.category != DBRCategory::Basic {
+            // Write the status metadata
+            let (status, severity) = self.get_status();
+            metadata.write_all(&status.to_be_bytes()).unwrap();
+            metadata.write_all(&severity.to_be_bytes()).unwrap();
+        }
+        // Only TIME category writes timestamp information
+        if data_type.category == DBRCategory::Time {
+            let unix_time = self.get_last_updated().duration_since(UNIX_EPOCH).unwrap();
+
+            let time_s = unix_time.as_secs() as i32 - 631152000i32;
+            let time_ns = unix_time.subsec_nanos();
+            metadata.write_all(&time_s.to_be_bytes()).unwrap();
+            metadata.write_all(&time_ns.to_be_bytes()).unwrap();
+        }
+        // For now, we don't understand the CTRL structures well enough
+        if data_type.category == DBRCategory::Control {
+            return Err(ErrorCondition::BadType);
+        }
+        if data_type.category == DBRCategory::Graphics {
+            // Enum, String are special... handle those later
+            match data_type.basic_type {
+                DBRBasicType::Enum | DBRBasicType::String => {
+                    println!("Ignoring request for graphical string or enum");
+                    return Err(ErrorCondition::BadType);
+                }
+                _ => {}
+            }
+        }
+        // Handle insertion of padding
+        metadata
+            .write_all(&vec![0u8; data_type.get_metadata_padding()])
+            .unwrap();
+
+        // Finally... fetching of raw data. Let's start by doing all the
+        // matching here, as we don't need to worry about types to hold
+        // the cross-conversions.
+        let converted = self.convert_to(data_type.basic_type)?;
 
         Ok((0, Vec::new()))
     }
