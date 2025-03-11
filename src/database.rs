@@ -68,6 +68,11 @@ impl<T> Default for LimitSet<T> {
     }
 }
 
+/// Hold an individual value or group of values
+///
+/// Allows distinguishing between single values (where settings an array
+/// would be an error) and an array of values, where setting with a
+/// different vector length might be acceptable.
 #[derive(Clone, Debug)]
 pub enum SingleOrVec<T>
 where
