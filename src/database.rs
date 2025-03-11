@@ -378,12 +378,13 @@ impl Dbr {
         // matching here, as we don't need to worry about types to hold
         // the cross-conversions.
         let converted = self.convert_to(data_type.basic_type)?;
-
-        Ok(converted.get_value().encode_value(if data_count == 0 {
+        let (count, value_data) = converted.get_value().encode_value(if data_count == 0 {
             None
         } else {
             Some(data_count)
-        }))
+        });
+        metadata.write_all(&value_data).unwrap();
+        Ok((count, metadata.into_inner()))
     }
 }
 
