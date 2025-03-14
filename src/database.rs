@@ -24,9 +24,17 @@ impl<T> Limits<T> {
         U: NumCast,
         T: Copy + NumCast,
     {
+        // If we have no value, return that. Otherwise, try to convert
+        // and return an error if that fails.
         Ok(Limits {
-            upper: self.upper.map(U::from).ok_or(ErrorCondition::NoConvert)?,
-            lower: self.lower.map(U::from).ok_or(ErrorCondition::NoConvert)?,
+            upper: match self.upper {
+                None => Ok(None),
+                Some(v) => Ok(Some(U::from(v).ok_or(ErrorCondition::NoConvert)?)),
+            }?,
+            lower: match self.lower {
+                None => Ok(None),
+                Some(v) => Ok(Some(U::from(v).ok_or(ErrorCondition::NoConvert)?)),
+            }?,
         })
     }
 }
