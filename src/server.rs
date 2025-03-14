@@ -347,10 +347,15 @@ impl Circuit {
             Message::ReadNotify(msg) => {
                 println!("{id}:{}: ReadNotify request: {:?}", msg.server_id, msg);
                 match self.do_read(&msg) {
-                    Ok(r) => self.stream.write_all(&r.as_bytes()).await?,
+                    Ok(r) => {
+                        println!("Sending response: {r:?}");
+                        self.stream.write_all(&r.as_bytes()).await?
+                    }
+
                     Err(e) => {
                         // Send an error in response to the read
                         let err = ECAError::new(e, msg.client_ioid, Message::ReadNotify(msg));
+                        println!("Returning error: {err:?}");
                         self.stream.write_all(&err.as_bytes()).await?
                     }
                 }

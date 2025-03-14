@@ -5,6 +5,7 @@ use std::{
     cmp,
     collections::HashMap,
     convert::TryFrom,
+    fmt::Debug,
     io::{Cursor, Write},
     time::{SystemTime, UNIX_EPOCH},
 };

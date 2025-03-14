@@ -152,6 +152,7 @@ impl CAMessage for RawMessage {
 }
 
 /// Parsing message headers, without attempting to read the payload
+#[derive(Debug)]
 pub struct MessageHeader {
     pub command: u16,
     pub payload_size: u32,
@@ -1059,6 +1060,7 @@ impl CAMessage for ReadNotify {
     }
 }
 
+#[derive(Debug)]
 pub struct ReadNotifyResponse {
     data_type: DBRType,
     data_count: u32,
@@ -1285,6 +1287,7 @@ impl TryFrom<u32> for ErrorCondition {
     }
 }
 
+#[derive(Debug)]
 pub struct ECAError {
     pub error_message: String,
     pub client_id: u32,
