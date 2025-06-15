@@ -23,6 +23,7 @@ use crate::{
         ReadNotifyResponse,
     },
     new_reusable_udp_socket,
+    provider::Provider,
 };
 
 pub struct Server {
@@ -427,6 +428,7 @@ pub struct ServerBuilder {
     search_port: u16,
     connection_port: Option<u16>,
     library: HashMap<String, PV>,
+    providers: Vec<Box<dyn Provider + Send>>,
 }
 
 impl Default for ServerBuilder {
@@ -441,6 +443,7 @@ impl ServerBuilder {
             search_port: 5064,
             connection_port: None,
             library: Default::default(),
+            providers: Default::default(),
         }
     }
     pub fn beacon_port(mut self, port: u16) -> ServerBuilder {
@@ -453,6 +456,10 @@ impl ServerBuilder {
     }
     pub fn connection_port(mut self, port: u16) -> ServerBuilder {
         self.connection_port = Some(port);
+        self
+    }
+    pub fn add_provider(mut self, provider: Box<dyn Provider + Send>) -> ServerBuilder {
+        self.providers.push(provider);
         self
     }
     pub async fn start(self) -> io::Result<Server> {

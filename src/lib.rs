@@ -5,6 +5,7 @@ use socket2::{Domain, Protocol, Type};
 pub mod client;
 pub mod database;
 pub mod messages;
+pub mod provider;
 pub mod server;
 
 pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<std::net::UdpSocket> {
