@@ -5,7 +5,7 @@ use crate::database::{DBRType, Dbr};
 /// Provides PV values for a CAServer
 pub trait Provider {
     /// Does this provider control the given PV name?
-    fn provides(&self, pv_name: String) -> bool;
+    fn provides(&self, pv_name: &str) -> bool;
 
     /// Fetch a single PV value.
     ///

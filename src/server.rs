@@ -39,7 +39,7 @@ pub struct Server {
     beacon_id: u32,
     next_circuit_id: u64,
     circuits: Vec<Circuit>,
-    library: Arc<Mutex<PVLibrary>>,
+    providers: Vec<Box<dyn Provider>>,
     shutdown: CancellationToken,
 }
 
@@ -52,7 +52,7 @@ impl Default for Server {
             last_beacon: Instant::now(),
             beacon_id: 0,
             circuits: Vec::new(),
-            library: Default::default(),
+            providers: Default::default(),
             shutdown: CancellationToken::new(),
             next_circuit_id: 0,
         }
@@ -138,7 +138,6 @@ impl Server {
 
     fn listen_for_searches(&self, connection_port: u16) {
         let search_port = self.search_port;
-        let server_names = self.library.clone();
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
             let listener = UdpSocket::from_std(
@@ -157,13 +156,14 @@ impl Server {
                     // println!("Got search from {}", origin);
                     let mut replies = Vec::new();
                     {
-                        let server_names = server_names.lock().unwrap();
-                        // println!("Known pvs: {:?}", server_names);
                         for search in searches {
-                            if server_names.contains_key(&search.channel_name) {
-                                // println!("Request match! Can provide {}", search.channel_name);
-                                replies.push(search.respond(None, connection_port, true));
-                            }
+                            let channel_name = search.channel_name.clone();
+                            // if self.providers.iter().any(|x| x.provides(&channel_name)) {
+                            //     // println!("Request match! Can provide {}", search.channel_name);
+
+                            replies.push(search.respond(None, connection_port, true));
+                            panic!("TODO");
+                            // }
                         }
                     }
                     if !replies.is_empty() {
@@ -428,7 +428,7 @@ pub struct ServerBuilder {
     search_port: u16,
     connection_port: Option<u16>,
     library: HashMap<String, PV>,
-    providers: Vec<Box<dyn Provider + Send>>,
+    providers: Vec<Box<dyn Provider>>,
 }
 
 impl Default for ServerBuilder {
@@ -458,7 +458,7 @@ impl ServerBuilder {
         self.connection_port = Some(port);
         self
     }
-    pub fn add_provider(mut self, provider: Box<dyn Provider + Send>) -> ServerBuilder {
+    pub fn add_provider(mut self, provider: Box<dyn Provider>) -> ServerBuilder {
         self.providers.push(provider);
         self
     }
@@ -467,12 +467,13 @@ impl ServerBuilder {
             beacon_port: self.beacon_port,
             search_port: self.search_port,
             connection_port: self.connection_port,
-            library: Arc::new(Mutex::new(
-                self.library
-                    .into_iter()
-                    .map(|(k, v)| (k, Arc::new(Mutex::new(v))))
-                    .collect(),
-            )),
+            // library: Arc::new(Mutex::new(
+            //     self.library
+            //         .into_iter()
+            //         .map(|(k, v)| (k, Arc::new(Mutex::new(v))))
+            //         .collect(),
+            // )),
+            providers: self.providers,
             ..Default::default()
         };
         server.listen().await?;

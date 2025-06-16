@@ -34,7 +34,6 @@ impl Provider for BasicProvider {
 async fn main() {
     let _server = ServerBuilder::new()
         .beacon_port(5065)
-        // .add_pv("something", 42)
         .add_provider(Box::new(BasicProvider {}))
         .start()
         .await
