@@ -5,18 +5,15 @@ use std::{
     collections::HashMap,
     io::{self, Cursor},
     net::{IpAddr, Ipv4Addr},
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream, UdpSocket},
-    sync::{broadcast, mpsc, oneshot, watch},
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    database::{Dbr, DbrValue, NumericDBR, SingleOrVec},
     messages::{
         self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
         CreateChannelResponse, ECAError, ErrorCondition, Message, MessageError, ReadNotify,
@@ -26,7 +23,7 @@ use crate::{
     provider::Provider,
 };
 
-pub struct Server {
+pub struct Server<L: Provider> {
     /// Broadcast port to sent beacons
     beacon_port: u16,
     /// Port to receive search queries on
@@ -38,25 +35,9 @@ pub struct Server {
     /// The beacon ID of the last beacon broadcast
     beacon_id: u32,
     next_circuit_id: u64,
-    circuits: Vec<Circuit>,
-    providers: Vec<Box<dyn Provider>>,
+    circuits: Vec<Circuit<L>>,
     shutdown: CancellationToken,
-}
-
-impl Default for Server {
-    fn default() -> Self {
-        Server {
-            beacon_port: 5065,
-            search_port: 5064,
-            connection_port: None,
-            last_beacon: Instant::now(),
-            beacon_id: 0,
-            circuits: Vec::new(),
-            providers: Default::default(),
-            shutdown: CancellationToken::new(),
-            next_circuit_id: 0,
-        }
-    }
+    library_provider: L,
 }
 
 fn get_broadcast_ips() -> Vec<Ipv4Addr> {
@@ -71,6 +52,7 @@ fn get_broadcast_ips() -> Vec<Ipv4Addr> {
         .collect()
 }
 
+/// Try to bind a specific port, or if not supplied the default, or a random port if that fails.
 async fn try_bind_ports(
     request_port: Option<u16>,
 ) -> Result<tokio::net::TcpListener, std::io::Error> {
@@ -86,18 +68,16 @@ async fn try_bind_ports(
     }
 }
 
-impl Server {
+impl<L: Provider> Server<L> {
     async fn listen(&mut self) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port;
-
-        // Try to bind 5064
         let connection_socket = try_bind_ports(request_port).await?;
 
+        // Whatever we ended up with, we want to advertise
         let listen_port = connection_socket.local_addr().unwrap().port();
 
         self.listen_for_searches(listen_port);
-        // self.broadcast_beacons(listen_port).await?;
         self.handle_tcp_connections(connection_socket);
 
         Ok(())
@@ -138,6 +118,7 @@ impl Server {
 
     fn listen_for_searches(&self, connection_port: u16) {
         let search_port = self.search_port;
+        let library_provider = self.library_provider.clone();
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
             let listener = UdpSocket::from_std(
@@ -157,13 +138,9 @@ impl Server {
                     let mut replies = Vec::new();
                     {
                         for search in searches {
-                            let channel_name = search.channel_name.clone();
-                            // if self.providers.iter().any(|x| x.provides(&channel_name)) {
-                            //     // println!("Request match! Can provide {}", search.channel_name);
-
-                            replies.push(search.respond(None, connection_port, true));
-                            panic!("TODO");
-                            // }
+                            if library_provider.provides(&search.channel_name) {
+                                replies.push(search.respond(None, connection_port, true));
+                            }
                         }
                     }
                     if !replies.is_empty() {
@@ -186,7 +163,7 @@ impl Server {
     }
 
     fn handle_tcp_connections(&mut self, listener: TcpListener) {
-        let library = self.library.clone();
+        let library = self.library_provider.clone();
         tokio::spawn(async move {
             let mut id = 0;
             loop {
@@ -206,27 +183,28 @@ impl Server {
     }
 }
 
-struct Circuit {
+struct Circuit<L: Provider> {
     id: u64,
     last_message: Instant,
     client_version: u16,
     client_host_name: Option<String>,
     client_user_name: Option<String>,
     client_events_on: bool,
-    library: Arc<Mutex<PVLibrary>>,
+    library: L,
     stream: TcpStream,
-    channels: HashMap<u32, Channel>,
+    channels: HashMap<u32, Channel<L>>,
     next_channel_id: u32,
 }
 
-struct Channel {
+struct Channel<L: Provider> {
     name: String,
     client_id: u32,
     server_id: u32,
-    pv: Arc<Mutex<PV>>,
+    // TODO: Do we want to store a PV-specific accessor here?
+    library: L,
 }
 
-impl Circuit {
+impl<L: Provider> Circuit<L> {
     async fn do_version_exchange(stream: &mut TcpStream) -> Result<u16, MessageError> {
         // Send our Version
         stream
@@ -241,9 +219,11 @@ impl Circuit {
             }
         })
     }
-    async fn start(id: u64, mut stream: TcpStream, library: Arc<Mutex<PVLibrary>>) {
+    async fn start(id: u64, mut stream: TcpStream, library: L) {
         println!("{id}: Starting circuit with {:?}", stream.peer_addr());
-        let client_version = Circuit::do_version_exchange(&mut stream).await.unwrap();
+        let client_version = Circuit::<L>::do_version_exchange(&mut stream)
+            .await
+            .unwrap();
         println!("{id}: Got client version: {}", client_version);
         // Client version is the bare minimum we need to establish a valid circuit
         let mut circuit = Circuit {
@@ -367,39 +347,38 @@ impl Circuit {
     }
 
     fn do_read(&self, request: &ReadNotify) -> Result<ReadNotifyResponse, ErrorCondition> {
-        let pv = self.channels[&request.server_id].pv.lock().unwrap();
+        let channel = &self.channels[&request.server_id];
+        let pv = channel
+            .library
+            .get_value(&channel.name, Some(request.data_type))
+            .unwrap();
         // Read the data into a Vec<u8>
-        let (data_count, data) = pv
-            .record
-            .encode_value(request.data_type, request.data_count as usize)?;
-        // let data_count = 1;
-        // let data = 42u32.to_be_bytes().to_vec();
+        let (data_count, data) = pv.encode_value(request.data_type, request.data_count as usize)?;
         Ok(request.respond(data_count, data))
     }
 
-    fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel, ()>) {
-        let library = self.library.lock().unwrap();
-        if !library.contains_key(&message.channel_name) {
+    fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel<L>, ()>) {
+        let Some(pv) = self.library.get_value(&message.channel_name, None) else {
             println!(
-                "Got a request for channel to '{}', which we do not have.",
+                "Got a request for channel to '{}', which we do not appear to have.",
                 message.channel_name
             );
             return (
                 vec![Message::CreateChannelFailure(message.respond_failure())],
                 Err(()),
             );
-        }
-        let pv_arc = &library[&message.channel_name];
-        let pv = pv_arc.lock().unwrap();
+        };
         let access_rights = AccessRights {
             client_id: message.client_id,
-            access_rights: pv.get_access_right(),
+            access_rights: self
+                .library
+                .get_access_right(&message.channel_name, self.client_user_name.as_deref()),
         };
         let id = self.next_channel_id;
         self.next_channel_id += 1;
         let createchan = CreateChannelResponse {
-            data_count: pv.record.get_count() as u32,
-            data_type: pv.record.get_native_type(),
+            data_count: pv.get_count() as u32,
+            data_type: pv.get_native_type(),
             client_id: message.client_id,
             server_id: id,
         };
@@ -417,114 +396,53 @@ impl Circuit {
                 name: message.channel_name,
                 server_id: id,
                 client_id: message.client_id,
-                pv: pv_arc.clone(),
+                library: self.library.clone(),
             }),
         )
     }
 }
 
-pub struct ServerBuilder {
+pub struct ServerBuilder<L: Provider> {
     beacon_port: u16,
     search_port: u16,
     connection_port: Option<u16>,
-    library: HashMap<String, PV>,
-    providers: Vec<Box<dyn Provider>>,
+    provider: L,
 }
 
-impl Default for ServerBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl ServerBuilder {
-    pub fn new() -> ServerBuilder {
+impl<L: Provider> ServerBuilder<L> {
+    pub fn new(provider: L) -> ServerBuilder<L> {
         ServerBuilder {
             beacon_port: 5065,
             search_port: 5064,
             connection_port: None,
-            library: Default::default(),
-            providers: Default::default(),
+            provider,
         }
     }
-    pub fn beacon_port(mut self, port: u16) -> ServerBuilder {
+    pub fn beacon_port(mut self, port: u16) -> ServerBuilder<L> {
         self.beacon_port = port;
         self
     }
-    pub fn search_port(mut self, port: u16) -> ServerBuilder {
+    pub fn search_port(mut self, port: u16) -> ServerBuilder<L> {
         self.search_port = port;
         self
     }
-    pub fn connection_port(mut self, port: u16) -> ServerBuilder {
+    pub fn connection_port(mut self, port: u16) -> ServerBuilder<L> {
         self.connection_port = Some(port);
         self
     }
-    pub fn add_provider(mut self, provider: Box<dyn Provider>) -> ServerBuilder {
-        self.providers.push(provider);
-        self
-    }
-    pub async fn start(self) -> io::Result<Server> {
+    pub async fn start(self) -> io::Result<Server<L>> {
         let mut server = Server {
             beacon_port: self.beacon_port,
             search_port: self.search_port,
             connection_port: self.connection_port,
-            // library: Arc::new(Mutex::new(
-            //     self.library
-            //         .into_iter()
-            //         .map(|(k, v)| (k, Arc::new(Mutex::new(v))))
-            //         .collect(),
-            // )),
-            providers: self.providers,
-            ..Default::default()
+            library_provider: self.provider,
+            last_beacon: Instant::now(),
+            beacon_id: 0,
+            next_circuit_id: 0,
+            circuits: Vec::new(),
+            shutdown: CancellationToken::new(),
         };
         server.listen().await?;
         Ok(server)
-    }
-}
-
-type PVLibrary = HashMap<String, Arc<Mutex<PV>>>;
-
-#[derive(Debug)]
-struct PV {
-    name: String,
-    record: Dbr,
-    // Writing new values - sender to write, receiver to pick them up on the server
-    write_tx: mpsc::Sender<(DbrValue, Option<oneshot::Receiver<()>>)>,
-    write_rx: mpsc::Receiver<(DbrValue, Option<oneshot::Receiver<()>>)>,
-    watch_tx: watch::Sender<DbrValue>,
-    broadcast_tx: broadcast::Sender<DbrValue>,
-}
-
-impl PV {
-    fn get_access_right(&self) -> messages::AccessRight {
-        messages::AccessRight::ReadWrite
-    }
-
-    fn new(name: &str, record: Dbr) -> Self {
-        let (write_tx, write_rx) = mpsc::channel(256);
-        PV {
-            name: name.to_owned(),
-            write_tx,
-            write_rx,
-            watch_tx: watch::channel(record.get_value()).0,
-            broadcast_tx: broadcast::channel(256).0,
-            record,
-        }
-    }
-}
-
-pub trait AddBuilderPV<T> {
-    fn add_pv(self, name: &str, initial_value: T) -> Self;
-}
-impl AddBuilderPV<i32> for ServerBuilder {
-    fn add_pv(mut self, name: &str, initial_value: i32) -> Self {
-        let pv = PV::new(
-            name,
-            Dbr::Long(NumericDBR {
-                value: SingleOrVec::Single(initial_value),
-                ..Default::default()
-            }),
-        );
-        self.library.insert(name.to_owned(), pv);
-        self
     }
 }

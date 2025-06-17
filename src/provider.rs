@@ -1,9 +1,12 @@
 // use tokio::sync::{self, mpsc};
 
-use crate::database::{DBRType, Dbr};
+use crate::{
+    database::{DBRType, Dbr},
+    messages,
+};
 
 /// Provides PV values for a CAServer
-pub trait Provider {
+pub trait Provider: Sync + Send + Clone + 'static {
     /// Does this provider control the given PV name?
     fn provides(&self, pv_name: &str) -> bool;
 
@@ -13,7 +16,19 @@ pub trait Provider {
     /// a request - you can return any type you wish from this function,
     /// and it will be automatically converted to the target type (if
     /// possible).
-    fn get_value(&self, pv_name: String, requested_type: DBRType) -> Result<Dbr, ()>;
+    ///
+    /// The record that you return with no requested_type is used for
+    /// the native type and data count that is reported to new subscribers.
+    fn get_value(&self, pv_name: &str, requested_type: Option<DBRType>) -> Option<Dbr>;
+
+    #[allow(unused_variables)]
+    fn get_access_right(
+        &self,
+        pv_name: &str,
+        client_user_name: Option<&str>,
+    ) -> messages::AccessRight {
+        messages::AccessRight::Read
+    }
 
     // /// Request the start of
     // fn monitor_value(pv_name : String, watcher : mpsc::Sender<Dbr>, requested_type : DBRType);
