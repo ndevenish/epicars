@@ -248,8 +248,11 @@ impl<L: Provider> Circuit<L> {
                     match err {
                         // Handle various cases that could lead to this failing
                         MessageError::IO(io) => {
-                            // Just fail the circuit completely, could inspect io.kind later
-                            println!("{id}: IO Error reading server message: {}", io);
+                            if io.kind() == io::ErrorKind::UnexpectedEof {
+                                println!("{id}: Client closed connection");
+                            } else {
+                                println!("{id}: IO Error reading server message: {}", io);
+                            }
                             break;
                         }
                         MessageError::UnknownCommandId(command_id) => {
