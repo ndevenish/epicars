@@ -26,6 +26,7 @@ pub trait Provider: Sync + Send + Clone + 'static {
         &self,
         pv_name: &str,
         client_user_name: Option<&str>,
+        client_host_name: Option<&str>,
     ) -> messages::AccessRight {
         messages::AccessRight::Read
     }

@@ -370,9 +370,11 @@ impl<L: Provider> Circuit<L> {
         };
         let access_rights = AccessRights {
             client_id: message.client_id,
-            access_rights: self
-                .library
-                .get_access_right(&message.channel_name, self.client_user_name.as_deref()),
+            access_rights: self.library.get_access_right(
+                &message.channel_name,
+                self.client_user_name.as_deref(),
+                self.client_host_name.as_deref(),
+            ),
         };
         let id = self.next_channel_id;
         self.next_channel_id += 1;
