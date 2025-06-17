@@ -79,6 +79,7 @@ impl<L: Provider> Server<L> {
 
         self.listen_for_searches(listen_port);
         self.handle_tcp_connections(connection_socket);
+        self.broadcast_beacons(listen_port).await?;
 
         Ok(())
     }
@@ -104,12 +105,13 @@ impl<L: Provider> Server<L> {
                         .await
                         .unwrap();
                 }
-                message.beacon_id = message.beacon_id.wrapping_add(1);
                 println!(
-                    "Broadcast beacon to {} interfaces: {:?}",
+                    "Broadcasting beacon {} to {} interfaces: {:?}",
+                    message.beacon_id,
                     broadcast_ips.len(),
                     broadcast_ips,
                 );
+                message.beacon_id = message.beacon_id.wrapping_add(1);
                 tokio::time::sleep(Duration::from_secs(15)).await;
             }
         });

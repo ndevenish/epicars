@@ -71,9 +71,10 @@ async fn read_socket(socket: &UdpSocket) {
                 13 => {
                     let beacon: messages::RsrvIsUp = raw.try_into().unwrap();
                     println!(
-                        "Received BEACON {}:{} from {sender}",
+                        "Received BEACON {}:{} ({}) from {sender}",
                         beacon.server_ip.map(|f| f.into()).unwrap_or(sender.ip()),
-                        beacon.server_port
+                        beacon.server_port,
+                        beacon.beacon_id,
                     );
                     if !leftover.is_empty() {
                         println!(
