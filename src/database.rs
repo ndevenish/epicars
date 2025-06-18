@@ -590,4 +590,26 @@ mod tests {
             vec![0x00, 0x00, 0x01, 0xc7]
         );
     }
+
+    #[test]
+    fn encode_dbr() {
+        let example_packet = vec![
+            0x0, 0xf, 0x0, 0x10, 0x0, 0x13, 0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x0,
+            0x0, 0x0, 0x0, 0x42, 0x32, 0x19, 0x99, 0x1c, 0xe0, 0x65, 0x20, 0x0, 0x0, 0x0, 0x2a,
+        ];
+        let dbr = Dbr::Long(NumericDBR {
+            value: SingleOrVec::Single(42i32),
+            ..Default::default()
+        });
+        let (size, out_data) = dbr
+            .encode_value(
+                DBRType {
+                    basic_type: DBRBasicType::Long,
+                    category: DBRCategory::Time,
+                },
+                0,
+            )
+            .unwrap();
+        assert_eq!(out_data.len(), example_packet.len());
+    }
 }
