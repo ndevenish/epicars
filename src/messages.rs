@@ -1111,11 +1111,11 @@ pub struct WriteChannel {}
 
 #[derive(Debug)]
 pub struct Write {
-    data_type: DBRType,
-    data_count: u32,
-    status_id: u32,
-    client_ioid: u32,
-    data: Vec<u8>,
+    pub data_type: DBRType,
+    pub data_count: u32,
+    pub server_id: u32,
+    pub client_ioid: u32,
+    pub data: Vec<u8>,
 }
 
 impl From<&Write> for RawMessage {
@@ -1124,7 +1124,7 @@ impl From<&Write> for RawMessage {
             command: 15,
             field_1_data_type: value.data_type.into(),
             field_2_data_count: value.data_count,
-            field_3_parameter_1: value.status_id,
+            field_3_parameter_1: value.server_id,
             field_4_parameter_2: value.client_ioid,
             payload: value.data.clone(),
         }
@@ -1139,7 +1139,7 @@ impl TryFrom<RawMessage> for Write {
             data_type: DBRType::try_from(value.field_1_data_type)
                 .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
             data_count: value.field_2_data_count,
-            status_id: value.field_3_parameter_1,
+            server_id: value.field_3_parameter_1,
             client_ioid: value.field_4_parameter_2,
             data: value.payload,
         })
