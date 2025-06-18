@@ -19,7 +19,7 @@ pub trait Provider: Sync + Send + Clone + 'static {
     ///
     /// The record that you return with no requested_type is used for
     /// the native type and data count that is reported to new subscribers.
-    fn get_value(&self, pv_name: &str, requested_type: Option<DBRType>) -> Option<Dbr>;
+    fn read_value(&self, pv_name: &str, requested_type: Option<DBRType>) -> Option<Dbr>;
 
     #[allow(unused_variables)]
     fn get_access_right(

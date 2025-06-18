@@ -355,7 +355,7 @@ impl<L: Provider> Circuit<L> {
         let channel = &self.channels[&request.server_id];
         let pv = channel
             .library
-            .get_value(&channel.name, Some(request.data_type))
+            .read_value(&channel.name, Some(request.data_type))
             .unwrap();
         // Read the data into a Vec<u8>
         let (data_count, data) = pv.encode_value(request.data_type, request.data_count as usize)?;
@@ -363,7 +363,7 @@ impl<L: Provider> Circuit<L> {
     }
 
     fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel<L>, ()>) {
-        let Some(pv) = self.library.get_value(&message.channel_name, None) else {
+        let Some(pv) = self.library.read_value(&message.channel_name, None) else {
             println!(
                 "Got a request for channel to '{}', which we do not appear to have.",
                 message.channel_name

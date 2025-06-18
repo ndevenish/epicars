@@ -10,7 +10,7 @@ use epics::{
 struct BasicProvider;
 
 impl Provider for BasicProvider {
-    fn get_value(
+    fn read_value(
         &self,
         pv_name: &str,
         _requested_type: Option<epics::database::DBRType>,
