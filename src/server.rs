@@ -250,9 +250,7 @@ impl<L: Provider> Circuit<L> {
                     match err {
                         // Handle various cases that could lead to this failing
                         MessageError::IO(io) => {
-                            if io.kind() == io::ErrorKind::UnexpectedEof {
-                                println!("{id}: Client closed connection");
-                            } else {
+                            if io.kind() != io::ErrorKind::UnexpectedEof {
                                 println!("{id}: IO Error reading server message: {}", io);
                             }
                             break;
