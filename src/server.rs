@@ -195,7 +195,6 @@ struct Circuit<L: Provider> {
     client_user_name: Option<String>,
     client_events_on: bool,
     library: L,
-    stream: TcpStream,
     channels: HashMap<u32, Channel<L>>,
     next_channel_id: u32,
 }
@@ -238,13 +237,12 @@ impl<L: Provider> Circuit<L> {
             client_user_name: None,
             client_events_on: true,
             library,
-            stream,
             channels: HashMap::new(),
             next_channel_id: 0,
         };
         // Now, everything else is based on responding to events
         loop {
-            let message = match Message::read_server_message(&mut circuit.stream).await {
+            let message = match Message::read_server_message(&mut stream).await {
                 Ok(message) => message,
                 Err(err) => {
                     match err {
@@ -281,89 +279,89 @@ impl<L: Provider> Circuit<L> {
                     }
                 }
             };
-            if let Err(MessageError::UnexpectedMessage(msg)) = circuit.handle_message(message).await
-            {
-                println!("{id}: Error: Unexpected message: {:?}", msg);
-                continue;
+            match circuit.handle_message(message).await {
+                Ok(messages) => {
+                    for msg in messages {
+                        stream.write_all(&msg.as_bytes()).await.unwrap()
+                    }
+                }
+                Err(MessageError::UnexpectedMessage(msg)) => {
+                    println!("{id}: Error: Unexpected message: {:?}", msg);
+                    continue;
+                }
+                Err(msg) => {
+                    println!("{id} Error: Unexpected Error message {:?}", msg);
+                    continue;
+                }
             }
         }
         // If out here, we are closing the channel
         println!("{id}: Closing circuit");
-        let _ = circuit.stream.shutdown().await;
+        let _ = stream.shutdown().await;
     }
 
-    async fn handle_message(&mut self, message: Message) -> Result<(), MessageError> {
+    async fn handle_message(&mut self, message: Message) -> Result<Vec<Message>, MessageError> {
         let id = self.id;
         match message {
-            Message::Echo => {
-                let mut reply_buf = Cursor::new(Vec::new());
-                messages::Echo.write(&mut reply_buf).unwrap();
-                self.stream.write_all(&reply_buf.into_inner()).await?
-            }
+            Message::Echo => Ok(vec![Message::Echo]),
             Message::ClientName(name) if self.client_user_name.is_none() => {
                 println!("{id}: Got client username: {}", name.name);
                 self.client_user_name = Some(name.name);
+                Ok(Vec::default())
             }
             Message::HostName(name) if self.client_host_name.is_none() => {
                 println!("{id}: Got client hostname: {}", name.name);
                 self.client_host_name = Some(name.name);
+                Ok(Vec::default())
             }
             Message::CreateChannel(message) => {
                 println!(
                     "{id}: Got request to create channel to: {}",
                     message.channel_name
                 );
-                let mut buffer = Vec::new();
                 let (messages, channel) = self.create_channel(message);
-                for out_message in messages {
-                    buffer.extend(out_message.as_bytes());
-                }
-                // Write the results of channel creation
-                if !buffer.is_empty() {
-                    self.stream.write_all(&buffer).await?
-                }
                 if let Ok(channel) = channel {
                     self.channels.insert(channel.server_id, channel);
                 }
+                Ok(messages)
             }
             Message::ClearChannel(message) => {
                 println!("{id}:{}: Request to clear channel", message.server_id);
                 self.channels.remove(&message.server_id);
+                Ok(Vec::default())
             }
             Message::ReadNotify(msg) => {
                 println!("{id}:{}: ReadNotify request: {:?}", msg.server_id, msg);
                 match self.do_read(&msg) {
                     Ok(r) => {
                         println!("Sending response: {r:?}");
-                        self.stream.write_all(&r.as_bytes()).await?
+                        // self.stream.write_all(&r.as_bytes()).await?
+                        Ok(vec![Message::ReadNotifyResponse(r)])
                     }
 
                     Err(e) => {
                         // Send an error in response to the read
                         let err = ECAError::new(e, msg.client_ioid, Message::ReadNotify(msg));
                         println!("Returning error: {err:?}");
-                        self.stream.write_all(&err.as_bytes()).await?
+                        // self.stream.write_all(&err.as_bytes()).await?
+                        Ok(vec![Message::ECAError(err)])
                     }
                 }
             }
             Message::Write(msg) => {
                 println!("{id}:{}: Write request: {:?}", msg.server_id, msg);
                 if !self.do_write(&msg) {
-                    self.stream
-                        .write_all(
-                            &ECAError::new(
-                                ErrorCondition::PutFail,
-                                msg.client_ioid,
-                                Message::Write(msg),
-                            )
-                            .as_bytes(),
-                        )
-                        .await?
+                    Ok(vec![Message::ECAError(ECAError::new(
+                        ErrorCondition::PutFail,
+                        msg.client_ioid,
+                        Message::Write(msg),
+                    ))])
+                } else {
+                    Ok(Vec::default())
                 }
             }
-            msg => return Err(MessageError::UnexpectedMessage(msg)),
+            msg => Err(MessageError::UnexpectedMessage(msg)),
         }
-        Ok(())
     }
 
     fn do_read(&self, request: &ReadNotify) -> Result<ReadNotifyResponse, ErrorCondition> {
