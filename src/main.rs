@@ -26,7 +26,7 @@ impl Provider for BasicProvider {
         }
     }
     fn provides(&self, pv_name: &str) -> bool {
-        println!("Provider got asked if has \"{pv_name}\"\n");
+        //        println!("Provider got asked if has \"{pv_name}\"");
         pv_name == "something"
     }
 }
