@@ -193,6 +193,7 @@ pub struct StringDBR {
     value: String,
     last_updated: SystemTime,
 }
+
 #[derive(Debug, Clone)]
 pub struct EnumDBR {
     status: i16,
@@ -446,7 +447,7 @@ impl DbrValue {
     }
 }
 /// Basic DBR Data types, independent of category
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DBRBasicType {
     String = 0,
     Int = 1,
@@ -472,7 +473,7 @@ impl TryFrom<u16> for DBRBasicType {
     }
 }
 /// Mapping of DBR categories
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DBRCategory {
     Basic = 0,
     Status = 1,
@@ -494,11 +495,16 @@ impl TryFrom<u16> for DBRCategory {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct DBRType {
     pub basic_type: DBRBasicType,
     pub category: DBRCategory,
 }
+
+pub const DBR_BASIC_STRING: DBRType = DBRType {
+    basic_type: DBRBasicType::String,
+    category: DBRCategory::Basic,
+};
 
 impl TryFrom<u16> for DBRType {
     type Error = ();

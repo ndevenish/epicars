@@ -31,8 +31,9 @@ pub trait Provider: Sync + Send + Clone + 'static {
         messages::AccessRight::Read
     }
 
+    /// Write a value to a PV
     #[allow(unused_variables)]
-    fn write_value(&mut self, pv_name: &str, write_type: DBRType, value: &Dbr) -> bool {
+    fn write_value(&mut self, pv_name: &str, value: &[&str]) -> bool {
         false
     }
 }

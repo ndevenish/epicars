@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use core::str;
 use pnet::datalink;
 use std::{
     collections::HashMap,
@@ -14,6 +15,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    database::DBR_BASIC_STRING,
     messages::{
         self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
         CreateChannelResponse, ECAError, ErrorCondition, Message, MessageError, ReadNotify,
@@ -377,9 +379,21 @@ impl<L: Provider> Circuit<L> {
         Ok(request.respond(data_count, data))
     }
 
-    fn do_write(&self, request: &Write) -> bool {
-        let _channel = &self.channels[&request.server_id];
-        // channel.library.write_value(&channel.name, request.data_type, value)
+    fn do_write(&mut self, request: &Write) -> bool {
+        assert!(request.data_type == DBR_BASIC_STRING);
+        let channel = self.channels.get_mut(&request.server_id).unwrap();
+
+        // Slightly unsure of formats here... so let's manually divide into strings here
+        let data: Vec<&str> = request
+            .data
+            .chunks(40)
+            .map(|d| {
+                let strlen = d.iter().position(|&c| c == 0x00).unwrap();
+                str::from_utf8(&d[0..strlen]).unwrap()
+            })
+            .collect();
+        // println!("Got write request: {:?}", data);
+        channel.library.write_value(&channel.name, &data);
         false
     }
 

@@ -391,6 +391,7 @@ impl Message {
     }
 }
 
+/// Parse a zero-padded string, where there could be several zeros at the end of the string.
 fn padded_string(length: usize) -> impl for<'a> FnMut(&'a [u8]) -> IResult<&'a [u8], String> {
     move |input| {
         let (input, raw_string) = take(length)(input)?;

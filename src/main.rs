@@ -38,6 +38,10 @@ impl Provider for BasicProvider {
     ) -> epics::messages::AccessRight {
         epics::messages::AccessRight::ReadWrite
     }
+    fn write_value(&mut self, pv_name: &str, value: &[&str]) -> bool {
+        println!("BasicProvider: Got Write '{pv_name}' request with: {value:?}");
+        false
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
