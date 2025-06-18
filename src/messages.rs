@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
-    io::{self, Cursor, Write},
+    io::{self, Cursor},
     net::Ipv4Addr,
     ops::Shl,
 };
@@ -25,7 +25,7 @@ const EPICS_VERSION: u16 = 13;
 /// plethora of named functions.
 /// Also adds common interface for writing a message struct to a writer.
 pub trait CAMessage: TryFrom<RawMessage> {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()>;
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()>;
     fn parse(input: &[u8]) -> IResult<&[u8], Self> {
         let (i, raw) = RawMessage::parse(input)?;
         let converted: Self = raw
@@ -136,7 +136,7 @@ impl RawMessage {
 }
 
 impl CAMessage for RawMessage {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         let payload_size = self.payload.len().div_ceil(8) * 8;
         let header: MessageHeader = self.into();
         header.write(writer)?;
@@ -244,7 +244,7 @@ impl From<RawMessage> for MessageHeader {
 }
 
 impl CAMessage for MessageHeader {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         let payload_size = self.payload_size.div_ceil(8) * 8;
 
         writer.write_all(&self.command.to_be_bytes())?;
@@ -284,6 +284,7 @@ pub enum Message {
     Search(Search),
     SearchResponse(SearchResponse),
     ServerDisconnect(ServerDisconnect),
+    Write(Write),
     Version(Version),
 }
 
@@ -307,6 +308,7 @@ impl AsBytes for Message {
             Message::SearchResponse(msg) => msg.as_bytes(),
             Message::ServerDisconnect(msg) => msg.as_bytes(),
             Message::Version(msg) => msg.as_bytes(),
+            Message::Write(msg) => msg.as_bytes(),
         }
     }
 }
@@ -374,6 +376,7 @@ impl Message {
         Ok(match message.command {
             0 => Self::Version(message.try_into()?),
             1 => Self::EventAdd(message.try_into()?),
+            4 => Self::Write(message.try_into()?),
             6 => Self::Search(message.try_into()?),
             8 => Self::EventsOff,
             9 => Self::EventsOn,
@@ -451,7 +454,7 @@ impl TryFrom<RawMessage> for RsrvIsUp {
 }
 
 impl CAMessage for RsrvIsUp {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&13_u16.to_be_bytes())?;
         writer.write_all(&0_u16.to_be_bytes())?;
         writer.write_all(&EPICS_VERSION.to_be_bytes())?;
@@ -497,7 +500,7 @@ impl TryFrom<RawMessage> for Version {
 }
 
 impl CAMessage for Version {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 0,
             field_1_data_type: self.priority,
@@ -549,7 +552,7 @@ impl TryFrom<RawMessage> for Search {
     }
 }
 impl CAMessage for Search {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 6,
             field_1_data_type: if self.should_reply { 10 } else { 5 },
@@ -598,7 +601,7 @@ impl TryFrom<RawMessage> for SearchResponse {
 }
 
 impl CAMessage for SearchResponse {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 0x06,
             field_1_data_type: self.port_number,
@@ -657,7 +660,7 @@ impl TryFrom<RawMessage> for CreateChannel {
     }
 }
 impl CAMessage for CreateChannel {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 18,
             field_1_data_type: 0,
@@ -692,7 +695,7 @@ impl TryFrom<RawMessage> for CreateChannelResponse {
 }
 
 impl CAMessage for CreateChannelResponse {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 18,
             field_1_data_type: self.data_type.into(),
@@ -720,7 +723,7 @@ impl TryFrom<RawMessage> for CreateChannelFailure {
     }
 }
 impl CAMessage for CreateChannelFailure {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 26,
             field_3_parameter_1: self.client_id,
@@ -777,7 +780,7 @@ impl TryFrom<RawMessage> for AccessRights {
 }
 
 impl CAMessage for AccessRights {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 22,
             field_3_parameter_1: self.client_id,
@@ -800,7 +803,7 @@ impl TryFrom<RawMessage> for Echo {
 }
 
 impl CAMessage for Echo {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 23,
             ..Default::default()
@@ -826,7 +829,7 @@ impl TryFrom<RawMessage> for ClientName {
 }
 
 impl CAMessage for ClientName {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 20,
             payload: pad_string(&self.name),
@@ -850,7 +853,7 @@ impl TryFrom<RawMessage> for HostName {
     }
 }
 impl CAMessage for HostName {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 21,
             payload: pad_string(&self.name),
@@ -874,7 +877,7 @@ impl TryFrom<RawMessage> for ServerDisconnect {
     }
 }
 impl CAMessage for ServerDisconnect {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 27,
             field_3_parameter_1: self.client_id,
@@ -895,7 +898,7 @@ impl TryFrom<RawMessage> for EventsOn {
     }
 }
 impl CAMessage for EventsOn {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 9,
             ..Default::default()
@@ -915,7 +918,7 @@ impl TryFrom<RawMessage> for EventsOff {
     }
 }
 impl CAMessage for EventsOff {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 8,
             ..Default::default()
@@ -940,7 +943,7 @@ impl TryFrom<RawMessage> for ClearChannel {
     }
 }
 impl CAMessage for ClearChannel {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 12,
             field_3_parameter_1: self.server_id,
@@ -987,7 +990,7 @@ impl TryFrom<RawMessage> for EventAdd {
 }
 
 impl CAMessage for EventAdd {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         let mut payload = vec![0u8; 12];
         payload.extend_from_slice(&self.mask.to_be_bytes());
         RawMessage {
@@ -1055,7 +1058,7 @@ impl From<&ReadNotify> for RawMessage {
 }
 
 impl CAMessage for ReadNotify {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage::from(self).write(writer)
     }
 }
@@ -1098,15 +1101,56 @@ impl TryFrom<RawMessage> for ReadNotifyResponse {
 }
 
 impl CAMessage for ReadNotifyResponse {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage::from(self).write(writer)
     }
 }
+
 #[derive(Debug)]
 pub struct WriteChannel {}
 
 #[derive(Debug)]
-pub struct WriteNotify {}
+pub struct Write {
+    data_type: DBRType,
+    data_count: u32,
+    status_id: u32,
+    client_ioid: u32,
+    data: Vec<u8>,
+}
+
+impl From<&Write> for RawMessage {
+    fn from(value: &Write) -> Self {
+        RawMessage {
+            command: 15,
+            field_1_data_type: value.data_type.into(),
+            field_2_data_count: value.data_count,
+            field_3_parameter_1: value.status_id,
+            field_4_parameter_2: value.client_ioid,
+            payload: value.data.clone(),
+        }
+    }
+}
+
+impl TryFrom<RawMessage> for Write {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(4)?;
+        Ok(Write {
+            data_type: DBRType::try_from(value.field_1_data_type)
+                .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
+            data_count: value.field_2_data_count,
+            status_id: value.field_3_parameter_1,
+            client_ioid: value.field_4_parameter_2,
+            data: value.payload,
+        })
+    }
+}
+
+impl CAMessage for Write {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage::from(self).write(writer)
+    }
+}
 
 #[derive(Debug)]
 pub struct EventAddResponse {}
@@ -1334,7 +1378,7 @@ impl TryFrom<RawMessage> for ECAError {
 }
 
 impl CAMessage for ECAError {
-    fn write<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 11,
             field_1_data_type: 0,

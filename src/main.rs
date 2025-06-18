@@ -29,6 +29,15 @@ impl Provider for BasicProvider {
         //        println!("Provider got asked if has \"{pv_name}\"");
         pv_name == "something"
     }
+
+    fn get_access_right(
+        &self,
+        _pv_name: &str,
+        _client_user_name: Option<&str>,
+        _client_host_name: Option<&str>,
+    ) -> epics::messages::AccessRight {
+        epics::messages::AccessRight::ReadWrite
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
