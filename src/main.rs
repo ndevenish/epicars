@@ -15,7 +15,7 @@ impl Provider for BasicProvider {
         pv_name: &str,
         _requested_type: Option<epics::database::DBRType>,
     ) -> Option<epics::database::Dbr> {
-        println!("Provider got asked for value of {pv_name}");
+        println!("Provider got asked for value of '{pv_name}'");
         if pv_name == "something" {
             Some(Dbr::Long(NumericDBR {
                 value: SingleOrVec::Single(42),
