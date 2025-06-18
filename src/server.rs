@@ -17,7 +17,7 @@ use crate::{
     messages::{
         self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
         CreateChannelResponse, ECAError, ErrorCondition, Message, MessageError, ReadNotify,
-        ReadNotifyResponse,
+        ReadNotifyResponse, Write,
     },
     new_reusable_udp_socket,
     provider::Provider,
@@ -346,6 +346,21 @@ impl<L: Provider> Circuit<L> {
                     }
                 }
             }
+            Message::Write(msg) => {
+                println!("{id}:{}: Write request: {:?}", msg.server_id, msg);
+                if !self.do_write(&msg) {
+                    self.stream
+                        .write_all(
+                            &ECAError::new(
+                                ErrorCondition::PutFail,
+                                msg.client_ioid,
+                                Message::Write(msg),
+                            )
+                            .as_bytes(),
+                        )
+                        .await?
+                }
+            }
             msg => return Err(MessageError::UnexpectedMessage(msg)),
         }
         Ok(())
@@ -360,6 +375,12 @@ impl<L: Provider> Circuit<L> {
         // Read the data into a Vec<u8>
         let (data_count, data) = pv.encode_value(request.data_type, request.data_count as usize)?;
         Ok(request.respond(data_count, data))
+    }
+
+    fn do_write(&self, request: &Write) -> bool {
+        let _channel = &self.channels[&request.server_id];
+        // channel.library.write_value(&channel.name, request.data_type, value)
+        false
     }
 
     fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel<L>, ()>) {

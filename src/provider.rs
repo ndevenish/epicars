@@ -31,8 +31,8 @@ pub trait Provider: Sync + Send + Clone + 'static {
         messages::AccessRight::Read
     }
 
-    // /// Request the start of
-    // fn monitor_value(pv_name : String, watcher : mpsc::Sender<Dbr>, requested_type : DBRType);
-
-    // fn set_value(pv_name : String, value : Dbr) ->
+    #[allow(unused_variables)]
+    fn write_value(&mut self, pv_name: &str, write_type: DBRType, value: &Dbr) -> bool {
+        false
+    }
 }
