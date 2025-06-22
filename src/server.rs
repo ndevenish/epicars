@@ -11,15 +11,16 @@ use std::{
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream, UdpSocket},
+    sync::{broadcast, mpsc},
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    database::DBR_BASIC_STRING,
+    database::{DBRType, Dbr, DBR_BASIC_STRING},
     messages::{
         self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
-        CreateChannelResponse, ECAError, ErrorCondition, Message, MessageError, ReadNotify,
-        ReadNotifyResponse, Write,
+        CreateChannelResponse, ECAError, ErrorCondition, Message, MessageError, MonitorMask,
+        ReadNotify, ReadNotifyResponse, Write,
     },
     new_reusable_udp_socket,
     provider::Provider,
@@ -195,16 +196,25 @@ struct Circuit<L: Provider> {
     client_user_name: Option<String>,
     client_events_on: bool,
     library: L,
-    channels: HashMap<u32, Channel<L>>,
+    channels: HashMap<u32, Channel>,
     next_channel_id: u32,
+    monitor_value_available: mpsc::Sender<String>,
 }
 
-struct Channel<L: Provider> {
+#[derive(Debug)]
+struct Channel {
     name: String,
     client_id: u32,
     server_id: u32,
-    // TODO: Do we want to store a PV-specific accessor here?
-    library: L,
+    subscription: Option<PVSubscription>,
+}
+
+#[derive(Debug)]
+struct PVSubscription {
+    data_type: DBRType,
+    data_count: usize,
+    mask: MonitorMask,
+    receiver: broadcast::Receiver<Dbr>,
 }
 
 impl<L: Provider> Circuit<L> {
@@ -227,8 +237,9 @@ impl<L: Provider> Circuit<L> {
         let client_version = Circuit::<L>::do_version_exchange(&mut stream)
             .await
             .unwrap();
-        println!("{id}: Got client version: {}", client_version);
         // Client version is the bare minimum we need to establish a valid circuit
+        println!("{id}: Got client version: {}", client_version);
+        let (monitor_value_available, mut monitor_updates) = mpsc::channel::<String>(32);
         let mut circuit = Circuit {
             id,
             last_message: Instant::now(),
@@ -239,62 +250,76 @@ impl<L: Provider> Circuit<L> {
             library,
             channels: HashMap::new(),
             next_channel_id: 0,
+            monitor_value_available,
         };
+
         // Now, everything else is based on responding to events
         loop {
-            let message = match Message::read_server_message(&mut stream).await {
-                Ok(message) => message,
-                Err(err) => {
-                    match err {
-                        // Handle various cases that could lead to this failing
-                        MessageError::IO(io) => {
+            tokio::select! {
+                pv_name = monitor_updates.recv() => {
+                    match pv_name {
+                        Some(pv_name) => {
+                            let c = circuit.channels.values().find(|v| v.name == pv_name).unwrap();
+                            println!("Got update to send monitor update message for channel {c:?}");
+                        },
+                        None => {
+                            panic!("Update monitor got all endpoints closed")
+                        }
+                    }
+                }
+
+                message = Message::read_server_message(&mut stream) => {
+                    let message = match message {
+                        Ok(message) => message,
+                        Err(MessageError::IO(io)) => {
                             if io.kind() != io::ErrorKind::UnexpectedEof {
                                 println!("{id}: IO Error reading server message: {}", io);
                             }
                             break;
                         }
-                        MessageError::UnknownCommandId(command_id) => {
+                        Err(MessageError::UnknownCommandId(command_id)) => {
                             println!("{id}: Error: Receieved unknown command id: {command_id}");
                             continue;
                         }
-                        MessageError::ParsingError(msg) => {
+                        Err(MessageError::ParsingError(msg)) => {
                             println!("{id}: Error: Incoming message parse error: {}", msg);
                             continue;
                         }
-                        MessageError::UnexpectedMessage(msg) => {
+                        Err(MessageError::UnexpectedMessage(msg)) => {
                             println!("{id}: Error: Got message from client that is invalid to receive on a server: {msg:?}");
                             continue;
                         }
-                        MessageError::IncorrectCommandId(msg, expect) => {
+                        Err(MessageError::IncorrectCommandId(msg, expect)) => {
                             panic!("{id}: Fatal error: Got {msg} instead of {expect}")
                         }
-                        MessageError::InvalidField(message) => {
+                        Err(MessageError::InvalidField(message)) => {
                             println!("{id}: Got invalid message field: {message}");
                             continue;
                         }
-                        MessageError::ErrorResponse(message) => {
+                        Err(MessageError::ErrorResponse(message)) => {
                             println!("{id}: Got reading server messages generated error response: {message}");
                             continue;
                         }
-                    }
-                }
-            };
-            match circuit.handle_message(message).await {
-                Ok(messages) => {
-                    for msg in messages {
-                        stream.write_all(&msg.as_bytes()).await.unwrap()
-                    }
-                }
-                Err(MessageError::UnexpectedMessage(msg)) => {
-                    println!("{id}: Error: Unexpected message: {:?}", msg);
-                    continue;
-                }
-                Err(msg) => {
-                    println!("{id} Error: Unexpected Error message {:?}", msg);
-                    continue;
+                    };
+                    match circuit.handle_message(message).await {
+                        Ok(messages) => {
+                            for msg in messages {
+                                stream.write_all(&msg.as_bytes()).await.unwrap()
+                            }
+                        }
+                        Err(MessageError::UnexpectedMessage(msg)) => {
+                            println!("{id}: Error: Unexpected message: {:?}", msg);
+                            continue;
+                        }
+                        Err(msg) => {
+                            println!("{id} Error: Unexpected Error message {:?}", msg);
+                            continue;
+                        }
+                    };
                 }
             }
         }
+
         // If out here, we are closing the channel
         println!("{id}: Closing circuit");
         let _ = stream.shutdown().await;
@@ -304,6 +329,26 @@ impl<L: Provider> Circuit<L> {
         let id = self.id;
         match message {
             Message::Echo => Ok(vec![Message::Echo]),
+            Message::EventAdd(msg) => {
+                let channel = &mut self.channels.get_mut(&msg.server_id).unwrap();
+
+                let receiver = self
+                    .library
+                    .monitor_value(
+                        &channel.name,
+                        msg.mask,
+                        self.monitor_value_available.clone(),
+                    )
+                    .map_err(MessageError::ErrorResponse)?;
+                channel.subscription = Some(PVSubscription {
+                    data_type: msg.data_type,
+                    data_count: msg.data_count as usize,
+                    mask: msg.mask,
+                    receiver,
+                });
+
+                Ok(Vec::default())
+            }
             Message::ClientName(name) if self.client_user_name.is_none() => {
                 println!("{id}: Got client username: {}", name.name);
                 self.client_user_name = Some(name.name);
@@ -366,10 +411,11 @@ impl<L: Provider> Circuit<L> {
 
     fn do_read(&self, request: &ReadNotify) -> Result<ReadNotifyResponse, ErrorCondition> {
         let channel = &self.channels[&request.server_id];
-        let pv = channel
+        let pv = self
             .library
             .read_value(&channel.name, Some(request.data_type))
             .unwrap();
+
         // Read the data into a Vec<u8>
         let (data_count, data) = pv.encode_value(request.data_type, request.data_count as usize)?;
         Ok(request.respond(data_count, data))
@@ -377,7 +423,7 @@ impl<L: Provider> Circuit<L> {
 
     fn do_write(&mut self, request: &Write) -> bool {
         assert!(request.data_type == DBR_BASIC_STRING);
-        let channel = self.channels.get_mut(&request.server_id).unwrap();
+        let channel = self.channels.get(&request.server_id).unwrap();
 
         // Slightly unsure of formats here... so let's manually divide into strings here
         let data: Vec<&str> = request
@@ -389,12 +435,11 @@ impl<L: Provider> Circuit<L> {
             })
             .collect();
         // println!("Got write request: {:?}", data);
-        channel.library.write_value(&channel.name, &data);
-        false
+        self.library.write_value(&channel.name, &data).is_ok()
     }
 
-    fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel<L>, ()>) {
-        let Some(pv) = self.library.read_value(&message.channel_name, None) else {
+    fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel, ()>) {
+        let Ok(pv) = self.library.read_value(&message.channel_name, None) else {
             println!(
                 "Got a request for channel to '{}', which we do not appear to have.",
                 message.channel_name
@@ -434,7 +479,7 @@ impl<L: Provider> Circuit<L> {
                 name: message.channel_name,
                 server_id: id,
                 client_id: message.client_id,
-                library: self.library.clone(),
+                subscription: None,
             }),
         )
     }

@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use epics::{
     database::{Dbr, NumericDBR, SingleOrVec},
+    messages::ErrorCondition,
     provider::Provider,
     server::ServerBuilder,
 };
@@ -14,17 +15,19 @@ impl Provider for BasicProvider {
         &self,
         pv_name: &str,
         _requested_type: Option<epics::database::DBRType>,
-    ) -> Option<epics::database::Dbr> {
+    ) -> Result<Dbr, epics::messages::ErrorCondition> {
         println!("Provider got asked for value of '{pv_name}'");
         if pv_name == "something" {
-            Some(Dbr::Long(NumericDBR {
+            Ok(Dbr::Long(NumericDBR {
                 value: SingleOrVec::Single(42),
                 ..Default::default()
             }))
         } else {
-            None
+            Err(ErrorCondition::GetFail)
         }
     }
+
+    // }
     fn provides(&self, pv_name: &str) -> bool {
         //        println!("Provider got asked if has \"{pv_name}\"");
         pv_name == "something"
@@ -38,9 +41,10 @@ impl Provider for BasicProvider {
     ) -> epics::messages::AccessRight {
         epics::messages::AccessRight::ReadWrite
     }
-    fn write_value(&mut self, pv_name: &str, value: &[&str]) -> bool {
+
+    fn write_value(&mut self, pv_name: &str, value: &[&str]) -> Result<(), ErrorCondition> {
         println!("BasicProvider: Got Write '{pv_name}' request with: {value:?}");
-        false
+        Err(ErrorCondition::PutFail)
     }
 }
 

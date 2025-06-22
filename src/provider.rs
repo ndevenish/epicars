@@ -1,8 +1,10 @@
 // use tokio::sync::{self, mpsc};
 
+use tokio::sync::{broadcast, mpsc};
+
 use crate::{
     database::{DBRType, Dbr},
-    messages,
+    messages::{self, ErrorCondition, MonitorMask},
 };
 
 /// Provides PV values for a CAServer
@@ -19,7 +21,11 @@ pub trait Provider: Sync + Send + Clone + 'static {
     ///
     /// The record that you return with no requested_type is used for
     /// the native type and data count that is reported to new subscribers.
-    fn read_value(&self, pv_name: &str, requested_type: Option<DBRType>) -> Option<Dbr>;
+    fn read_value(
+        &self,
+        pv_name: &str,
+        requested_type: Option<DBRType>,
+    ) -> Result<Dbr, ErrorCondition>;
 
     #[allow(unused_variables)]
     fn get_access_right(
@@ -33,7 +39,17 @@ pub trait Provider: Sync + Send + Clone + 'static {
 
     /// Write a value to a PV
     #[allow(unused_variables)]
-    fn write_value(&mut self, pv_name: &str, value: &[&str]) -> bool {
-        false
+    fn write_value(&mut self, pv_name: &str, value: &[&str]) -> Result<(), ErrorCondition> {
+        Err(ErrorCondition::NoWtAccess)
+    }
+
+    #[allow(unused_variables)]
+    fn monitor_value(
+        &mut self,
+        pv_name: &str,
+        mask: MonitorMask,
+        trigger: mpsc::Sender<String>,
+    ) -> Result<broadcast::Receiver<Dbr>, ErrorCondition> {
+        Err(ErrorCondition::UnavailInServ)
     }
 }

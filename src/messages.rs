@@ -959,13 +959,24 @@ impl CAMessage for ClearChannel {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct MonitorMask {
+    pub value: bool,
+    pub log: bool,
+    pub alarm: bool,
+    pub property: bool,
+}
+
 #[derive(Debug)]
 pub struct EventAdd {
-    data_type: DBRType,
-    data_count: u32,
-    server_id: u32,
-    subscription_id: u32,
-    mask: u16,
+    pub data_type: DBRType,
+    pub data_count: u32,
+
+    /// Server SID of the channel on which to register this subscription
+    pub server_id: u32,
+    /// Client ID identifying this subscription
+    pub subscription_id: u32,
+    pub mask: MonitorMask,
 }
 
 impl TryFrom<RawMessage> for EventAdd {
@@ -989,7 +1000,12 @@ impl TryFrom<RawMessage> for EventAdd {
             data_count: value.field_2_data_count,
             server_id: value.field_3_parameter_1,
             subscription_id: value.field_4_parameter_2,
-            mask,
+            mask: MonitorMask {
+                value: mask & 1 == 1,
+                log: mask & 2 == 2,
+                alarm: mask & 4 == 4,
+                property: mask & 8 == 8,
+            },
         })
     }
 }
@@ -997,7 +1013,12 @@ impl TryFrom<RawMessage> for EventAdd {
 impl CAMessage for EventAdd {
     fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         let mut payload = vec![0u8; 12];
-        payload.extend_from_slice(&self.mask.to_be_bytes());
+        let mask: u16 = if self.mask.value { 1 } else { 0 }
+            + if self.mask.log { 2 } else { 0 }
+            + if self.mask.alarm { 4 } else { 0 }
+            + if self.mask.property { 8 } else { 0 };
+
+        payload.extend_from_slice(&mask.to_be_bytes());
         RawMessage {
             command: 1,
             field_1_data_type: self.data_type.into(),
