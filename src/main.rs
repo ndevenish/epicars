@@ -56,9 +56,14 @@ impl Provider for BasicProvider {
     ) -> Result<tokio::sync::broadcast::Receiver<Dbr>, ErrorCondition> {
         let (sender, recv) = broadcast::channel::<Dbr>(1);
 
-        // tokio::task::spawn(|move| {
+        tokio::spawn(async move {
+            let sender = sender;
+            loop {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                println!("Sending monitor update instance");
+            }
+        });
 
-        // });
         Ok(recv)
     }
 }
