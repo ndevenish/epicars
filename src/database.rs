@@ -186,7 +186,7 @@ where
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StringDBR {
     status: i16,
     severity: i16,
@@ -217,7 +217,7 @@ impl EnumDBR {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Dbr {
     Enum(EnumDBR),
     String(StringDBR),
