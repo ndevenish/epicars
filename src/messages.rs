@@ -277,6 +277,7 @@ pub enum Message {
     ECAError(ECAError),
     Echo,
     EventAdd(EventAdd),
+    EventAddResponse(EventAddResponse),
     EventsOff,
     EventsOn,
     HostName(HostName),
@@ -302,6 +303,7 @@ impl AsBytes for Message {
             Message::ECAError(msg) => msg.as_bytes(),
             Message::Echo => Echo.as_bytes(),
             Message::EventAdd(message) => message.as_bytes(),
+            Message::EventAddResponse(message) => message.as_bytes(),
             Message::EventsOff => EventsOff.as_bytes(),
             Message::EventsOn => EventsOn.as_bytes(),
             Message::HostName(msg) => msg.as_bytes(),
@@ -1030,6 +1032,20 @@ impl CAMessage for EventAdd {
         .write(writer)
     }
 }
+
+#[derive(Debug)]
+pub struct EventAddResponse {
+    pub data_type: DBRType,
+    pub data_count: u32,
+
+    // /// Server SID of the channel on which to register this subscription
+    // pub server_id: u32,
+    /// Client ID identifying this subscription
+    pub subscription_id: u32,
+
+    pub status_code: ErrorCondition,
+    pub data: Vec<u8>,
+}
 #[derive(Debug)]
 pub struct EventCancel {}
 
@@ -1177,9 +1193,6 @@ impl CAMessage for Write {
         RawMessage::from(self).write(writer)
     }
 }
-
-#[derive(Debug)]
-pub struct EventAddResponse {}
 
 enum ErrorSeverity {
     Warning = 0,

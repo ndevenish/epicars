@@ -256,18 +256,12 @@ impl<L: Provider> Circuit<L> {
         // Now, everything else is based on responding to events
         loop {
             tokio::select! {
-                pv_name = monitor_updates.recv() => {
-                    match pv_name {
-                        Some(pv_name) => {
-                            let c = circuit.channels.values().find(|v| v.name == pv_name).unwrap();
-                            println!("Got update to send monitor update message for channel {c:?}");
-                        },
-                        None => {
-                            panic!("Update monitor got all endpoints closed")
-                        }
+                pv_name = monitor_updates.recv() => match pv_name {
+                    Some(pv_name) => circuit.handle_monitor_update(&pv_name).await,
+                    None => {
+                        panic!("Update monitor got all endpoints closed");
                     }
-                }
-
+                },
                 message = Message::read_server_message(&mut stream) => {
                     let message = match message {
                         Ok(message) => message,
@@ -325,14 +319,41 @@ impl<L: Provider> Circuit<L> {
         let _ = stream.shutdown().await;
     }
 
+    async fn handle_monitor_update(&mut self, pv_name: &str) {
+        let c = self
+            .channels
+            .values_mut()
+            .find(|v| v.name == pv_name)
+            .unwrap();
+        println!(
+            "{}: {}: Got update notification for PV {}",
+            self.id, c.server_id, c.name
+        );
+        let sub = c
+            .subscription
+            .as_mut()
+            .unwrap()
+            .receiver
+            .recv()
+            .await
+            .unwrap();
+        // .try_recv()
+        // .unwrap();
+
+        println!("Circuit got update notification: {:?}", sub);
+        // let sub = c.subscription.as_ref().unwrap().receiver.recv().await.unwrap();
+        // let sub = c.subscription.as_
+    }
+
     async fn handle_message(&mut self, message: Message) -> Result<Vec<Message>, MessageError> {
         let id = self.id;
         match message {
             Message::Echo => Ok(vec![Message::Echo]),
             Message::EventAdd(msg) => {
+                println!("{id}: {}: Got {:?}", msg.server_id, msg);
                 let channel = &mut self.channels.get_mut(&msg.server_id).unwrap();
 
-                let receiver = self
+                let mut receiver = self
                     .library
                     .monitor_value(
                         &channel.name,
@@ -340,13 +361,15 @@ impl<L: Provider> Circuit<L> {
                         self.monitor_value_available.clone(),
                     )
                     .map_err(MessageError::ErrorResponse)?;
+                // Calling monitor_value inserts the first message into the receiver
+                let first_value = &receiver.recv().await.unwrap();
+
                 channel.subscription = Some(PVSubscription {
                     data_type: msg.data_type,
                     data_count: msg.data_count as usize,
                     mask: msg.mask,
                     receiver,
                 });
-
                 Ok(Vec::default())
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {

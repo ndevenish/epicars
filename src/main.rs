@@ -55,12 +55,27 @@ impl Provider for BasicProvider {
         trigger: tokio::sync::mpsc::Sender<String>,
     ) -> Result<tokio::sync::broadcast::Receiver<Dbr>, ErrorCondition> {
         let (sender, recv) = broadcast::channel::<Dbr>(1);
-
+        sender
+            .send(Dbr::Long(NumericDBR {
+                value: SingleOrVec::Single(42),
+                ..Default::default()
+            }))
+            .unwrap();
         tokio::spawn(async move {
+            let mut val = 0i32;
             let sender = sender;
+            let trigger = trigger;
             loop {
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
                 println!("Sending monitor update instance");
+                sender
+                    .send(Dbr::Long(NumericDBR {
+                        value: SingleOrVec::Single(42 + val),
+                        ..Default::default()
+                    }))
+                    .unwrap();
+                trigger.send("something".to_string()).await.unwrap();
+                val += 1;
             }
         });
 
