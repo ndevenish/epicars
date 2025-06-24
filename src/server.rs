@@ -213,6 +213,7 @@ struct Channel {
 struct PVSubscription {
     data_type: DBRType,
     data_count: usize,
+    subscription_id: u32,
     mask: MonitorMask,
     receiver: broadcast::Receiver<Dbr>,
 }
@@ -257,7 +258,18 @@ impl<L: Provider> Circuit<L> {
         loop {
             tokio::select! {
                 pv_name = monitor_updates.recv() => match pv_name {
-                    Some(pv_name) => circuit.handle_monitor_update(&pv_name).await,
+                    Some(pv_name) => match circuit.handle_monitor_update(&pv_name).await {
+                        Ok(messages) => {
+                            for msg in messages {
+                                println!("{id}: Writing subscription update: {:?}", msg);
+                                stream.write_all(&msg.as_bytes()).await.unwrap()
+                            }
+                        },
+                        Err(msg) => {
+                            println!("{id} Error: Unexpected Error message {:?}", msg);
+                            continue;
+                        },
+                    }
                     None => {
                         panic!("Update monitor got all endpoints closed");
                     }
@@ -319,7 +331,7 @@ impl<L: Provider> Circuit<L> {
         let _ = stream.shutdown().await;
     }
 
-    async fn handle_monitor_update(&mut self, pv_name: &str) {
+    async fn handle_monitor_update(&mut self, pv_name: &str) -> Result<Vec<Message>, MessageError> {
         let c = self
             .channels
             .values_mut()
@@ -329,20 +341,22 @@ impl<L: Provider> Circuit<L> {
             "{}: {}: Got update notification for PV {}",
             self.id, c.server_id, c.name
         );
-        let sub = c
-            .subscription
-            .as_mut()
-            .unwrap()
-            .receiver
-            .recv()
-            .await
-            .unwrap();
-        // .try_recv()
-        // .unwrap();
+        let subscription = c.subscription.as_mut().unwrap();
+        let dbr = subscription.receiver.recv().await.unwrap();
 
-        println!("Circuit got update notification: {:?}", sub);
-        // let sub = c.subscription.as_ref().unwrap().receiver.recv().await.unwrap();
-        // let sub = c.subscription.as_
+        println!("Circuit got update notification: {:?}", dbr);
+        Ok(vec![Message::EventAddResponse(EventAddResponse {
+            data_type: subscription.data_type,
+            data_count: subscription.data_count as u32,
+            subscription_id: subscription.subscription_id,
+            status_code: ErrorCondition::Normal,
+            data: dbr
+                .convert_to(subscription.data_type.basic_type)
+                .unwrap()
+                .encode_value(subscription.data_type, subscription.data_count)
+                .unwrap()
+                .1,
+        })])
     }
 
     async fn handle_message(&mut self, message: Message) -> Result<Vec<Message>, MessageError> {
@@ -368,6 +382,7 @@ impl<L: Provider> Circuit<L> {
                     data_type: msg.data_type,
                     data_count: msg.data_count as usize,
                     mask: msg.mask,
+                    subscription_id: msg.subscription_id,
                     receiver,
                 });
                 Ok(vec![Message::EventAddResponse(EventAddResponse {
