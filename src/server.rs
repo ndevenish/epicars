@@ -19,8 +19,8 @@ use crate::{
     database::{DBRType, Dbr, DBR_BASIC_STRING},
     messages::{
         self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
-        CreateChannelResponse, ECAError, ErrorCondition, Message, MessageError, MonitorMask,
-        ReadNotify, ReadNotifyResponse, Write,
+        CreateChannelResponse, ECAError, ErrorCondition, EventAddResponse, Message, MessageError,
+        MonitorMask, ReadNotify, ReadNotifyResponse, Write,
     },
     new_reusable_udp_socket,
     provider::Provider,
@@ -370,7 +370,18 @@ impl<L: Provider> Circuit<L> {
                     mask: msg.mask,
                     receiver,
                 });
-                Ok(Vec::default())
+                Ok(vec![Message::EventAddResponse(EventAddResponse {
+                    data_type: msg.data_type,
+                    data_count: msg.data_count,
+                    subscription_id: msg.subscription_id,
+                    status_code: ErrorCondition::Normal,
+                    data: first_value
+                        .convert_to(msg.data_type.basic_type)
+                        .unwrap()
+                        .encode_value(msg.data_type, msg.data_count as usize)
+                        .unwrap()
+                        .1,
+                })])
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {
                 println!("{id}: Got client username: {}", name.name);

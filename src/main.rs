@@ -15,7 +15,7 @@ impl Provider for BasicProvider {
     fn read_value(
         &self,
         pv_name: &str,
-        requested_type: Option<epics::database::DBRType>,
+        _requested_type: Option<epics::database::DBRType>,
     ) -> Result<Dbr, ErrorCondition> {
         println!("Provider got asked for value of '{pv_name}'");
         if pv_name == "something" {
@@ -50,8 +50,8 @@ impl Provider for BasicProvider {
 
     fn monitor_value(
         &mut self,
-        pv_name: &str,
-        mask: epics::messages::MonitorMask,
+        _pv_name: &str,
+        _mask: epics::messages::MonitorMask,
         trigger: tokio::sync::mpsc::Sender<String>,
     ) -> Result<tokio::sync::broadcast::Receiver<Dbr>, ErrorCondition> {
         let (sender, recv) = broadcast::channel::<Dbr>(1);

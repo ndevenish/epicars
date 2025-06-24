@@ -1046,6 +1046,39 @@ pub struct EventAddResponse {
     pub status_code: ErrorCondition,
     pub data: Vec<u8>,
 }
+
+impl TryFrom<RawMessage> for EventAddResponse {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(1)?;
+        Ok(EventAddResponse {
+            data_type: DBRType::try_from(value.field_1_data_type).map_err(|_| {
+                MessageError::InvalidField(format!(
+                    "Invalid Data Type Value: {}",
+                    value.field_1_data_type
+                ))
+            })?,
+            data_count: value.field_2_data_count,
+            subscription_id: value.field_3_parameter_1,
+            status_code: ErrorCondition::try_from(value.field_4_parameter_2).unwrap(),
+            data: value.payload,
+        })
+    }
+}
+
+impl CAMessage for EventAddResponse {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 1,
+            field_1_data_type: self.data_type.into(),
+            field_2_data_count: self.data_count,
+            field_3_parameter_1: self.status_code.eca_code(),
+            field_4_parameter_2: self.subscription_id,
+            payload: self.data.clone(),
+        }
+        .write(writer)
+    }
+}
 #[derive(Debug)]
 pub struct EventCancel {}
 
