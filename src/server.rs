@@ -345,17 +345,17 @@ impl<L: Provider> Circuit<L> {
         let dbr = subscription.receiver.recv().await.unwrap();
 
         println!("Circuit got update notification: {:?}", dbr);
+        let (count, data) = dbr
+            .convert_to(subscription.data_type.basic_type)
+            .unwrap()
+            .encode_value(subscription.data_type, subscription.data_count)
+            .unwrap();
         Ok(vec![Message::EventAddResponse(EventAddResponse {
             data_type: subscription.data_type,
-            data_count: subscription.data_count as u32,
+            data_count: count as u32,
             subscription_id: subscription.subscription_id,
             status_code: ErrorCondition::Normal,
-            data: dbr
-                .convert_to(subscription.data_type.basic_type)
-                .unwrap()
-                .encode_value(subscription.data_type, subscription.data_count)
-                .unwrap()
-                .1,
+            data,
         })])
     }
 
@@ -367,7 +367,7 @@ impl<L: Provider> Circuit<L> {
                 println!("{id}: {}: Got {:?}", msg.server_id, msg);
                 let channel = &mut self.channels.get_mut(&msg.server_id).unwrap();
 
-                let mut receiver = self
+                let receiver = self
                     .library
                     .monitor_value(
                         &channel.name,
@@ -375,8 +375,6 @@ impl<L: Provider> Circuit<L> {
                         self.monitor_value_available.clone(),
                     )
                     .map_err(MessageError::ErrorResponse)?;
-                // Calling monitor_value inserts the first message into the receiver
-                let first_value = &receiver.recv().await.unwrap();
 
                 channel.subscription = Some(PVSubscription {
                     data_type: msg.data_type,
@@ -385,18 +383,7 @@ impl<L: Provider> Circuit<L> {
                     subscription_id: msg.subscription_id,
                     receiver,
                 });
-                Ok(vec![Message::EventAddResponse(EventAddResponse {
-                    data_type: msg.data_type,
-                    data_count: msg.data_count,
-                    subscription_id: msg.subscription_id,
-                    status_code: ErrorCondition::Normal,
-                    data: first_value
-                        .convert_to(msg.data_type.basic_type)
-                        .unwrap()
-                        .encode_value(msg.data_type, msg.data_count as usize)
-                        .unwrap()
-                        .1,
-                })])
+                Ok(Vec::new())
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {
                 println!("{id}: Got client username: {}", name.name);
