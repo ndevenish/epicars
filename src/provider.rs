@@ -17,7 +17,7 @@ pub trait Provider: Sync + Send + Clone + 'static {
     /// The type requested by the caller is provided, but this is only
     /// a request - you can return any type you wish from this function,
     /// and it will be automatically converted to the target type (if
-    /// possible).
+    /// such a safe conversion exists).
     ///
     /// The record that you return with no requested_type is used for
     /// the native type and data count that is reported to new subscribers.
@@ -37,7 +37,10 @@ pub trait Provider: Sync + Send + Clone + 'static {
         messages::AccessRight::Read
     }
 
-    /// Write a value to a PV
+    /// Write a value sent by a client to a PV
+    ///
+    /// There is no type information - data sent from caput appears to
+    /// always be as a string?
     #[allow(unused_variables)]
     fn write_value(&mut self, pv_name: &str, value: &[&str]) -> Result<(), ErrorCondition> {
         Err(ErrorCondition::NoWtAccess)
