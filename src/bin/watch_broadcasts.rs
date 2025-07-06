@@ -20,7 +20,7 @@ async fn main() {
                 ErrorKind::AddrInUse => {
                     panic!("Error: Port 5065 already in use, without reuse flag. Is a caRepeater running?");
                 }
-                x => panic!("IO Error: {}", x),
+                x => panic!("IO Error: {x}"),
             },
         };
 
@@ -88,10 +88,7 @@ async fn read_socket(socket: &UdpSocket) {
                 }
             }
         } else {
-            println!(
-                "Got an error parsing a raw message; was it a real CA message? {:x?}",
-                msg_buf
-            );
+            println!("Got an error parsing a raw message; was it a real CA message? {msg_buf:x?}");
             break;
         }
     }

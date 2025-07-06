@@ -57,7 +57,7 @@ impl Default for Client {
                 _ => None,
             })
             .collect();
-        println!("Addresses: {:?}", broadcast_ips);
+        println!("Addresses: {broadcast_ips:?}");
         Client {
             beacon_port: 5065,
             search_port: 5064,
