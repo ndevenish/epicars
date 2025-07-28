@@ -67,7 +67,7 @@ async fn try_bind_ports(
             }
             tokio::net::TcpListener::bind("0.0.0.0:0").await
         }
-        Some(port) => tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await,
+        Some(port) => tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await,
     }
 }
 
@@ -127,7 +127,7 @@ impl<L: Provider> Server<L> {
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
             let listener = UdpSocket::from_std(
-                new_reusable_udp_socket(format!("0.0.0.0:{}", search_port)).unwrap(),
+                new_reusable_udp_socket(format!("0.0.0.0:{search_port}")).unwrap(),
             )
             .unwrap();
 
@@ -161,7 +161,7 @@ impl<L: Provider> Server<L> {
                         println!("Sending {} search results", replies.len());
                     }
                 } else {
-                    println!("Got unparseable search message from {}", origin);
+                    println!("Got unparseable search message from {origin}");
                 }
             }
         });
@@ -177,7 +177,7 @@ impl<L: Provider> Server<L> {
                     listener.local_addr().unwrap()
                 );
                 let (connection, client) = listener.accept().await.unwrap();
-                println!("  Got new stream from {}", client);
+                println!("  Got new stream from {client}");
                 let circuit_library = library.clone();
                 tokio::spawn(async move {
                     Circuit::start(id, connection, circuit_library).await;
@@ -239,7 +239,7 @@ impl<L: Provider> Circuit<L> {
             .await
             .unwrap();
         // Client version is the bare minimum we need to establish a valid circuit
-        println!("{id}: Got client version: {}", client_version);
+        println!("{id}: Got client version: {client_version}");
         let (monitor_value_available, mut monitor_updates) = mpsc::channel::<String>(32);
         let mut circuit = Circuit {
             id,
@@ -261,12 +261,12 @@ impl<L: Provider> Circuit<L> {
                     Some(pv_name) => match circuit.handle_monitor_update(&pv_name).await {
                         Ok(messages) => {
                             for msg in messages {
-                                println!("{id}: Writing subscription update: {:?}", msg);
+                                println!("{id}: Writing subscription update: {msg:?}");
                                 stream.write_all(&msg.as_bytes()).await.unwrap()
                             }
                         },
                         Err(msg) => {
-                            println!("{id} Error: Unexpected Error message {:?}", msg);
+                            println!("{id} Error: Unexpected Error message {msg:?}");
                             continue;
                         },
                     }
@@ -279,7 +279,7 @@ impl<L: Provider> Circuit<L> {
                         Ok(message) => message,
                         Err(MessageError::IO(io)) => {
                             if io.kind() != io::ErrorKind::UnexpectedEof {
-                                println!("{id}: IO Error reading server message: {}", io);
+                                println!("{id}: IO Error reading server message: {io}");
                             }
                             break;
                         }
@@ -288,7 +288,7 @@ impl<L: Provider> Circuit<L> {
                             continue;
                         }
                         Err(MessageError::ParsingError(msg)) => {
-                            println!("{id}: Error: Incoming message parse error: {}", msg);
+                            println!("{id}: Error: Incoming message parse error: {msg}");
                             continue;
                         }
                         Err(MessageError::UnexpectedMessage(msg)) => {
@@ -314,11 +314,11 @@ impl<L: Provider> Circuit<L> {
                             }
                         }
                         Err(MessageError::UnexpectedMessage(msg)) => {
-                            println!("{id}: Error: Unexpected message: {:?}", msg);
+                            println!("{id}: Error: Unexpected message: {msg:?}");
                             continue;
                         }
                         Err(msg) => {
-                            println!("{id} Error: Unexpected Error message {:?}", msg);
+                            println!("{id} Error: Unexpected Error message {msg:?}");
                             continue;
                         }
                     };
@@ -344,7 +344,7 @@ impl<L: Provider> Circuit<L> {
         let subscription = c.subscription.as_mut().unwrap();
         let dbr = subscription.receiver.recv().await.unwrap();
 
-        println!("Circuit got update notification: {:?}", dbr);
+        println!("Circuit got update notification: {dbr:?}");
         Ok(vec![Message::EventAddResponse(EventAddResponse {
             data_type: subscription.data_type,
             data_count: subscription.data_count as u32,

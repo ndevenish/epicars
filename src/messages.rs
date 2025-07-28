@@ -1418,7 +1418,7 @@ impl ECAError {
             .1;
 
         ECAError {
-            error_message: format!("{}", condition),
+            error_message: format!("{condition}"),
             client_id,
             condition,
             original_request: header,
@@ -1479,7 +1479,7 @@ mod tests {
             beacon.server_ip,
             Some("172.23.124.207".parse::<Ipv4Addr>().unwrap())
         );
-        println!("Beacon: {:?}", beacon);
+        println!("Beacon: {beacon:?}");
 
         // Now try converting it back
         let mut writer = Cursor::new(Vec::new());
@@ -1492,7 +1492,7 @@ mod tests {
         let raw = b"\x00\x00\x00\x00\x00\x01\x00\x0d\x00\x00\x00\x00\x00\x00\x00\x00";
         // let mut reader = Cursor::new(raw);
         let ver = all_consuming(Version::parse).parse(raw).unwrap().1;
-        println!("Version: {:?}", ver);
+        println!("Version: {ver:?}");
         assert_eq!(ver.priority, 1);
         let bytes = ver.as_bytes();
         assert_eq!(bytes.len(), 16);
@@ -1514,7 +1514,7 @@ mod tests {
         let response = search.respond(None, 12345, true).as_bytes();
         assert!(!response.is_empty());
         let raw_response = RawMessage::parse(response.as_slice()).unwrap().1;
-        println!("Raw result: {:?}", raw_response);
+        println!("Raw result: {raw_response:?}");
 
         // let raw = []
         // Saw this fail?
