@@ -415,7 +415,7 @@ pub enum DbrValue {
 }
 
 impl DbrValue {
-    fn get_count(&self) -> usize {
+    pub fn get_count(&self) -> usize {
         match self {
             DbrValue::Enum(_) => 1,
             DbrValue::String(_) => unimplemented!(),
@@ -424,6 +424,17 @@ impl DbrValue {
             DbrValue::Long(val) => val.get_count(),
             DbrValue::Float(val) => val.get_count(),
             DbrValue::Double(val) => val.get_count(),
+        }
+    }
+    pub fn get_type(&self) -> DBRBasicType {
+        match self {
+            DbrValue::Enum(_) => DBRBasicType::Enum,
+            DbrValue::String(_) => DBRBasicType::String,
+            DbrValue::Char(_) => DBRBasicType::Char,
+            DbrValue::Int(_) => DBRBasicType::Int,
+            DbrValue::Long(_) => DBRBasicType::Long,
+            DbrValue::Float(_) => DBRBasicType::Float,
+            DbrValue::Double(_) => DBRBasicType::Double,
         }
     }
     /// Encode the value contents of a DBR into a byte vector
@@ -583,7 +594,7 @@ impl DBRType {
     /// than a calculations.
     ///
     /// See https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types
-    fn get_metadata_padding(&self) -> usize {
+    pub fn get_metadata_padding(&self) -> usize {
         match (self.category, self.basic_type) {
             (DBRCategory::Status, DBRBasicType::Char) => 1,
             (DBRCategory::Status, DBRBasicType::Double) => 4,
