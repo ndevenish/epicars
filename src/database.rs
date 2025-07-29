@@ -1,5 +1,10 @@
 #![allow(dead_code)]
 
+use nom::{
+    multi::count,
+    number::complete::{be_f32, be_f64, be_i16, be_i32, be_i8, be_u16},
+    Parser,
+};
 use num::{traits::ToBytes, NumCast};
 use std::{
     cmp,
@@ -425,7 +430,9 @@ impl DbrValue {
     ///
     /// If max_elems is zero, then no data will be returned. If it is
     /// `None`, then all data will be returned.
-    fn encode_value(&self, max_elems: Option<usize>) -> (usize, Vec<u8>) {
+    ///
+    /// Returns the number of elements along with the bytes
+    pub fn encode_value(&self, max_elems: Option<usize>) -> (usize, Vec<u8>) {
         let elements = if let Some(max_elem) = max_elems {
             cmp::min(max_elem, self.get_count())
         } else {
@@ -444,6 +451,51 @@ impl DbrValue {
                 DbrValue::Double(val) => val.as_bytes(Some(elements)),
             },
         )
+    }
+
+    pub fn decode_value(
+        data_type: DBRBasicType,
+        item_count: usize,
+        data: &[u8],
+    ) -> Result<DbrValue, nom::Err<nom::error::Error<&[u8]>>> {
+        match data_type {
+            DBRBasicType::Enum => {
+                assert!(
+                    item_count == 1,
+                    "Multiple item count makes no sense for enum"
+                );
+                Ok(DbrValue::Enum(be_u16.parse(data)?.1))
+            }
+            DBRBasicType::String => {
+                let strings: Vec<&str> = data
+                    .chunks(40)
+                    .map(|d| {
+                        let strlen = d.iter().position(|&c| c == 0x00).unwrap();
+                        str::from_utf8(&d[0..strlen]).unwrap()
+                    })
+                    .collect();
+                assert!(
+                    strings.len() == 1,
+                    "Got multi-instance string data type, thought this could not happen"
+                );
+                Ok(DbrValue::String(strings[0].to_owned()))
+            }
+            DBRBasicType::Char => Ok(DbrValue::Char(SingleOrVec::Vector(
+                count(be_i8, item_count).parse(data)?.1,
+            ))),
+            DBRBasicType::Int => Ok(DbrValue::Int(SingleOrVec::Vector(
+                count(be_i16, item_count).parse(data)?.1,
+            ))),
+            DBRBasicType::Long => Ok(DbrValue::Long(SingleOrVec::Vector(
+                count(be_i32, item_count).parse(data)?.1,
+            ))),
+            DBRBasicType::Float => Ok(DbrValue::Float(SingleOrVec::Vector(
+                count(be_f32, item_count).parse(data)?.1,
+            ))),
+            DBRBasicType::Double => Ok(DbrValue::Double(SingleOrVec::Vector(
+                count(be_f64, item_count).parse(data)?.1,
+            ))),
+        }
     }
 }
 /// Basic DBR Data types, independent of category
