@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use epics::{
-    database::{Dbr, NumericDBR, SingleOrVec},
+    database::{NumericDBR, Record, SingleOrVec},
     messages::ErrorCondition,
     provider::Provider,
     server::ServerBuilder,
@@ -16,10 +16,10 @@ impl Provider for BasicProvider {
         &self,
         pv_name: &str,
         _requested_type: Option<epics::database::DBRType>,
-    ) -> Result<Dbr, ErrorCondition> {
+    ) -> Result<Record, ErrorCondition> {
         println!("Provider got asked for value of '{pv_name}'");
         if pv_name == "something" {
-            Ok(Dbr::Long(NumericDBR {
+            Ok(Record::Long(NumericDBR {
                 value: SingleOrVec::Single(42),
                 ..Default::default()
             }))
@@ -53,10 +53,10 @@ impl Provider for BasicProvider {
         _pv_name: &str,
         _mask: epics::messages::MonitorMask,
         trigger: tokio::sync::mpsc::Sender<String>,
-    ) -> Result<tokio::sync::broadcast::Receiver<Dbr>, ErrorCondition> {
-        let (sender, recv) = broadcast::channel::<Dbr>(1);
+    ) -> Result<tokio::sync::broadcast::Receiver<Record>, ErrorCondition> {
+        let (sender, recv) = broadcast::channel::<Record>(1);
         sender
-            .send(Dbr::Long(NumericDBR {
+            .send(Record::Long(NumericDBR {
                 value: SingleOrVec::Single(42),
                 ..Default::default()
             }))
@@ -69,7 +69,7 @@ impl Provider for BasicProvider {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 println!("Sending monitor update instance");
                 sender
-                    .send(Dbr::Long(NumericDBR {
+                    .send(Record::Long(NumericDBR {
                         value: SingleOrVec::Single(42 + val),
                         ..Default::default()
                     }))

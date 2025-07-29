@@ -223,7 +223,7 @@ impl EnumDBR {
 }
 
 #[derive(Debug, Clone)]
-pub enum Dbr {
+pub enum Record {
     Enum(EnumDBR),
     String(StringDBR),
     Char(NumericDBR<i8>),
@@ -233,116 +233,116 @@ pub enum Dbr {
     Double(NumericDBR<f64>),
 }
 
-impl Dbr {
+impl Record {
     pub fn get_count(&self) -> usize {
         match self {
-            Dbr::Enum(_) => 1,
-            Dbr::String(_) => 1,
-            Dbr::Char(dbr) => dbr.get_count(),
-            Dbr::Int(dbr) => dbr.get_count(),
-            Dbr::Long(dbr) => dbr.get_count(),
-            Dbr::Float(dbr) => dbr.get_count(),
-            Dbr::Double(dbr) => dbr.get_count(),
+            Record::Enum(_) => 1,
+            Record::String(_) => 1,
+            Record::Char(dbr) => dbr.get_count(),
+            Record::Int(dbr) => dbr.get_count(),
+            Record::Long(dbr) => dbr.get_count(),
+            Record::Float(dbr) => dbr.get_count(),
+            Record::Double(dbr) => dbr.get_count(),
         }
     }
     pub fn get_value(&self) -> DbrValue {
         match self {
-            Dbr::Enum(dbr) => DbrValue::Enum(dbr.value),
-            Dbr::String(dbr) => DbrValue::String(dbr.value.clone()),
-            Dbr::Char(dbr) => DbrValue::Char(dbr.value.clone()),
-            Dbr::Int(dbr) => DbrValue::Int(dbr.value.clone()),
-            Dbr::Long(dbr) => DbrValue::Long(dbr.value.clone()),
-            Dbr::Float(dbr) => DbrValue::Float(dbr.value.clone()),
-            Dbr::Double(dbr) => DbrValue::Double(dbr.value.clone()),
+            Record::Enum(dbr) => DbrValue::Enum(dbr.value),
+            Record::String(dbr) => DbrValue::String(dbr.value.clone()),
+            Record::Char(dbr) => DbrValue::Char(dbr.value.clone()),
+            Record::Int(dbr) => DbrValue::Int(dbr.value.clone()),
+            Record::Long(dbr) => DbrValue::Long(dbr.value.clone()),
+            Record::Float(dbr) => DbrValue::Float(dbr.value.clone()),
+            Record::Double(dbr) => DbrValue::Double(dbr.value.clone()),
         }
     }
     pub fn get_native_type(&self) -> DBRType {
         DBRType {
             basic_type: match self {
-                Dbr::Enum(_) => DBRBasicType::Enum,
-                Dbr::String(_) => DBRBasicType::String,
-                Dbr::Char(_) => DBRBasicType::Char,
-                Dbr::Int(_) => DBRBasicType::Int,
-                Dbr::Long(_) => DBRBasicType::Long,
-                Dbr::Float(_) => DBRBasicType::Float,
-                Dbr::Double(_) => DBRBasicType::Double,
+                Record::Enum(_) => DBRBasicType::Enum,
+                Record::String(_) => DBRBasicType::String,
+                Record::Char(_) => DBRBasicType::Char,
+                Record::Int(_) => DBRBasicType::Int,
+                Record::Long(_) => DBRBasicType::Long,
+                Record::Float(_) => DBRBasicType::Float,
+                Record::Double(_) => DBRBasicType::Double,
             },
             category: DBRCategory::Basic,
         }
     }
     fn get_status(&self) -> (i16, i16) {
         match self {
-            Dbr::Enum(dbr) => (dbr.status, dbr.severity),
-            Dbr::String(dbr) => (dbr.status, dbr.severity),
-            Dbr::Char(dbr) => (dbr.status, dbr.severity),
-            Dbr::Int(dbr) => (dbr.status, dbr.severity),
-            Dbr::Long(dbr) => (dbr.status, dbr.severity),
-            Dbr::Float(dbr) => (dbr.status, dbr.severity),
-            Dbr::Double(dbr) => (dbr.status, dbr.severity),
+            Record::Enum(dbr) => (dbr.status, dbr.severity),
+            Record::String(dbr) => (dbr.status, dbr.severity),
+            Record::Char(dbr) => (dbr.status, dbr.severity),
+            Record::Int(dbr) => (dbr.status, dbr.severity),
+            Record::Long(dbr) => (dbr.status, dbr.severity),
+            Record::Float(dbr) => (dbr.status, dbr.severity),
+            Record::Double(dbr) => (dbr.status, dbr.severity),
         }
     }
     fn get_last_updated(&self) -> SystemTime {
         match self {
-            Dbr::Enum(dbr) => dbr.last_updated,
-            Dbr::String(dbr) => dbr.last_updated,
-            Dbr::Char(dbr) => dbr.last_updated,
-            Dbr::Int(dbr) => dbr.last_updated,
-            Dbr::Long(dbr) => dbr.last_updated,
-            Dbr::Float(dbr) => dbr.last_updated,
-            Dbr::Double(dbr) => dbr.last_updated,
+            Record::Enum(dbr) => dbr.last_updated,
+            Record::String(dbr) => dbr.last_updated,
+            Record::Char(dbr) => dbr.last_updated,
+            Record::Int(dbr) => dbr.last_updated,
+            Record::Long(dbr) => dbr.last_updated,
+            Record::Float(dbr) => dbr.last_updated,
+            Record::Double(dbr) => dbr.last_updated,
         }
     }
 
-    pub fn convert_to(&self, basic_type: DBRBasicType) -> Result<Dbr, ErrorCondition> {
+    pub fn convert_to(&self, basic_type: DBRBasicType) -> Result<Record, ErrorCondition> {
         Ok(match basic_type {
             DBRBasicType::Char => match self {
-                Dbr::Char(val) => Dbr::Char(val.clone()),
-                Dbr::Int(val) => Dbr::Char(val.convert_to()?),
-                Dbr::Long(val) => Dbr::Char(val.convert_to()?),
-                Dbr::Float(val) => Dbr::Char(val.convert_to()?),
-                Dbr::Double(val) => Dbr::Char(val.convert_to()?),
-                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
-                Dbr::Enum(val) => Dbr::Char(val.to_numeric::<i8>()?.convert_to()?),
+                Record::Char(val) => Record::Char(val.clone()),
+                Record::Int(val) => Record::Char(val.convert_to()?),
+                Record::Long(val) => Record::Char(val.convert_to()?),
+                Record::Float(val) => Record::Char(val.convert_to()?),
+                Record::Double(val) => Record::Char(val.convert_to()?),
+                Record::String(_) => return Err(ErrorCondition::NoConvert),
+                Record::Enum(val) => Record::Char(val.to_numeric::<i8>()?.convert_to()?),
             },
             DBRBasicType::Int => match self {
-                Dbr::Char(val) => Dbr::Int(val.convert_to()?),
-                Dbr::Int(val) => Dbr::Int(val.clone()),
-                Dbr::Long(val) => Dbr::Int(val.convert_to()?),
-                Dbr::Float(val) => Dbr::Int(val.convert_to()?),
-                Dbr::Double(val) => Dbr::Int(val.convert_to()?),
-                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
-                Dbr::Enum(val) => Dbr::Int(val.to_numeric::<i16>()?.convert_to()?),
+                Record::Char(val) => Record::Int(val.convert_to()?),
+                Record::Int(val) => Record::Int(val.clone()),
+                Record::Long(val) => Record::Int(val.convert_to()?),
+                Record::Float(val) => Record::Int(val.convert_to()?),
+                Record::Double(val) => Record::Int(val.convert_to()?),
+                Record::String(_) => return Err(ErrorCondition::NoConvert),
+                Record::Enum(val) => Record::Int(val.to_numeric::<i16>()?.convert_to()?),
             },
             DBRBasicType::Long => match self {
-                Dbr::Char(val) => Dbr::Long(val.convert_to()?),
-                Dbr::Int(val) => Dbr::Long(val.convert_to()?),
-                Dbr::Long(val) => Dbr::Long(val.clone()),
-                Dbr::Float(val) => Dbr::Long(val.convert_to()?),
-                Dbr::Double(val) => Dbr::Long(val.convert_to()?),
-                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
-                Dbr::Enum(val) => Dbr::Long(val.to_numeric::<i32>()?.convert_to()?),
+                Record::Char(val) => Record::Long(val.convert_to()?),
+                Record::Int(val) => Record::Long(val.convert_to()?),
+                Record::Long(val) => Record::Long(val.clone()),
+                Record::Float(val) => Record::Long(val.convert_to()?),
+                Record::Double(val) => Record::Long(val.convert_to()?),
+                Record::String(_) => return Err(ErrorCondition::NoConvert),
+                Record::Enum(val) => Record::Long(val.to_numeric::<i32>()?.convert_to()?),
             },
             DBRBasicType::Float => match self {
-                Dbr::Char(val) => Dbr::Float(val.convert_to()?),
-                Dbr::Int(val) => Dbr::Float(val.convert_to()?),
-                Dbr::Long(val) => Dbr::Float(val.convert_to()?),
-                Dbr::Float(val) => Dbr::Float(val.clone()),
-                Dbr::Double(val) => Dbr::Float(val.convert_to()?),
-                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
-                Dbr::Enum(val) => Dbr::Float(val.to_numeric::<f32>()?.convert_to()?),
+                Record::Char(val) => Record::Float(val.convert_to()?),
+                Record::Int(val) => Record::Float(val.convert_to()?),
+                Record::Long(val) => Record::Float(val.convert_to()?),
+                Record::Float(val) => Record::Float(val.clone()),
+                Record::Double(val) => Record::Float(val.convert_to()?),
+                Record::String(_) => return Err(ErrorCondition::NoConvert),
+                Record::Enum(val) => Record::Float(val.to_numeric::<f32>()?.convert_to()?),
             },
             DBRBasicType::Double => match self {
-                Dbr::Char(val) => Dbr::Double(val.convert_to()?),
-                Dbr::Int(val) => Dbr::Double(val.convert_to()?),
-                Dbr::Long(val) => Dbr::Double(val.convert_to()?),
-                Dbr::Float(val) => Dbr::Double(val.convert_to()?),
-                Dbr::Double(val) => Dbr::Double(val.clone()),
-                Dbr::String(_) => return Err(ErrorCondition::NoConvert),
-                Dbr::Enum(val) => Dbr::Double(val.to_numeric::<f64>()?.convert_to()?),
+                Record::Char(val) => Record::Double(val.convert_to()?),
+                Record::Int(val) => Record::Double(val.convert_to()?),
+                Record::Long(val) => Record::Double(val.convert_to()?),
+                Record::Float(val) => Record::Double(val.convert_to()?),
+                Record::Double(val) => Record::Double(val.clone()),
+                Record::String(_) => return Err(ErrorCondition::NoConvert),
+                Record::Enum(val) => Record::Double(val.to_numeric::<f64>()?.convert_to()?),
             },
             DBRBasicType::String => return Err(ErrorCondition::UnavailInServ),
             DBRBasicType::Enum => match self {
-                Dbr::Enum(val) => Dbr::Enum(val.clone()),
+                Record::Enum(val) => Record::Enum(val.clone()),
                 _ => return Err(ErrorCondition::NoConvert),
             },
         })
@@ -660,7 +660,7 @@ mod tests {
             0x0, 0xf, 0x0, 0x10, 0x0, 0x13, 0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x0,
             0x0, 0x0, 0x0, 0x42, 0x32, 0x19, 0x99, 0x1c, 0xe0, 0x65, 0x20, 0x0, 0x0, 0x0, 0x2a,
         ];
-        let dbr = Dbr::Long(NumericDBR {
+        let dbr = Record::Long(NumericDBR {
             value: SingleOrVec::Single(42i32),
             ..Default::default()
         });

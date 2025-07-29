@@ -16,7 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    database::{DBRType, Dbr, DBR_BASIC_STRING},
+    database::{DBRType, Record, DBR_BASIC_STRING},
     messages::{
         self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
         CreateChannelResponse, ECAError, ErrorCondition, EventAddResponse, Message, MessageError,
@@ -215,7 +215,7 @@ struct PVSubscription {
     data_count: usize,
     subscription_id: u32,
     mask: MonitorMask,
-    receiver: broadcast::Receiver<Dbr>,
+    receiver: broadcast::Receiver<Record>,
 }
 
 impl<L: Provider> Circuit<L> {
