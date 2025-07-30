@@ -191,6 +191,23 @@ impl DbrValue {
         }
     }
 }
+
+/// Implement a From<datatype> for a specific dbrvalue kind
+macro_rules! impl_dbrvalue_from {
+    ($variant:ident, $typ:ty) => {
+        impl From<Vec<$typ>> for DbrValue {
+            fn from(value: Vec<$typ>) -> Self {
+                DbrValue::$variant(value)
+            }
+        }
+    };
+}
+impl_dbrvalue_from!(Char, i8);
+impl_dbrvalue_from!(Int, i16);
+impl_dbrvalue_from!(Long, i32);
+impl_dbrvalue_from!(Float, f32);
+impl_dbrvalue_from!(Double, f64);
+
 /// Basic DBR Data types, independent of category
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DBRBasicType {
@@ -496,20 +513,20 @@ mod tests {
 
     #[test]
     fn single_or_vec() {
-        let v = SingleOrVec::Single(500i32);
-        assert!(v.convert_to::<i16>().is_ok());
-        assert!(v.convert_to::<i8>().is_err());
-        assert_eq!(v.as_bytes(None), vec![0x00, 0x00, 0x01, 0xF4]);
+        let v: DbrValue = vec![500i32].into();
+        assert!(v.convert_to(DBRBasicType::Int).is_ok());
+        assert!(v.convert_to(DBRBasicType::Char).is_err());
+        assert_eq!(v.to_bytes(None).1, vec![0x00, 0x00, 0x01, 0xF4]);
         assert_eq!(
-            v.convert_to::<i16>().unwrap().as_bytes(None),
+            v.convert_to(DBRBasicType::Int).unwrap().to_bytes(None).1,
             vec![0x01, 0xF4]
         );
 
         let data = vec![500.23f32, 12.7f32];
-        let v = SingleOrVec::Vector(data.clone());
+        let v: DbrValue = data.clone().into();
         assert_eq!(v.get_count(), 2);
         assert_eq!(
-            v.as_bytes(None),
+            v.to_bytes(None).1,
             data.iter()
                 .flat_map(|v| v.to_be_bytes())
                 .collect::<Vec<u8>>()
