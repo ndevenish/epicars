@@ -148,11 +148,31 @@ impl DbrValue {
             match self {
                 DbrValue::Enum(val) => val.to_be_bytes().to_vec(),
                 DbrValue::String(_) => unimplemented!(),
-                DbrValue::Char(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
-                DbrValue::Int(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
-                DbrValue::Long(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
-                DbrValue::Float(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
-                DbrValue::Double(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
+                DbrValue::Char(val) => val
+                    .iter()
+                    .take(elements)
+                    .flat_map(|v| v.to_be_bytes())
+                    .collect(),
+                DbrValue::Int(val) => val
+                    .iter()
+                    .take(elements)
+                    .flat_map(|v| v.to_be_bytes())
+                    .collect(),
+                DbrValue::Long(val) => val
+                    .iter()
+                    .take(elements)
+                    .flat_map(|v| v.to_be_bytes())
+                    .collect(),
+                DbrValue::Float(val) => val
+                    .iter()
+                    .take(elements)
+                    .flat_map(|v| v.to_be_bytes())
+                    .collect(),
+                DbrValue::Double(val) => val
+                    .iter()
+                    .take(elements)
+                    .flat_map(|v| v.to_be_bytes())
+                    .collect(),
             },
         )
     }
