@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime};
 
 use epics::{
-    database::{DBRType, Dbr, DbrValue, SingleOrVec, Status},
+    database::{DBRType, Dbr, DbrValue, Status},
     messages::{ErrorCondition, MonitorMask},
     provider::Provider,
     server::ServerBuilder,
@@ -19,9 +19,7 @@ impl Provider for BasicProvider {
     ) -> Result<Dbr, ErrorCondition> {
         println!("Provider got asked for value of '{pv_name}'");
         if pv_name == "something" {
-            Ok(Dbr::Basic(epics::database::DbrValue::Long(
-                SingleOrVec::Single(42),
-            )))
+            Ok(Dbr::Basic(epics::database::DbrValue::Long(vec![42])))
         } else {
             Err(ErrorCondition::GetFail)
         }
@@ -60,7 +58,7 @@ impl Provider for BasicProvider {
             .send(Dbr::Time {
                 status: Status::default(),
                 timestamp: SystemTime::now(),
-                value: DbrValue::Long(SingleOrVec::Single(42)),
+                value: DbrValue::Long(vec![42]),
             })
             .unwrap();
 
@@ -77,7 +75,7 @@ impl Provider for BasicProvider {
                     .send(Dbr::Time {
                         status: Status::default(),
                         timestamp: SystemTime::now(),
-                        value: DbrValue::Long(SingleOrVec::Single(42 + val)),
+                        value: DbrValue::Long(vec![42 + val]),
                     })
                     .unwrap();
                 trigger.send("something".to_string()).await.unwrap();

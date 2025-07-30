@@ -16,86 +16,27 @@ use std::{
 
 use crate::messages::ErrorCondition;
 
-/// Hold an individual value or group of values
-///
-/// Allows distinguishing between single values (where settings an array
-/// would be an error) and an array of values, where setting with a
-/// different vector length might be acceptable.
-#[derive(Clone, Debug)]
-pub enum SingleOrVec<T>
-where
-    T: ToBytes + NumCast + Copy,
-{
-    Single(T),
-    Vector(Vec<T>),
-}
-
-impl<T> SingleOrVec<T>
-where
-    T: ToBytes + NumCast + Copy,
-{
-    /// Encode this value as a byte array
-    ///
-    /// Only the first `elements` values will be encoded, or the whole
-    /// dataset if the elements value is `None`. Note that if elements
-    /// is zero then no data will be returned.
-    fn as_bytes(&self, elements: Option<usize>) -> Vec<u8> {
-        match self {
-            Self::Single(val) => val.to_be_bytes().as_ref().to_vec(),
-            Self::Vector(vec) => vec
-                .iter()
-                .take(elements.unwrap_or(vec.len()))
-                .flat_map(|f| f.to_be_bytes().as_ref().to_vec())
-                .collect(),
-        }
-    }
-    fn get_count(&self) -> usize {
-        match self {
-            SingleOrVec::Single(_) => 1,
-            SingleOrVec::Vector(v) => v.len(),
-        }
-    }
-    /// Convert to an equivalent SingleOrVec for a different type. This
-    /// will convert safely e.g. will fail if it cannot be represented
-    /// in the new type.
-    fn convert_to<U: ToBytes + NumCast + Copy>(&self) -> Result<SingleOrVec<U>, ErrorCondition> {
-        Ok(match self {
-            Self::Single(val) => {
-                SingleOrVec::Single(U::from(*val).ok_or(ErrorCondition::NoConvert)?)
-            }
-
-            Self::Vector(vec) => SingleOrVec::Vector(
-                vec.iter()
-                    .copied()
-                    .map(U::from)
-                    .map(|x| x.ok_or(ErrorCondition::NoConvert))
-                    .collect::<Result<Vec<U>, ErrorCondition>>()?,
-            ),
-        })
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum DbrValue {
     Enum(u16),
     String(String),
-    Char(SingleOrVec<i8>),
-    Int(SingleOrVec<i16>),
-    Long(SingleOrVec<i32>),
-    Float(SingleOrVec<f32>),
-    Double(SingleOrVec<f64>),
+    Char(Vec<i8>),
+    Int(Vec<i16>),
+    Long(Vec<i32>),
+    Float(Vec<f32>),
+    Double(Vec<f64>),
 }
 
 impl DbrValue {
     pub fn get_count(&self) -> usize {
         match self {
             DbrValue::Enum(_) => 1,
-            DbrValue::String(_) => unimplemented!(),
-            DbrValue::Char(val) => val.get_count(),
-            DbrValue::Int(val) => val.get_count(),
-            DbrValue::Long(val) => val.get_count(),
-            DbrValue::Float(val) => val.get_count(),
-            DbrValue::Double(val) => val.get_count(),
+            DbrValue::String(_) => unimplemented!("Don't know if string arrays are supported"),
+            DbrValue::Char(val) => val.len(),
+            DbrValue::Int(val) => val.len(),
+            DbrValue::Long(val) => val.len(),
+            DbrValue::Float(val) => val.len(),
+            DbrValue::Double(val) => val.len(),
         }
     }
     pub fn get_type(&self) -> DBRBasicType {
@@ -110,55 +51,72 @@ impl DbrValue {
         }
     }
     pub fn convert_to(&self, basic_type: DBRBasicType) -> Result<DbrValue, ErrorCondition> {
+        /// Utility function so that we don't have to repeat the map iter conversion
+        fn _try_convert_vec<T, U>(from: &[T]) -> Result<Vec<U>, ErrorCondition>
+        where
+            T: Copy + NumCast,
+            U: NumCast,
+        {
+            from.iter()
+                .map(|n| NumCast::from(*n).ok_or(ErrorCondition::NoConvert))
+                .collect()
+        }
+
         Ok(match basic_type {
             DBRBasicType::Char => match self {
                 DbrValue::Char(_val) => self.clone(),
-                DbrValue::Int(val) => DbrValue::Char(val.convert_to()?),
-                DbrValue::Long(val) => DbrValue::Char(val.convert_to()?),
-                DbrValue::Float(val) => DbrValue::Char(val.convert_to()?),
-                DbrValue::Double(val) => DbrValue::Char(val.convert_to()?),
+                DbrValue::Int(val) => DbrValue::Char(_try_convert_vec(val)?),
+                DbrValue::Long(val) => DbrValue::Char(_try_convert_vec(val)?),
+                DbrValue::Float(val) => DbrValue::Char(_try_convert_vec(val)?),
+                DbrValue::Double(val) => DbrValue::Char(_try_convert_vec(val)?),
                 DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
-                DbrValue::Enum(val) => DbrValue::Char(SingleOrVec::Single(
-                    i8::try_from(*val).map_err(|_| ErrorCondition::NoConvert)?,
-                )),
+                DbrValue::Enum(val) => {
+                    DbrValue::Char(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
+                }
             },
             DBRBasicType::Int => match self {
-                DbrValue::Char(val) => DbrValue::Int(val.convert_to()?),
+                DbrValue::Char(val) => DbrValue::Int(_try_convert_vec(val)?),
                 DbrValue::Int(_val) => self.clone(),
-                DbrValue::Long(val) => DbrValue::Int(val.convert_to()?),
-                DbrValue::Float(val) => DbrValue::Int(val.convert_to()?),
-                DbrValue::Double(val) => DbrValue::Int(val.convert_to()?),
+                DbrValue::Long(val) => DbrValue::Int(_try_convert_vec(val)?),
+                DbrValue::Float(val) => DbrValue::Int(_try_convert_vec(val)?),
+                DbrValue::Double(val) => DbrValue::Int(_try_convert_vec(val)?),
                 DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
-                DbrValue::Enum(val) => DbrValue::Int(SingleOrVec::Single(
-                    i16::try_from(*val).map_err(|_| ErrorCondition::NoConvert)?,
-                )),
+                DbrValue::Enum(val) => {
+                    DbrValue::Int(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
+                }
             },
             DBRBasicType::Long => match self {
-                DbrValue::Char(val) => DbrValue::Long(val.convert_to()?),
-                DbrValue::Int(val) => DbrValue::Long(val.convert_to()?),
+                DbrValue::Char(val) => DbrValue::Long(_try_convert_vec(val)?),
+                DbrValue::Int(val) => DbrValue::Long(_try_convert_vec(val)?),
                 DbrValue::Long(_val) => self.clone(),
-                DbrValue::Float(val) => DbrValue::Long(val.convert_to()?),
-                DbrValue::Double(val) => DbrValue::Long(val.convert_to()?),
+                DbrValue::Float(val) => DbrValue::Long(_try_convert_vec(val)?),
+                DbrValue::Double(val) => DbrValue::Long(_try_convert_vec(val)?),
                 DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
-                DbrValue::Enum(val) => DbrValue::Long(SingleOrVec::Single(*val as i32)),
+                DbrValue::Enum(val) => {
+                    DbrValue::Long(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
+                }
             },
             DBRBasicType::Float => match self {
-                DbrValue::Char(val) => DbrValue::Float(val.convert_to()?),
-                DbrValue::Int(val) => DbrValue::Float(val.convert_to()?),
-                DbrValue::Long(val) => DbrValue::Float(val.convert_to()?),
+                DbrValue::Char(val) => DbrValue::Float(_try_convert_vec(val)?),
+                DbrValue::Int(val) => DbrValue::Float(_try_convert_vec(val)?),
+                DbrValue::Long(val) => DbrValue::Float(_try_convert_vec(val)?),
                 DbrValue::Float(_val) => self.clone(),
-                DbrValue::Double(val) => DbrValue::Float(val.convert_to()?),
+                DbrValue::Double(val) => DbrValue::Float(_try_convert_vec(val)?),
                 DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
-                DbrValue::Enum(val) => DbrValue::Float(SingleOrVec::Single(*val as f32)),
+                DbrValue::Enum(val) => {
+                    DbrValue::Float(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
+                }
             },
             DBRBasicType::Double => match self {
-                DbrValue::Char(val) => DbrValue::Double(val.convert_to()?),
-                DbrValue::Int(val) => DbrValue::Double(val.convert_to()?),
-                DbrValue::Long(val) => DbrValue::Double(val.convert_to()?),
-                DbrValue::Float(val) => DbrValue::Double(val.convert_to()?),
+                DbrValue::Char(val) => DbrValue::Double(_try_convert_vec(val)?),
+                DbrValue::Int(val) => DbrValue::Double(_try_convert_vec(val)?),
+                DbrValue::Long(val) => DbrValue::Double(_try_convert_vec(val)?),
+                DbrValue::Float(val) => DbrValue::Double(_try_convert_vec(val)?),
                 DbrValue::Double(_val) => self.clone(),
                 DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
-                DbrValue::Enum(val) => DbrValue::Double(SingleOrVec::Single(*val as f64)),
+                DbrValue::Enum(val) => {
+                    DbrValue::Double(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
+                }
             },
             DBRBasicType::String => match self {
                 DbrValue::String(_) => self.clone(),
@@ -189,11 +147,11 @@ impl DbrValue {
             match self {
                 DbrValue::Enum(val) => val.to_be_bytes().to_vec(),
                 DbrValue::String(_) => unimplemented!(),
-                DbrValue::Char(val) => val.as_bytes(Some(elements)),
-                DbrValue::Int(val) => val.as_bytes(Some(elements)),
-                DbrValue::Long(val) => val.as_bytes(Some(elements)),
-                DbrValue::Float(val) => val.as_bytes(Some(elements)),
-                DbrValue::Double(val) => val.as_bytes(Some(elements)),
+                DbrValue::Char(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
+                DbrValue::Int(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
+                DbrValue::Long(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
+                DbrValue::Float(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
+                DbrValue::Double(val) => val.iter().flat_map(|v| v.to_be_bytes()).collect(),
             },
         )
     }
@@ -225,21 +183,11 @@ impl DbrValue {
                 );
                 Ok(DbrValue::String(strings[0].to_owned()))
             }
-            DBRBasicType::Char => Ok(DbrValue::Char(SingleOrVec::Vector(
-                count(be_i8, item_count).parse(data)?.1,
-            ))),
-            DBRBasicType::Int => Ok(DbrValue::Int(SingleOrVec::Vector(
-                count(be_i16, item_count).parse(data)?.1,
-            ))),
-            DBRBasicType::Long => Ok(DbrValue::Long(SingleOrVec::Vector(
-                count(be_i32, item_count).parse(data)?.1,
-            ))),
-            DBRBasicType::Float => Ok(DbrValue::Float(SingleOrVec::Vector(
-                count(be_f32, item_count).parse(data)?.1,
-            ))),
-            DBRBasicType::Double => Ok(DbrValue::Double(SingleOrVec::Vector(
-                count(be_f64, item_count).parse(data)?.1,
-            ))),
+            DBRBasicType::Char => Ok(DbrValue::Char(count(be_i8, item_count).parse(data)?.1)),
+            DBRBasicType::Int => Ok(DbrValue::Int(count(be_i16, item_count).parse(data)?.1)),
+            DBRBasicType::Long => Ok(DbrValue::Long(count(be_i32, item_count).parse(data)?.1)),
+            DBRBasicType::Float => Ok(DbrValue::Float(count(be_f32, item_count).parse(data)?.1)),
+            DBRBasicType::Double => Ok(DbrValue::Double(count(be_f64, item_count).parse(data)?.1)),
         }
     }
 }
