@@ -11,6 +11,7 @@ use std::{
     convert::TryFrom,
     fmt::Debug,
     io::{self, Cursor},
+    num::NonZeroUsize,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -135,9 +136,9 @@ impl DbrValue {
     /// `None`, then all data will be returned.
     ///
     /// Returns the number of elements along with the bytes
-    pub fn encode_value(&self, max_elems: Option<usize>) -> (usize, Vec<u8>) {
+    pub fn to_bytes(&self, max_elems: Option<NonZeroUsize>) -> (usize, Vec<u8>) {
         let elements = if let Some(max_elem) = max_elems {
-            cmp::min(max_elem, self.get_count())
+            cmp::min(max_elem.into(), self.get_count())
         } else {
             self.get_count()
         };
@@ -431,7 +432,7 @@ impl Dbr {
         })
     }
 
-    pub fn to_bytes(&self, max_elems: Option<usize>) -> (usize, Vec<u8>) {
+    pub fn to_bytes(&self, max_elems: Option<NonZeroUsize>) -> (usize, Vec<u8>) {
         let mut buffer = Cursor::new(Vec::new());
         let real_count = self.write_be(&mut buffer, max_elems).unwrap();
         (real_count, buffer.into_inner())
@@ -443,9 +444,9 @@ impl Dbr {
     pub fn write_be<W: io::Write>(
         &self,
         writer: &mut W,
-        max_elems: Option<usize>,
+        max_elems: Option<NonZeroUsize>,
     ) -> io::Result<usize> {
-        let (real_elems, data) = self.value().encode_value(max_elems);
+        let (real_elems, data) = self.value().to_bytes(max_elems);
         // All except Basic write status/severity
         if let Some(status) = self.status() {
             writer.write_all(&status.status.to_be_bytes())?;

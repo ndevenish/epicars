@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     io::{self, Cursor},
     net::{IpAddr, Ipv4Addr},
+    num::NonZeroUsize,
     time::{Duration, Instant},
 };
 use tokio::{
@@ -351,7 +352,7 @@ impl<L: Provider> Circuit<L> {
                 subscription.data_type.basic_type,
             )
             .unwrap()
-            .to_bytes(Some(subscription.data_count));
+            .to_bytes(NonZeroUsize::new(subscription.data_count));
         Ok(vec![Message::EventAddResponse(EventAddResponse {
             data_type: subscription.data_type,
             data_count: item_count as u32,
@@ -459,7 +460,7 @@ impl<L: Provider> Circuit<L> {
         // Read the data into a Vec<u8>
         let (data_count, data) = pv
             .convert_to(request.data_type.category, request.data_type.basic_type)?
-            .to_bytes(Some(request.data_count as usize));
+            .to_bytes(NonZeroUsize::new(request.data_count as usize));
         Ok(request.respond(data_count, data))
     }
 
