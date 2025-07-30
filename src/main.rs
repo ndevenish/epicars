@@ -91,6 +91,13 @@ impl Provider for BasicProvider {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() {
+    // Make sure panics from threads cause the whole process to terminate
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_panic(info);
+        std::process::exit(1);
+    }));
+
     let provider = BasicProvider {};
     let _server = ServerBuilder::new(provider)
         .beacon_port(5065)
