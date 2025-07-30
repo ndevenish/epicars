@@ -1,8 +1,8 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use epics::{
-    database::{NumericDBR, Record, SingleOrVec},
-    messages::ErrorCondition,
+    database::{DBRType, Dbr, DbrValue, SingleOrVec, Status},
+    messages::{ErrorCondition, MonitorMask},
     provider::Provider,
     server::ServerBuilder,
 };
@@ -16,13 +16,12 @@ impl Provider for BasicProvider {
         &self,
         pv_name: &str,
         _requested_type: Option<epics::database::DBRType>,
-    ) -> Result<Record, ErrorCondition> {
+    ) -> Result<Dbr, ErrorCondition> {
         println!("Provider got asked for value of '{pv_name}'");
         if pv_name == "something" {
-            Ok(Record::Long(NumericDBR {
-                value: SingleOrVec::Single(42),
-                ..Default::default()
-            }))
+            Ok(Dbr::Basic(epics::database::DbrValue::Long(
+                SingleOrVec::Single(42),
+            )))
         } else {
             Err(ErrorCondition::GetFail)
         }
@@ -43,7 +42,7 @@ impl Provider for BasicProvider {
         epics::messages::AccessRight::ReadWrite
     }
 
-    fn write_value(&mut self, pv_name: &str, value: &[&str]) -> Result<(), ErrorCondition> {
+    fn write_value(&mut self, pv_name: &str, value: Dbr) -> Result<(), ErrorCondition> {
         println!("BasicProvider: Got Write '{pv_name}' request with: {value:?}");
         Err(ErrorCondition::PutFail)
     }
@@ -51,15 +50,18 @@ impl Provider for BasicProvider {
     fn monitor_value(
         &mut self,
         _pv_name: &str,
-        _mask: epics::messages::MonitorMask,
+        _data_type: DBRType,
+        _data_count: usize,
+        _mask: MonitorMask,
         trigger: tokio::sync::mpsc::Sender<String>,
-    ) -> Result<tokio::sync::broadcast::Receiver<Record>, ErrorCondition> {
-        let (sender, recv) = broadcast::channel::<Record>(1);
+    ) -> Result<tokio::sync::broadcast::Receiver<Dbr>, ErrorCondition> {
+        let (sender, recv) = broadcast::channel::<Dbr>(1);
         sender
-            .send(Record::Long(NumericDBR {
-                value: SingleOrVec::Single(42),
-                ..Default::default()
-            }))
+            .send(Dbr::Time {
+                status: Status::default(),
+                timestamp: SystemTime::now(),
+                value: DbrValue::Long(SingleOrVec::Single(42)),
+            })
             .unwrap();
         tokio::spawn(async move {
             let mut val = 0i32;
@@ -69,10 +71,11 @@ impl Provider for BasicProvider {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 println!("Sending monitor update instance");
                 sender
-                    .send(Record::Long(NumericDBR {
-                        value: SingleOrVec::Single(42 + val),
-                        ..Default::default()
-                    }))
+                    .send(Dbr::Time {
+                        status: Status::default(),
+                        timestamp: SystemTime::now(),
+                        value: DbrValue::Long(SingleOrVec::Single(42 + val)),
+                    })
                     .unwrap();
                 trigger.send("something".to_string()).await.unwrap();
                 val += 1;

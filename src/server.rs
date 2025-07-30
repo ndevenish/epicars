@@ -16,7 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    database::{DBRType, Record, DBR_BASIC_STRING},
+    database::{DBRType, Dbr, DBR_BASIC_STRING},
     messages::{
         self, parse_search_packet, AccessRights, AsBytes, CAMessage, CreateChannel,
         CreateChannelResponse, ECAError, ErrorCondition, EventAddResponse, Message, MessageError,
@@ -215,7 +215,7 @@ struct PVSubscription {
     data_count: usize,
     subscription_id: u32,
     mask: MonitorMask,
-    receiver: broadcast::Receiver<Record>,
+    receiver: broadcast::Receiver<Dbr>,
 }
 
 impl<L: Provider> Circuit<L> {
@@ -345,17 +345,19 @@ impl<L: Provider> Circuit<L> {
         let dbr = subscription.receiver.recv().await.unwrap();
 
         println!("Circuit got update notification: {dbr:?}");
+        let (item_count, data) = dbr
+            .convert_to(
+                subscription.data_type.category,
+                subscription.data_type.basic_type,
+            )
+            .unwrap()
+            .to_bytes(Some(subscription.data_count));
         Ok(vec![Message::EventAddResponse(EventAddResponse {
             data_type: subscription.data_type,
-            data_count: subscription.data_count as u32,
+            data_count: item_count as u32,
             subscription_id: subscription.subscription_id,
             status_code: ErrorCondition::Normal,
-            data: dbr
-                .convert_to(subscription.data_type.basic_type)
-                .unwrap()
-                .encode_value(subscription.data_type, subscription.data_count)
-                .unwrap()
-                .1,
+            data,
         })])
     }
 
@@ -371,6 +373,8 @@ impl<L: Provider> Circuit<L> {
                     .library
                     .monitor_value(
                         &channel.name,
+                        msg.data_type,
+                        msg.data_count as usize,
                         msg.mask,
                         self.monitor_value_available.clone(),
                     )
@@ -385,17 +389,16 @@ impl<L: Provider> Circuit<L> {
                     subscription_id: msg.subscription_id,
                     receiver,
                 });
+                let (item_count, data) = first_value
+                    .convert_to(msg.data_type.category, msg.data_type.basic_type)
+                    .unwrap()
+                    .to_bytes(Some(msg.data_count as usize));
                 Ok(vec![Message::EventAddResponse(EventAddResponse {
                     data_type: msg.data_type,
-                    data_count: msg.data_count,
+                    data_count: item_count as u32,
                     subscription_id: msg.subscription_id,
                     status_code: ErrorCondition::Normal,
-                    data: first_value
-                        .convert_to(msg.data_type.basic_type)
-                        .unwrap()
-                        .encode_value(msg.data_type, msg.data_count as usize)
-                        .unwrap()
-                        .1,
+                    data,
                 })])
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {
@@ -466,7 +469,9 @@ impl<L: Provider> Circuit<L> {
             .unwrap();
 
         // Read the data into a Vec<u8>
-        let (data_count, data) = pv.encode_value(request.data_type, request.data_count as usize)?;
+        let (data_count, data) = pv
+            .convert_to(request.data_type.category, request.data_type.basic_type)?
+            .to_bytes(Some(request.data_count as usize));
         Ok(request.respond(data_count, data))
     }
 
@@ -474,17 +479,15 @@ impl<L: Provider> Circuit<L> {
         assert!(request.data_type == DBR_BASIC_STRING);
         let channel = self.channels.get(&request.server_id).unwrap();
 
-        // Slightly unsure of formats here... so let's manually divide into strings here
-        let data: Vec<&str> = request
-            .data
-            .chunks(40)
-            .map(|d| {
-                let strlen = d.iter().position(|&c| c == 0x00).unwrap();
-                str::from_utf8(&d[0..strlen]).unwrap()
-            })
-            .collect();
-        // println!("Got write request: {:?}", data);
-        self.library.write_value(&channel.name, &data).is_ok()
+        let Ok(dbr) = Dbr::from_bytes(
+            request.data_type,
+            request.data_count as usize,
+            &request.data,
+        ) else {
+            return false;
+        };
+        println!("Got write request: {dbr:?}");
+        self.library.write_value(&channel.name, dbr).is_ok()
     }
 
     fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel, ()>) {
@@ -509,8 +512,8 @@ impl<L: Provider> Circuit<L> {
         let id = self.next_channel_id;
         self.next_channel_id += 1;
         let createchan = CreateChannelResponse {
-            data_count: pv.get_count() as u32,
-            data_type: pv.get_native_type(),
+            data_count: pv.value().get_count() as u32,
+            data_type: pv.data_type(),
             client_id: message.client_id,
             server_id: id,
         };

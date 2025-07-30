@@ -2,7 +2,7 @@
 
 use nom::{
     multi::count,
-    number::complete::{be_f32, be_f64, be_i16, be_i32, be_i8, be_u16},
+    number::complete::{be_f32, be_f64, be_i16, be_i32, be_i8, be_u16, be_u32},
     Parser,
 };
 use num::{traits::ToBytes, NumCast};
@@ -11,8 +11,8 @@ use std::{
     collections::HashMap,
     convert::TryFrom,
     fmt::Debug,
-    io::{Cursor, Write},
-    time::{SystemTime, UNIX_EPOCH},
+    io::{self, Cursor},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::messages::ErrorCondition;
@@ -292,115 +292,6 @@ impl Record {
             Record::Double(dbr) => dbr.last_updated,
         }
     }
-
-    pub fn convert_to(&self, basic_type: DBRBasicType) -> Result<Record, ErrorCondition> {
-        Ok(match basic_type {
-            DBRBasicType::Char => match self {
-                Record::Char(val) => Record::Char(val.clone()),
-                Record::Int(val) => Record::Char(val.convert_to()?),
-                Record::Long(val) => Record::Char(val.convert_to()?),
-                Record::Float(val) => Record::Char(val.convert_to()?),
-                Record::Double(val) => Record::Char(val.convert_to()?),
-                Record::String(_) => return Err(ErrorCondition::NoConvert),
-                Record::Enum(val) => Record::Char(val.to_numeric::<i8>()?.convert_to()?),
-            },
-            DBRBasicType::Int => match self {
-                Record::Char(val) => Record::Int(val.convert_to()?),
-                Record::Int(val) => Record::Int(val.clone()),
-                Record::Long(val) => Record::Int(val.convert_to()?),
-                Record::Float(val) => Record::Int(val.convert_to()?),
-                Record::Double(val) => Record::Int(val.convert_to()?),
-                Record::String(_) => return Err(ErrorCondition::NoConvert),
-                Record::Enum(val) => Record::Int(val.to_numeric::<i16>()?.convert_to()?),
-            },
-            DBRBasicType::Long => match self {
-                Record::Char(val) => Record::Long(val.convert_to()?),
-                Record::Int(val) => Record::Long(val.convert_to()?),
-                Record::Long(val) => Record::Long(val.clone()),
-                Record::Float(val) => Record::Long(val.convert_to()?),
-                Record::Double(val) => Record::Long(val.convert_to()?),
-                Record::String(_) => return Err(ErrorCondition::NoConvert),
-                Record::Enum(val) => Record::Long(val.to_numeric::<i32>()?.convert_to()?),
-            },
-            DBRBasicType::Float => match self {
-                Record::Char(val) => Record::Float(val.convert_to()?),
-                Record::Int(val) => Record::Float(val.convert_to()?),
-                Record::Long(val) => Record::Float(val.convert_to()?),
-                Record::Float(val) => Record::Float(val.clone()),
-                Record::Double(val) => Record::Float(val.convert_to()?),
-                Record::String(_) => return Err(ErrorCondition::NoConvert),
-                Record::Enum(val) => Record::Float(val.to_numeric::<f32>()?.convert_to()?),
-            },
-            DBRBasicType::Double => match self {
-                Record::Char(val) => Record::Double(val.convert_to()?),
-                Record::Int(val) => Record::Double(val.convert_to()?),
-                Record::Long(val) => Record::Double(val.convert_to()?),
-                Record::Float(val) => Record::Double(val.convert_to()?),
-                Record::Double(val) => Record::Double(val.clone()),
-                Record::String(_) => return Err(ErrorCondition::NoConvert),
-                Record::Enum(val) => Record::Double(val.to_numeric::<f64>()?.convert_to()?),
-            },
-            DBRBasicType::String => return Err(ErrorCondition::UnavailInServ),
-            DBRBasicType::Enum => match self {
-                Record::Enum(val) => Record::Enum(val.clone()),
-                _ => return Err(ErrorCondition::NoConvert),
-            },
-        })
-    }
-
-    pub fn encode_value(
-        &self,
-        data_type: DBRType,
-        data_count: usize,
-    ) -> Result<(usize, Vec<u8>), ErrorCondition> {
-        let mut metadata = Cursor::new(Vec::new());
-        // Status, severity always come first, if requested
-        if data_type.category != DBRCategory::Basic {
-            // Write the status metadata
-            let (status, severity) = self.get_status();
-            metadata.write_all(&status.to_be_bytes()).unwrap();
-            metadata.write_all(&severity.to_be_bytes()).unwrap();
-        }
-        // Only TIME category writes timestamp information
-        if data_type.category == DBRCategory::Time {
-            let unix_time = self.get_last_updated().duration_since(UNIX_EPOCH).unwrap();
-
-            let time_s = unix_time.as_secs() as i32 - 631152000i32;
-            let time_ns = unix_time.subsec_nanos();
-            metadata.write_all(&time_s.to_be_bytes()).unwrap();
-            metadata.write_all(&time_ns.to_be_bytes()).unwrap();
-        }
-        // For now, we don't understand the CTRL structures well enough
-        if data_type.category == DBRCategory::Control {
-            return Err(ErrorCondition::BadType);
-        }
-        if data_type.category == DBRCategory::Graphics {
-            // Enum, String are special... handle those later
-            match data_type.basic_type {
-                DBRBasicType::Enum | DBRBasicType::String => {
-                    println!("Ignoring request for graphical string or enum");
-                    return Err(ErrorCondition::BadType);
-                }
-                _ => {}
-            }
-        }
-        // Handle insertion of padding
-        metadata
-            .write_all(&vec![0u8; data_type.get_metadata_padding()])
-            .unwrap();
-
-        // Finally... fetching of raw data. Let's start by doing all the
-        // matching here, as we don't need to worry about types to hold
-        // the cross-conversions.
-        let converted = self.convert_to(data_type.basic_type)?;
-        let (count, value_data) = converted.get_value().encode_value(if data_count == 0 {
-            None
-        } else {
-            Some(data_count)
-        });
-        metadata.write_all(&value_data).unwrap();
-        Ok((count, metadata.into_inner()))
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -437,6 +328,68 @@ impl DbrValue {
             DbrValue::Double(_) => DBRBasicType::Double,
         }
     }
+    pub fn convert_to(&self, basic_type: DBRBasicType) -> Result<DbrValue, ErrorCondition> {
+        Ok(match basic_type {
+            DBRBasicType::Char => match self {
+                DbrValue::Char(_val) => self.clone(),
+                DbrValue::Int(val) => DbrValue::Char(val.convert_to()?),
+                DbrValue::Long(val) => DbrValue::Char(val.convert_to()?),
+                DbrValue::Float(val) => DbrValue::Char(val.convert_to()?),
+                DbrValue::Double(val) => DbrValue::Char(val.convert_to()?),
+                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::Enum(val) => DbrValue::Char(SingleOrVec::Single(
+                    i8::try_from(*val).map_err(|_| ErrorCondition::NoConvert)?,
+                )),
+            },
+            DBRBasicType::Int => match self {
+                DbrValue::Char(val) => DbrValue::Int(val.convert_to()?),
+                DbrValue::Int(_val) => self.clone(),
+                DbrValue::Long(val) => DbrValue::Int(val.convert_to()?),
+                DbrValue::Float(val) => DbrValue::Int(val.convert_to()?),
+                DbrValue::Double(val) => DbrValue::Int(val.convert_to()?),
+                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::Enum(val) => DbrValue::Int(SingleOrVec::Single(
+                    i16::try_from(*val).map_err(|_| ErrorCondition::NoConvert)?,
+                )),
+            },
+            DBRBasicType::Long => match self {
+                DbrValue::Char(val) => DbrValue::Long(val.convert_to()?),
+                DbrValue::Int(val) => DbrValue::Long(val.convert_to()?),
+                DbrValue::Long(_val) => self.clone(),
+                DbrValue::Float(val) => DbrValue::Long(val.convert_to()?),
+                DbrValue::Double(val) => DbrValue::Long(val.convert_to()?),
+                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::Enum(val) => DbrValue::Long(SingleOrVec::Single(*val as i32)),
+            },
+            DBRBasicType::Float => match self {
+                DbrValue::Char(val) => DbrValue::Float(val.convert_to()?),
+                DbrValue::Int(val) => DbrValue::Float(val.convert_to()?),
+                DbrValue::Long(val) => DbrValue::Float(val.convert_to()?),
+                DbrValue::Float(_val) => self.clone(),
+                DbrValue::Double(val) => DbrValue::Float(val.convert_to()?),
+                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::Enum(val) => DbrValue::Float(SingleOrVec::Single(*val as f32)),
+            },
+            DBRBasicType::Double => match self {
+                DbrValue::Char(val) => DbrValue::Double(val.convert_to()?),
+                DbrValue::Int(val) => DbrValue::Double(val.convert_to()?),
+                DbrValue::Long(val) => DbrValue::Double(val.convert_to()?),
+                DbrValue::Float(val) => DbrValue::Double(val.convert_to()?),
+                DbrValue::Double(_val) => self.clone(),
+                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::Enum(val) => DbrValue::Double(SingleOrVec::Single(*val as f64)),
+            },
+            DBRBasicType::String => match self {
+                DbrValue::String(_) => self.clone(),
+                _ => return Err(ErrorCondition::UnavailInServ),
+            },
+            DBRBasicType::Enum => match self {
+                DbrValue::Enum(_val) => self.clone(),
+                _ => return Err(ErrorCondition::NoConvert),
+            },
+        })
+    }
+
     /// Encode the value contents of a DBR into a byte vector
     ///
     /// If max_elems is zero, then no data will be returned. If it is
@@ -607,6 +560,202 @@ impl DBRType {
             (DBRCategory::Control, DBRBasicType::Char) => 1,
             _ => 0,
         }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Status {
+    pub status: i16,
+    pub severity: i16,
+}
+
+/// Structured unit of exchange for records in the CA protocol
+#[derive(Clone, Debug)]
+pub enum Dbr {
+    Basic(DbrValue),
+    Status {
+        status: Status,
+        value: DbrValue,
+    },
+    Time {
+        status: Status,
+        timestamp: SystemTime,
+        value: DbrValue,
+    },
+    Graphics,
+    Control,
+}
+
+impl Dbr {
+    pub fn value(&self) -> &DbrValue {
+        match self {
+            Dbr::Basic(value) => value,
+            Dbr::Status { status: _, value } => value,
+            Dbr::Time {
+                status: _,
+                timestamp: _,
+                value,
+            } => value,
+            Dbr::Graphics => todo!(),
+            Dbr::Control => todo!(),
+        }
+    }
+    pub fn status(&self) -> Option<Status> {
+        match self {
+            Dbr::Basic(_) => None,
+            Dbr::Status { status, .. } => Some(*status),
+            Dbr::Time { status, .. } => Some(*status),
+            Dbr::Graphics => todo!(),
+            Dbr::Control => todo!(),
+        }
+    }
+    pub fn data_type(&self) -> DBRType {
+        match self {
+            Dbr::Basic(value) => DBRType {
+                basic_type: value.get_type(),
+                category: DBRCategory::Basic,
+            },
+            Dbr::Status { status: _, value } => DBRType {
+                basic_type: value.get_type(),
+                category: DBRCategory::Status,
+            },
+            Dbr::Time {
+                status: _,
+                timestamp: _,
+                value,
+            } => DBRType {
+                basic_type: value.get_type(),
+                category: DBRCategory::Time,
+            },
+            Dbr::Graphics => todo!(),
+            Dbr::Control => todo!(),
+        }
+    }
+
+    pub fn from_bytes(
+        data_type: DBRType,
+        data_count: usize,
+        data: &[u8],
+    ) -> Result<Dbr, nom::Err<nom::error::Error<&[u8]>>> {
+        if data_type.category == DBRCategory::Control {
+            todo!("Don't understand CTRL structure usage well enough to parse yet");
+        }
+        if data_type.category == DBRCategory::Graphics {
+            todo!("Don't understand GR structure usage well enough to parse yet");
+        }
+
+        let (data, status) = if data_type.category != DBRCategory::Basic {
+            let (d, (status, severity)) = (be_i16, be_i16).parse(data)?;
+            (d, Some(Status { status, severity }))
+        } else {
+            (data, None)
+        };
+
+        let (data, timestamp) = if data_type.category == DBRCategory::Time {
+            let (input, (time_s, time_ns)) = (be_i32, be_u32).parse(data)?;
+            (
+                input,
+                Some(
+                    UNIX_EPOCH
+                        .checked_add(Duration::new(time_s as u64 + 631152000u64, time_ns))
+                        .unwrap(),
+                ),
+            )
+        } else {
+            (data, None)
+        };
+
+        // Offset the read buffer to account for metadata padding
+        let data = &data[data_type.get_metadata_padding()..];
+        let value = DbrValue::decode_value(data_type.basic_type, data_count, data)?;
+
+        Ok(match data_type.category {
+            DBRCategory::Basic => Dbr::Basic(value),
+            DBRCategory::Status => Dbr::Status {
+                status: status.unwrap(),
+                value,
+            },
+            DBRCategory::Time => Dbr::Time {
+                status: status.unwrap(),
+                timestamp: timestamp.unwrap(),
+                value,
+            },
+            DBRCategory::Graphics => todo!(),
+            DBRCategory::Control => todo!(),
+        })
+    }
+
+    pub fn to_bytes(&self, max_elems: Option<usize>) -> (usize, Vec<u8>) {
+        let mut buffer = Cursor::new(Vec::new());
+        let real_count = self.write_be(&mut buffer, max_elems).unwrap();
+        (real_count, buffer.into_inner())
+    }
+
+    /// Write a requested number of elements to a stream
+    ///
+    /// Return the actual number of elements written
+    pub fn write_be<W: io::Write>(
+        &self,
+        writer: &mut W,
+        max_elems: Option<usize>,
+    ) -> io::Result<usize> {
+        let (real_elems, data) = self.value().encode_value(max_elems);
+        // All except Basic write status/severity
+        if let Some(status) = self.status() {
+            writer.write_all(&status.status.to_be_bytes())?;
+            writer.write_all(&status.severity.to_be_bytes())?;
+        }
+        match self {
+            Dbr::Time { timestamp, .. } => {
+                let unix_time = timestamp.duration_since(UNIX_EPOCH).unwrap();
+                let time_s = unix_time.as_secs() as i32 - 631152000i32;
+                let time_ns = unix_time.subsec_nanos();
+                writer.write_all(&time_s.to_be_bytes())?;
+                writer.write_all(&time_ns.to_be_bytes())?;
+            }
+            Dbr::Graphics => todo!(),
+            Dbr::Control => todo!(),
+            _ => (),
+        }
+
+        writer.write_all(&vec![0u8; self.data_type().get_metadata_padding()])?;
+        writer.write_all(&data)?;
+        Ok(real_elems)
+    }
+
+    pub fn convert_to(
+        &self,
+        category: DBRCategory,
+        basic_type: DBRBasicType,
+    ) -> Result<Dbr, ErrorCondition> {
+        let value = self.value().convert_to(basic_type)?;
+        // First handle category changes - we can do this for some but not all
+        Ok(match self {
+            Dbr::Basic(_) => match category {
+                DBRCategory::Basic => self.clone(),
+                _ => return Err(ErrorCondition::NoConvert),
+            },
+            Dbr::Status { .. } => match category {
+                DBRCategory::Basic => Dbr::Basic(value),
+                DBRCategory::Status => self.clone(),
+                _ => return Err(ErrorCondition::NoConvert),
+            },
+            Dbr::Time {
+                status,
+                timestamp: _,
+                value,
+            } => match category {
+                DBRCategory::Basic => Dbr::Basic(value.clone()),
+                DBRCategory::Status => Dbr::Status {
+                    status: *status,
+                    value: value.clone(),
+                },
+                DBRCategory::Time => self.clone(),
+                _ => return Err(ErrorCondition::NoConvert),
+            },
+            Dbr::Graphics => todo!(),
+            Dbr::Control => todo!(),
+        })
     }
 }
 

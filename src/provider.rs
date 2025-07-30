@@ -3,7 +3,7 @@
 use tokio::sync::{broadcast, mpsc};
 
 use crate::{
-    database::{DBRType, Record},
+    database::{DBRType, Dbr},
     messages::{self, ErrorCondition, MonitorMask},
 };
 
@@ -25,7 +25,7 @@ pub trait Provider: Sync + Send + Clone + 'static {
         &self,
         pv_name: &str,
         requested_type: Option<DBRType>,
-    ) -> Result<Record, ErrorCondition>;
+    ) -> Result<Dbr, ErrorCondition>;
 
     #[allow(unused_variables)]
     fn get_access_right(
@@ -39,17 +39,22 @@ pub trait Provider: Sync + Send + Clone + 'static {
 
     /// Write a value to a PV
     #[allow(unused_variables)]
-    fn write_value(&mut self, pv_name: &str, value: &[&str]) -> Result<(), ErrorCondition> {
+    fn write_value(&mut self, pv_name: &str, value: Dbr) -> Result<(), ErrorCondition> {
         Err(ErrorCondition::NoWtAccess)
     }
 
+    /// Request setting up a subscription to a PV
+    ///
+    ///
     #[allow(unused_variables)]
     fn monitor_value(
         &mut self,
         pv_name: &str,
+        data_type: DBRType,
+        data_count: usize,
         mask: MonitorMask,
         trigger: mpsc::Sender<String>,
-    ) -> Result<broadcast::Receiver<Record>, ErrorCondition> {
+    ) -> Result<broadcast::Receiver<Dbr>, ErrorCondition> {
         Err(ErrorCondition::UnavailInServ)
     }
 }
