@@ -20,6 +20,8 @@ impl Provider for BasicProvider {
         println!("Provider got asked for value of '{pv_name}'");
         if pv_name == "something" {
             Ok(Dbr::Basic(epics::database::DbrValue::Long(vec![42])))
+        } else if pv_name == "something2" {
+            Ok(Dbr::Basic(vec![42, 56].into()))
         } else {
             Err(ErrorCondition::GetFail)
         }
@@ -28,7 +30,7 @@ impl Provider for BasicProvider {
     // }
     fn provides(&self, pv_name: &str) -> bool {
         //        println!("Provider got asked if has \"{pv_name}\"");
-        pv_name == "something"
+        pv_name == "something" || pv_name == "something2"
     }
 
     fn get_access_right(

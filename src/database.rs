@@ -20,7 +20,7 @@ use crate::messages::ErrorCondition;
 #[derive(Clone, Debug)]
 pub enum DbrValue {
     Enum(u16),
-    String(String),
+    String(Vec<String>),
     Char(Vec<i8>),
     Int(Vec<i16>),
     Long(Vec<i32>),
@@ -190,20 +190,15 @@ impl DbrValue {
                 );
                 Ok(DbrValue::Enum(be_u16.parse(data)?.1))
             }
-            DBRBasicType::String => {
-                let strings: Vec<&str> = data
-                    .chunks(40)
+            DBRBasicType::String => Ok(DbrValue::String(
+                data.chunks(40)
                     .map(|d| {
                         let strlen = d.iter().position(|&c| c == 0x00).unwrap();
                         str::from_utf8(&d[0..strlen]).unwrap()
                     })
-                    .collect();
-                assert!(
-                    strings.len() == 1,
-                    "Got multi-instance string data type, thought this could not happen"
-                );
-                Ok(DbrValue::String(strings[0].to_owned()))
-            }
+                    .map(|s| s.to_string())
+                    .collect(),
+            )),
             DBRBasicType::Char => Ok(DbrValue::Char(count(be_i8, item_count).parse(data)?.1)),
             DBRBasicType::Int => Ok(DbrValue::Int(count(be_i16, item_count).parse(data)?.1)),
             DBRBasicType::Long => Ok(DbrValue::Long(count(be_i32, item_count).parse(data)?.1)),
