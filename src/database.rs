@@ -496,11 +496,25 @@ impl Dbr {
         Ok(match self {
             Dbr::Basic(_) => match dbr_type.category {
                 DBRCategory::Basic => self.clone(),
+                DBRCategory::Status => Dbr::Status {
+                    status: Status::default(),
+                    value,
+                },
+                DBRCategory::Time => Dbr::Time {
+                    status: Status::default(),
+                    timestamp: SystemTime::now(),
+                    value,
+                },
                 _ => return Err(ErrorCondition::NoConvert),
             },
-            Dbr::Status { .. } => match dbr_type.category {
+            Dbr::Status { status, .. } => match dbr_type.category {
                 DBRCategory::Basic => Dbr::Basic(value),
                 DBRCategory::Status => self.clone(),
+                DBRCategory::Time => Dbr::Time {
+                    status: *status,
+                    timestamp: SystemTime::now(),
+                    value,
+                },
                 _ => return Err(ErrorCondition::NoConvert),
             },
             Dbr::Time {
