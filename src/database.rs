@@ -542,6 +542,8 @@ impl Dbr {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -587,14 +589,16 @@ mod tests {
     #[test]
     fn encode_dbr() {
         let example_packet = [
-            0x0, 0xf, 0x0, 0x10, 0x0, 0x13, 0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x0,
-            0x0, 0x0, 0x0, 0x42, 0x32, 0x19, 0x99, 0x1c, 0xe0, 0x65, 0x20, 0x0, 0x0, 0x0, 0x2a,
+            0x0, 0x0, 0x0, 0x0, 0x42, 0x32, 0x19, 0x99, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x2a,
         ];
         let dbr = Record::Long(NumericDBR {
             value: SingleOrVec::Single(42i32),
+            last_updated: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(1741731609))
+                .unwrap(),
             ..Default::default()
         });
-        let (size, out_data) = dbr
+        let (_size, out_data) = dbr
             .encode_value(
                 DBRType {
                     basic_type: DBRBasicType::Long,
@@ -604,5 +608,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(out_data.len(), example_packet.len());
+        assert_eq!(out_data, example_packet);
     }
 }

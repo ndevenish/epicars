@@ -369,7 +369,7 @@ impl<L: Provider> Circuit<L> {
                 println!("{id}: {}: Got {:?}", msg.server_id, msg);
                 let channel = &mut self.channels.get_mut(&msg.server_id).unwrap();
 
-                let mut receiver = self
+                let receiver = self
                     .library
                     .monitor_value(
                         &channel.name,
@@ -379,8 +379,6 @@ impl<L: Provider> Circuit<L> {
                         self.monitor_value_available.clone(),
                     )
                     .map_err(MessageError::ErrorResponse)?;
-                // Calling monitor_value inserts the first message into the receiver
-                let first_value = &receiver.recv().await.unwrap();
 
                 channel.subscription = Some(PVSubscription {
                     data_type: msg.data_type,
@@ -389,17 +387,7 @@ impl<L: Provider> Circuit<L> {
                     subscription_id: msg.subscription_id,
                     receiver,
                 });
-                let (item_count, data) = first_value
-                    .convert_to(msg.data_type.category, msg.data_type.basic_type)
-                    .unwrap()
-                    .to_bytes(Some(msg.data_count as usize));
-                Ok(vec![Message::EventAddResponse(EventAddResponse {
-                    data_type: msg.data_type,
-                    data_count: item_count as u32,
-                    subscription_id: msg.subscription_id,
-                    status_code: ErrorCondition::Normal,
-                    data,
-                })])
+                Ok(Vec::new())
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {
                 println!("{id}: Got client username: {}", name.name);

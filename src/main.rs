@@ -63,10 +63,13 @@ impl Provider for BasicProvider {
                 value: DbrValue::Long(SingleOrVec::Single(42)),
             })
             .unwrap();
+
         tokio::spawn(async move {
             let mut val = 0i32;
             let sender = sender;
             let trigger = trigger;
+            trigger.send("something".to_string()).await.unwrap();
+
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 println!("Sending monitor update instance");
