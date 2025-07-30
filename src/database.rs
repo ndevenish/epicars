@@ -470,19 +470,15 @@ impl Dbr {
         Ok(real_elems)
     }
 
-    pub fn convert_to(
-        &self,
-        category: DBRCategory,
-        basic_type: DBRBasicType,
-    ) -> Result<Dbr, ErrorCondition> {
-        let value = self.value().convert_to(basic_type)?;
+    pub fn convert_to(&self, dbr_type: DBRType) -> Result<Dbr, ErrorCondition> {
+        let value = self.value().convert_to(dbr_type.basic_type)?;
         // First handle category changes - we can do this for some but not all
         Ok(match self {
-            Dbr::Basic(_) => match category {
+            Dbr::Basic(_) => match dbr_type.category {
                 DBRCategory::Basic => self.clone(),
                 _ => return Err(ErrorCondition::NoConvert),
             },
-            Dbr::Status { .. } => match category {
+            Dbr::Status { .. } => match dbr_type.category {
                 DBRCategory::Basic => Dbr::Basic(value),
                 DBRCategory::Status => self.clone(),
                 _ => return Err(ErrorCondition::NoConvert),
@@ -491,7 +487,7 @@ impl Dbr {
                 status,
                 timestamp: _,
                 value,
-            } => match category {
+            } => match dbr_type.category {
                 DBRCategory::Basic => Dbr::Basic(value.clone()),
                 DBRCategory::Status => Dbr::Status {
                     status: *status,

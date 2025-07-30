@@ -347,10 +347,7 @@ impl<L: Provider> Circuit<L> {
 
         println!("Circuit got update notification: {dbr:?}");
         let (item_count, data) = dbr
-            .convert_to(
-                subscription.data_type.category,
-                subscription.data_type.basic_type,
-            )
+            .convert_to(subscription.data_type)
             .unwrap()
             .to_bytes(NonZeroUsize::new(subscription.data_count));
         Ok(vec![Message::EventAddResponse(EventAddResponse {
@@ -459,7 +456,7 @@ impl<L: Provider> Circuit<L> {
 
         // Read the data into a Vec<u8>
         let (data_count, data) = pv
-            .convert_to(request.data_type.category, request.data_type.basic_type)?
+            .convert_to(request.data_type)?
             .to_bytes(NonZeroUsize::new(request.data_count as usize));
         Ok(request.respond(data_count, data))
     }
