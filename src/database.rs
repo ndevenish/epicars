@@ -504,7 +504,7 @@ impl Dbr {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::vec;
 
     use super::*;
 
@@ -529,21 +529,22 @@ mod tests {
                 .collect::<Vec<u8>>()
         );
         assert_eq!(
-            v.as_bytes(Some(1)),
+            v.to_bytes(NonZeroUsize::new(1)).1,
             data.iter()
                 .take(1)
                 .flat_map(|v| v.to_be_bytes())
                 .collect::<Vec<u8>>()
         );
         // Try converting this to an int with truncation
-        let v = v.convert_to::<i16>().unwrap();
-        assert_eq!(v.as_bytes(None), vec![0x01, 0xf4, 0x00, 0x0c]);
+        let v = v.convert_to(DBRBasicType::Int).unwrap();
+        assert_eq!(v.to_bytes(None).1, vec![0x01, 0xf4, 0x00, 0x0c]);
 
         assert_eq!(
-            SingleOrVec::Single(455.9f32)
-                .convert_to::<i32>()
+            DbrValue::Float(vec![455.9f32])
+                .convert_to(DBRBasicType::Long)
                 .unwrap()
-                .as_bytes(Some(5)),
+                .to_bytes(NonZeroUsize::new(5))
+                .1,
             vec![0x00, 0x00, 0x01, 0xc7]
         );
     }
@@ -553,22 +554,21 @@ mod tests {
         let example_packet = [
             0x0, 0x0, 0x0, 0x0, 0x42, 0x32, 0x19, 0x99, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x2a,
         ];
-        let dbr = Record::Long(NumericDBR {
-            value: SingleOrVec::Single(42i32),
-            last_updated: SystemTime::UNIX_EPOCH
+        let dbr = Dbr::Time {
+            status: Status::default(),
+            timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(1741731609))
                 .unwrap(),
-            ..Default::default()
-        });
+            value: vec![42i32].into(),
+        };
+
         let (_size, out_data) = dbr
-            .encode_value(
-                DBRType {
-                    basic_type: DBRBasicType::Long,
-                    category: DBRCategory::Time,
-                },
-                0,
-            )
-            .unwrap();
+            .convert_to(DBRType {
+                basic_type: DBRBasicType::Long,
+                category: DBRCategory::Time,
+            })
+            .unwrap()
+            .to_bytes(None);
         assert_eq!(out_data.len(), example_packet.len());
         assert_eq!(out_data, example_packet);
     }
