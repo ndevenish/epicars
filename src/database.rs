@@ -32,7 +32,7 @@ impl DbrValue {
     pub fn get_count(&self) -> usize {
         match self {
             DbrValue::Enum(_) => 1,
-            DbrValue::String(_) => unimplemented!("Don't know if string arrays are supported"),
+            DbrValue::String(val) => val.len(),
             DbrValue::Char(val) => val.len(),
             DbrValue::Int(val) => val.len(),
             DbrValue::Long(val) => val.len(),
@@ -70,7 +70,11 @@ impl DbrValue {
                 DbrValue::Long(val) => DbrValue::Char(_try_convert_vec(val)?),
                 DbrValue::Float(val) => DbrValue::Char(_try_convert_vec(val)?),
                 DbrValue::Double(val) => DbrValue::Char(_try_convert_vec(val)?),
-                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::String(val) => match val.len() {
+                    0 => DbrValue::Char(Vec::new()),
+                    1 => DbrValue::Char(val[0].as_bytes().iter().map(|c| *c as i8).collect()),
+                    _ => return Err(ErrorCondition::NoConvert),
+                },
                 DbrValue::Enum(val) => {
                     DbrValue::Char(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
