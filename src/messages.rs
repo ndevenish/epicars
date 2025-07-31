@@ -993,12 +993,8 @@ impl TryFrom<RawMessage> for EventAdd {
         let (_, (_, _, _, mask)) = (be_f32::<&[u8], MessageError>, be_f32, be_f32, be_u16)
             .parse(value.payload.as_slice())?;
         Ok(EventAdd {
-            data_type: DBRType::try_from(value.field_1_data_type).map_err(|_| {
-                MessageError::InvalidField(format!(
-                    "Invalid Data Type Value: {}",
-                    value.field_1_data_type
-                ))
-            })?,
+            data_type: DBRType::try_from(value.field_1_data_type)
+                .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
             data_count: value.field_2_data_count,
             server_id: value.field_3_parameter_1,
             subscription_id: value.field_4_parameter_2,
@@ -1052,12 +1048,8 @@ impl TryFrom<RawMessage> for EventAddResponse {
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
         value.expect_id(1)?;
         Ok(EventAddResponse {
-            data_type: DBRType::try_from(value.field_1_data_type).map_err(|_| {
-                MessageError::InvalidField(format!(
-                    "Invalid Data Type Value: {}",
-                    value.field_1_data_type
-                ))
-            })?,
+            data_type: DBRType::try_from(value.field_1_data_type)
+                .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
             data_count: value.field_2_data_count,
             subscription_id: value.field_3_parameter_1,
             status_code: ErrorCondition::try_from(value.field_4_parameter_2).unwrap(),
