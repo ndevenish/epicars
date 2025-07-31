@@ -17,6 +17,26 @@ use std::{
 
 use crate::messages::ErrorCondition;
 
+/// Encode a String to a fixed-maximum-length byte array
+///
+/// Problem: We want to convert a string to a byte sequence but never a length >
+/// 40 (the fixed length of EPICS CA Strings). But we can't convert and truncate
+/// because although we don't _expect_ to ever handle non-ASCII it technically
+/// isn't guaranteed. So, convert one-character-at-a-time until the length would
+/// go over.
+fn string_to_fixed_length_bytes(value: &str, max_length: usize) -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(max_length);
+    for c in value.chars() {
+        if buffer.len() + c.len_utf8() < max_length {
+            let mut char_buffer = [0u8; 4];
+            buffer.extend_from_slice(c.encode_utf8(&mut char_buffer).as_bytes());
+        } else {
+            break;
+        }
+    }
+    buffer
+}
+
 #[derive(Clone, Debug)]
 pub enum DbrValue {
     Enum(u16),
@@ -125,6 +145,10 @@ impl DbrValue {
             },
             DBRBasicType::String => match self {
                 DbrValue::String(_) => self.clone(),
+                DbrValue::Char(val) => DbrValue::String(vec![String::from_utf8(
+                    val.iter().map(|c| *c as u8).collect(),
+                )
+                .map_err(|_| ErrorCondition::NoConvert)?]),
                 _ => return Err(ErrorCondition::UnavailInServ),
             },
             DBRBasicType::Enum => match self {
@@ -136,8 +160,7 @@ impl DbrValue {
 
     /// Encode the value contents of a DBR into a byte vector
     ///
-    /// If max_elems is zero, then no data will be returned. If it is
-    /// `None`, then all data will be returned.
+    /// If max_elems is `None`, then all elements available will be returned.
     ///
     /// Returns the number of elements along with the bytes
     pub fn to_bytes(&self, max_elems: Option<NonZeroUsize>) -> (usize, Vec<u8>) {
@@ -151,7 +174,14 @@ impl DbrValue {
             elements,
             match self {
                 DbrValue::Enum(val) => val.to_be_bytes().to_vec(),
-                DbrValue::String(_) => unimplemented!(),
+                DbrValue::String(val) => val
+                    .iter()
+                    .flat_map(|v| {
+                        let mut buf = string_to_fixed_length_bytes(v, 39);
+                        buf.resize(40, 0u8);
+                        buf
+                    })
+                    .collect(),
                 DbrValue::Char(val) => val
                     .iter()
                     .take(elements)
