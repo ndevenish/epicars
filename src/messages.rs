@@ -521,7 +521,7 @@ impl CAMessage for Version {
 /// Message CA_PROTO_SEARCH.
 ///
 /// Searches for a given channel name. Sent over UDP or TCP.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Search {
     pub search_id: u32,
     pub channel_name: String,

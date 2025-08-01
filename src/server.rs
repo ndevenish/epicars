@@ -136,11 +136,33 @@ impl<L: Provider> Server<L> {
                 "Listening for searches on {:?}",
                 listener.local_addr().unwrap()
             );
+            // Keep track of recent searches and source ports, to help reject duplicate
+            // messages coming in on multiple network ports.
+            let mut recent_searches: Vec<(Instant, u16, Vec<messages::Search>)> = Vec::new();
+
             loop {
                 let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
                 let msg_buf = &buf[..size];
                 if let Ok(searches) = parse_search_packet(msg_buf) {
-                    // println!("Got search from {}", origin);
+                    // Handle rejection window:
+                    // Drop all requests for identical PVs from the same source port
+                    let rejection_window_start = Instant::now()
+                        .checked_sub(Duration::from_micros(500))
+                        .unwrap();
+                    let mut is_duplicate = false;
+                    recent_searches.retain(|(i, port, msgs)| {
+                        let keep = i > &rejection_window_start;
+                        if *port == origin.port() && msgs == &searches && keep {
+                            is_duplicate = true;
+                        }
+                        keep
+                    });
+                    if is_duplicate {
+                        continue;
+                    }
+                    // This isn't a duplicate search, record it in case it comes in again
+                    recent_searches.push((Instant::now(), origin.port(), searches.to_vec()));
+
                     let mut replies = Vec::new();
                     {
                         for search in searches {
