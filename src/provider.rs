@@ -1,15 +1,17 @@
 use std::{
+    collections::HashMap,
     marker::PhantomData,
     sync::{Arc, Mutex},
+    time::SystemTime,
 };
 
 use tokio::sync::{
-    broadcast::{self, error::TryRecvError},
-    mpsc,
+    broadcast::{self},
+    mpsc::{self, error::TrySendError},
 };
 
 use crate::{
-    database::{DBRType, Dbr, DbrValue, IntoDBRBasicType},
+    database::{DBRType, Dbr, DbrValue, IntoDBRBasicType, Status},
     messages::{self, ErrorCondition, MonitorMask},
 };
 
@@ -68,49 +70,55 @@ pub trait Provider: Sync + Send + Clone + 'static {
     }
 }
 
+#[derive(Clone)]
 struct PV {
     name: String,
     value: Arc<Mutex<DbrValue>>,
+    timestamp: SystemTime,
     /// Channel to send updates to EPIC clients
-    sender: broadcast::Sender<(String, DbrValue)>,
-    /// Place where updates get sent to this object
-    receiver: broadcast::Receiver<DbrValue>,
+    sender: broadcast::Sender<Dbr>,
+    triggers: Vec<mpsc::Sender<String>>,
 }
 
-impl Clone for PV {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            value: self.value.clone(),
-            sender: self.sender.clone(),
-            receiver: self.receiver.resubscribe(),
-        }
-    }
-}
+// impl Clone for PV {
+//     fn clone(&self) -> Self {
+//         Self {
+//             name: self.name.clone(),
+//             value: self.value.clone(),
+//             timestamp: self.timestamp.clone(),
+//             sender: self.sender.clone(),
+//         }
+//     }
+// }
 
 impl PV {
-    pub fn load(&mut self) -> DbrValue {
-        let mut value = self.value.lock().unwrap();
-        loop {
-            let new_value = match self.receiver.try_recv() {
-                Ok(v) => v,
-                Err(TryRecvError::Lagged(_)) => continue,
-                _ => break,
-            };
-            *value = new_value;
-        }
+    pub fn load(&self) -> DbrValue {
+        let value = self.value.lock().unwrap();
         value.clone()
     }
 
     pub fn store(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
-        // Ensure we "discard" any messages for this instance
-        self.receiver = self.receiver.resubscribe();
         // Not update the shared value
         let stored_value = &mut *self.value.lock().unwrap();
         // *stored_value = (&vec![value.clone()]).into();
         *stored_value = value.convert_to(stored_value.get_type())?;
-        // Now send off any notifications for this
-        let _ = self.sender.send((self.name.clone(), stored_value.clone()));
+        self.timestamp = SystemTime::now();
+        // Now send off the new value to any listeners
+        let _ = self.sender.send(Dbr::Time {
+            status: Status::default(),
+            timestamp: self.timestamp,
+            value: value.clone(),
+        });
+        // Send the "please look at" triggers, filtering out any that are dead
+        self.triggers = self
+            .triggers
+            .iter()
+            .filter_map(|t| match t.try_send(self.name.clone()) {
+                Ok(_) => Some(t.clone()),
+                Err(TrySendError::Full(_)) => Some(t.clone()),
+                Err(TrySendError::Closed(_)) => None,
+            })
+            .collect();
         Ok(())
     }
 }
@@ -131,6 +139,13 @@ where
     for<'a> Vec<T>: TryFrom<&'a DbrValue>,
     for<'a> DbrValue: From<&'a Vec<T>>,
 {
+    fn new(pv: Arc<Mutex<PV>>) -> Self {
+        Self {
+            pv,
+            _marker: PhantomData,
+        }
+    }
+
     pub fn load(&mut self) -> T {
         let value = self.pv.lock().unwrap().load();
         // Convert the DbrValue into T
@@ -151,6 +166,95 @@ where
     }
 }
 
-// pub struct IntercomProvider {
-//     pvs : Arc<Mutex<HashMap<String, Inter>
-// }
+#[derive(Debug)]
+pub struct PVAlreadyExists;
+
+#[derive(Clone)]
+pub struct IntercomProvider {
+    pvs: Arc<Mutex<HashMap<String, Arc<Mutex<PV>>>>>,
+}
+
+impl IntercomProvider {
+    pub fn add_pv<T>(
+        &mut self,
+        name: &str,
+        initial_value: &DbrValue,
+    ) -> Result<Intercom<T>, PVAlreadyExists>
+    where
+        T: IntoDBRBasicType + Clone + Default,
+        for<'a> Vec<T>: TryFrom<&'a DbrValue>,
+        for<'a> DbrValue: From<&'a Vec<T>>,
+    {
+        let pv = Arc::new(Mutex::new(PV {
+            name: name.to_owned(),
+            value: Arc::new(Mutex::new(initial_value.clone())),
+            timestamp: SystemTime::now(),
+            sender: broadcast::channel(16).0,
+            triggers: Vec::new(),
+        }));
+        let mut pvmap = self.pvs.lock().unwrap_or(Err(PVAlreadyExists)?);
+        let _ = pvmap.insert(name.to_string(), pv.clone());
+        Ok(Intercom::<T>::new(pv))
+    }
+}
+
+impl Provider for IntercomProvider {
+    fn provides(&self, pv_name: &str) -> bool {
+        self.pvs.lock().unwrap().contains_key(pv_name)
+    }
+
+    fn read_value(
+        &self,
+        pv_name: &str,
+        _requested_type: Option<DBRType>,
+    ) -> Result<Dbr, ErrorCondition> {
+        let mut pvmap = self.pvs.lock().unwrap();
+        let pv = pvmap
+            .get_mut(pv_name)
+            .unwrap_or(Err(ErrorCondition::UnavailInServ)?)
+            .lock()
+            .unwrap();
+        Ok(Dbr::Time {
+            status: Status::default(),
+            timestamp: pv.timestamp,
+            value: pv.load(),
+        })
+    }
+
+    fn get_access_right(
+        &self,
+        _pv_name: &str,
+        _client_user_name: Option<&str>,
+        _client_host_name: Option<&str>,
+    ) -> messages::AccessRight {
+        messages::AccessRight::ReadWrite
+    }
+
+    fn write_value(&mut self, pv_name: &str, value: Dbr) -> Result<(), ErrorCondition> {
+        let mut pvmap = self.pvs.lock().unwrap();
+        let mut pv = pvmap
+            .get_mut(pv_name)
+            .unwrap_or(Err(ErrorCondition::UnavailInServ)?)
+            .lock()
+            .unwrap();
+        pv.store(value.value())
+    }
+
+    fn monitor_value(
+        &mut self,
+        pv_name: &str,
+        _data_type: DBRType,
+        _data_count: usize,
+        _mask: MonitorMask,
+        trigger: mpsc::Sender<String>,
+    ) -> Result<broadcast::Receiver<Dbr>, ErrorCondition> {
+        let mut pvmap = self.pvs.lock().unwrap();
+        let mut pv = pvmap
+            .get_mut(pv_name)
+            .unwrap_or(Err(ErrorCondition::UnavailInServ)?)
+            .lock()
+            .unwrap();
+        pv.triggers.push(trigger);
+        Ok(pv.sender.subscribe())
+    }
+}
