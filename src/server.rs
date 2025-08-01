@@ -499,7 +499,7 @@ impl<L: Provider> Circuit<L> {
         self.next_channel_id += 1;
         let createchan = CreateChannelResponse {
             data_count: pv.value().get_count() as u32,
-            data_type: pv.data_type(),
+            data_type: pv.data_type().basic_type,
             client_id: message.client_id,
             server_id: id,
         };

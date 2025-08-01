@@ -17,7 +17,7 @@ use nom::{
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, net::TcpStream};
 
-use crate::database::DBRType;
+use crate::database::{DBRBasicType, DBRType};
 
 const EPICS_VERSION: u16 = 13;
 
@@ -682,7 +682,7 @@ impl CAMessage for CreateChannel {
 
 #[derive(Debug)]
 pub struct CreateChannelResponse {
-    pub data_type: DBRType,
+    pub data_type: DBRBasicType,
     pub data_count: u32,
     pub client_id: u32,
     pub server_id: u32,
@@ -705,7 +705,7 @@ impl CAMessage for CreateChannelResponse {
     fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage {
             command: 18,
-            field_1_data_type: self.data_type.into(),
+            field_1_data_type: self.data_type as u16,
             field_2_data_count: self.data_count,
             field_3_parameter_1: self.client_id,
             field_4_parameter_2: self.server_id,
