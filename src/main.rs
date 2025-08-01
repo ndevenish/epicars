@@ -12,7 +12,7 @@ async fn main() {
     }));
 
     let mut provider = IntercomProvider::new();
-    let _value = provider.add_pv("something", 42i32).unwrap();
+    let mut value = provider.add_pv("something", 42i32).unwrap();
 
     // let provider = BasicProvider {};
     let _server = ServerBuilder::new(provider)
@@ -23,6 +23,9 @@ async fn main() {
 
     println!("Entering main() infinite loop");
     loop {
-        tokio::time::sleep(Duration::from_secs(120)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let v2 = value.load() + 1;
+        println!("Updating value to {v2}");
+        value.store(&v2);
     }
 }

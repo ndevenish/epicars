@@ -145,7 +145,7 @@ where
         }
     }
 
-    pub fn load(&mut self) -> T {
+    pub fn load(&self) -> T {
         let value = self.pv.lock().unwrap().load();
         // Convert the DbrValue into T
         let ex: Vec<T> = match (&value).try_into() {
