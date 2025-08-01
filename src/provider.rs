@@ -165,6 +165,44 @@ where
     }
 }
 
+#[derive(Clone)]
+pub struct VecIntercom<T>
+where
+    T: IntoDBRBasicType,
+{
+    pv: Arc<Mutex<PV>>,
+    _marker: PhantomData<T>,
+}
+
+impl<T> VecIntercom<T>
+where
+    T: IntoDBRBasicType + Clone + Default,
+    for<'a> Vec<T>: TryFrom<&'a DbrValue>,
+    DbrValue: From<Vec<T>>,
+{
+    fn new(pv: Arc<Mutex<PV>>) -> Self {
+        Self {
+            pv,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn load(&self) -> Vec<T> {
+        match (&self.pv.lock().unwrap().load()).try_into() {
+            Ok(v) => v,
+            _ => panic!("Provider logic should ensure this conversion never fails!"),
+        }
+    }
+
+    pub fn store(&mut self, value: &[T]) {
+        self.pv
+            .lock()
+            .unwrap()
+            .store(&value.to_vec().into())
+            .expect("Provider logic should ensure this never fails");
+    }
+}
+
 #[derive(Debug)]
 pub struct PVAlreadyExists;
 
@@ -180,6 +218,26 @@ impl IntercomProvider {
         }
     }
 
+    fn create_pv(
+        &mut self,
+        name: &str,
+        initial_value: DbrValue,
+    ) -> Result<Arc<Mutex<PV>>, PVAlreadyExists> {
+        let pv = Arc::new(Mutex::new(PV {
+            name: name.to_owned(),
+            value: Arc::new(Mutex::new(initial_value)),
+            timestamp: SystemTime::now(),
+            sender: broadcast::channel(16).0,
+            triggers: Vec::new(),
+        }));
+        let mut pvmap = self.pvs.lock().unwrap();
+        if pvmap.contains_key(name) {
+            return Err(PVAlreadyExists);
+        }
+        let _ = pvmap.insert(name.to_string(), pv.clone());
+        Ok(pv)
+    }
+
     pub fn add_pv<T>(
         &mut self,
         name: &str,
@@ -190,19 +248,22 @@ impl IntercomProvider {
         for<'a> Vec<T>: TryFrom<&'a DbrValue>,
         DbrValue: From<Vec<T>>,
     {
-        let pv = Arc::new(Mutex::new(PV {
-            name: name.to_owned(),
-            value: Arc::new(Mutex::new(DbrValue::from(vec![initial_value.clone()]))),
-            timestamp: SystemTime::now(),
-            sender: broadcast::channel(16).0,
-            triggers: Vec::new(),
-        }));
-        let mut pvmap = self.pvs.lock().unwrap();
-        if pvmap.contains_key(name) {
-            return Err(PVAlreadyExists);
-        }
-        let _ = pvmap.insert(name.to_string(), pv.clone());
+        let pv = self.create_pv(name, DbrValue::from(vec![initial_value.clone()]))?;
         Ok(Intercom::<T>::new(pv))
+    }
+
+    pub fn add_vec_pv<T>(
+        &mut self,
+        name: &str,
+        initial_value: Vec<T>,
+    ) -> Result<VecIntercom<T>, PVAlreadyExists>
+    where
+        T: IntoDBRBasicType + Clone + Default,
+        for<'a> Vec<T>: TryFrom<&'a DbrValue>,
+        DbrValue: From<Vec<T>>,
+    {
+        let pv = self.create_pv(name, DbrValue::from(initial_value.clone()))?;
+        Ok(VecIntercom::<T>::new(pv))
     }
 }
 
