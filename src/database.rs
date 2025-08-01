@@ -90,11 +90,11 @@ impl DbrValue {
                 DbrValue::Long(val) => DbrValue::Char(_try_convert_vec(val)?),
                 DbrValue::Float(val) => DbrValue::Char(_try_convert_vec(val)?),
                 DbrValue::Double(val) => DbrValue::Char(_try_convert_vec(val)?),
-                DbrValue::String(val) => match val.len() {
-                    0 => DbrValue::Char(Vec::new()),
-                    1 => DbrValue::Char(val[0].as_bytes().iter().map(|c| *c as i8).collect()),
-                    _ => return Err(ErrorCondition::NoConvert),
-                },
+                DbrValue::String(val) => DbrValue::Char(
+                    val.iter()
+                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
+                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
+                ),
                 DbrValue::Enum(val) => {
                     DbrValue::Char(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
@@ -105,7 +105,11 @@ impl DbrValue {
                 DbrValue::Long(val) => DbrValue::Int(_try_convert_vec(val)?),
                 DbrValue::Float(val) => DbrValue::Int(_try_convert_vec(val)?),
                 DbrValue::Double(val) => DbrValue::Int(_try_convert_vec(val)?),
-                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::String(val) => DbrValue::Int(
+                    val.iter()
+                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
+                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
+                ),
                 DbrValue::Enum(val) => {
                     DbrValue::Int(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
@@ -116,7 +120,11 @@ impl DbrValue {
                 DbrValue::Long(_val) => self.clone(),
                 DbrValue::Float(val) => DbrValue::Long(_try_convert_vec(val)?),
                 DbrValue::Double(val) => DbrValue::Long(_try_convert_vec(val)?),
-                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::String(val) => DbrValue::Long(
+                    val.iter()
+                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
+                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
+                ),
                 DbrValue::Enum(val) => {
                     DbrValue::Long(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
@@ -127,7 +135,11 @@ impl DbrValue {
                 DbrValue::Long(val) => DbrValue::Float(_try_convert_vec(val)?),
                 DbrValue::Float(_val) => self.clone(),
                 DbrValue::Double(val) => DbrValue::Float(_try_convert_vec(val)?),
-                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::String(val) => DbrValue::Float(
+                    val.iter()
+                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
+                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
+                ),
                 DbrValue::Enum(val) => {
                     DbrValue::Float(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
@@ -138,7 +150,11 @@ impl DbrValue {
                 DbrValue::Long(val) => DbrValue::Double(_try_convert_vec(val)?),
                 DbrValue::Float(val) => DbrValue::Double(_try_convert_vec(val)?),
                 DbrValue::Double(_val) => self.clone(),
-                DbrValue::String(_) => return Err(ErrorCondition::NoConvert),
+                DbrValue::String(val) => DbrValue::Double(
+                    val.iter()
+                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
+                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
+                ),
                 DbrValue::Enum(val) => {
                     DbrValue::Double(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }

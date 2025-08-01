@@ -100,7 +100,6 @@ impl PV {
     pub fn store(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
         // Not update the shared value
         let stored_value = &mut *self.value.lock().unwrap();
-        // *stored_value = (&vec![value.clone()]).into();
         *stored_value = value.convert_to(stored_value.get_type())?;
         self.timestamp = SystemTime::now();
         // Now send off the new value to any listeners
