@@ -198,7 +198,6 @@ impl IntercomProvider {
             triggers: Vec::new(),
         }));
         let mut pvmap = self.pvs.lock().unwrap();
-        // .unwrap_or(Err(PVAlreadyExists)?
         if pvmap.contains_key(name) {
             return Err(PVAlreadyExists);
         }
@@ -266,7 +265,7 @@ impl Provider for IntercomProvider {
         let mut pvmap = self.pvs.lock().unwrap();
         let mut pv = pvmap
             .get_mut(pv_name)
-            .unwrap_or(Err(ErrorCondition::UnavailInServ)?)
+            .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
         pv.triggers.push(trigger);
