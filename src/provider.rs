@@ -70,7 +70,7 @@ pub trait Provider: Sync + Send + Clone + 'static {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct PV {
     name: String,
     value: Arc<Mutex<DbrValue>>,
@@ -137,7 +137,7 @@ impl<T> Intercom<T>
 where
     T: IntoDBRBasicType + Clone + Default,
     for<'a> Vec<T>: TryFrom<&'a DbrValue>,
-    for<'a> DbrValue: From<&'a Vec<T>>,
+    DbrValue: From<Vec<T>>,
 {
     fn new(pv: Arc<Mutex<PV>>) -> Self {
         Self {
@@ -161,7 +161,7 @@ where
         self.pv
             .lock()
             .unwrap()
-            .store(&(&vec![value.clone()]).into())
+            .store(&(vec![value.clone()]).into())
             .expect("Provider logic should ensure this never fails");
     }
 }
@@ -169,30 +169,40 @@ where
 #[derive(Debug)]
 pub struct PVAlreadyExists;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct IntercomProvider {
     pvs: Arc<Mutex<HashMap<String, Arc<Mutex<PV>>>>>,
 }
 
 impl IntercomProvider {
+    pub fn new() -> IntercomProvider {
+        IntercomProvider {
+            pvs: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
     pub fn add_pv<T>(
         &mut self,
         name: &str,
-        initial_value: &DbrValue,
+        initial_value: T,
     ) -> Result<Intercom<T>, PVAlreadyExists>
     where
         T: IntoDBRBasicType + Clone + Default,
         for<'a> Vec<T>: TryFrom<&'a DbrValue>,
-        for<'a> DbrValue: From<&'a Vec<T>>,
+        DbrValue: From<Vec<T>>,
     {
         let pv = Arc::new(Mutex::new(PV {
             name: name.to_owned(),
-            value: Arc::new(Mutex::new(initial_value.clone())),
+            value: Arc::new(Mutex::new(DbrValue::from(vec![initial_value.clone()]))),
             timestamp: SystemTime::now(),
             sender: broadcast::channel(16).0,
             triggers: Vec::new(),
         }));
-        let mut pvmap = self.pvs.lock().unwrap_or(Err(PVAlreadyExists)?);
+        let mut pvmap = self.pvs.lock().unwrap();
+        // .unwrap_or(Err(PVAlreadyExists)?
+        if pvmap.contains_key(name) {
+            return Err(PVAlreadyExists);
+        }
         let _ = pvmap.insert(name.to_string(), pv.clone());
         Ok(Intercom::<T>::new(pv))
     }
@@ -208,10 +218,10 @@ impl Provider for IntercomProvider {
         pv_name: &str,
         _requested_type: Option<DBRType>,
     ) -> Result<Dbr, ErrorCondition> {
-        let mut pvmap = self.pvs.lock().unwrap();
+        let pvmap = self.pvs.lock().unwrap();
         let pv = pvmap
-            .get_mut(pv_name)
-            .unwrap_or(Err(ErrorCondition::UnavailInServ)?)
+            .get(pv_name)
+            .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
         Ok(Dbr::Time {
