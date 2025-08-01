@@ -244,10 +244,16 @@ impl Provider for IntercomProvider {
         let mut pvmap = self.pvs.lock().unwrap();
         let mut pv = pvmap
             .get_mut(pv_name)
-            .unwrap_or(Err(ErrorCondition::UnavailInServ)?)
+            .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
-        pv.store(value.value())
+        println!("Provider: Processing write: {value:?}");
+        if let Err(e) = pv.store(value.value()) {
+            println!("    Error: {e:?}");
+            Err(e)
+        } else {
+            Ok(())
+        }
     }
 
     fn monitor_value(
