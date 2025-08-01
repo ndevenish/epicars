@@ -4,7 +4,7 @@ use std::{
 };
 
 use tokio::sync::{
-    broadcast::{self, error::RecvError},
+    broadcast::{self, error::TryRecvError},
     mpsc,
 };
 
@@ -68,33 +68,61 @@ pub trait Provider: Sync + Send + Clone + 'static {
     }
 }
 
-/// Cloneable interface that gives access to PV values and updates
-pub struct Intercom<T>
-where
-    T: IntoDBRBasicType,
-{
-    pv_name: String,
+struct PV {
+    name: String,
     value: Arc<Mutex<DbrValue>>,
     /// Channel to send updates to EPIC clients
     sender: broadcast::Sender<(String, DbrValue)>,
     /// Place where updates get sent to this object
     receiver: broadcast::Receiver<DbrValue>,
-    _marker: PhantomData<T>,
 }
 
-impl<T> Clone for Intercom<T>
-where
-    T: IntoDBRBasicType + Clone,
-{
+impl Clone for PV {
     fn clone(&self) -> Self {
         Self {
-            pv_name: self.pv_name.clone(),
+            name: self.name.clone(),
             value: self.value.clone(),
             sender: self.sender.clone(),
             receiver: self.receiver.resubscribe(),
-            _marker: self._marker,
         }
     }
+}
+
+impl PV {
+    pub fn load(&mut self) -> DbrValue {
+        let mut value = self.value.lock().unwrap();
+        loop {
+            let new_value = match self.receiver.try_recv() {
+                Ok(v) => v,
+                Err(TryRecvError::Lagged(_)) => continue,
+                _ => break,
+            };
+            *value = new_value;
+        }
+        value.clone()
+    }
+
+    pub fn store(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
+        // Ensure we "discard" any messages for this instance
+        self.receiver = self.receiver.resubscribe();
+        // Not update the shared value
+        let stored_value = &mut *self.value.lock().unwrap();
+        // *stored_value = (&vec![value.clone()]).into();
+        *stored_value = value.convert_to(stored_value.get_type())?;
+        // Now send off any notifications for this
+        let _ = self.sender.send((self.name.clone(), stored_value.clone()));
+        Ok(())
+    }
+}
+
+/// Typed interface to reading single values to/from a PV
+#[derive(Clone)]
+pub struct Intercom<T>
+where
+    T: IntoDBRBasicType,
+{
+    pv: Arc<Mutex<PV>>,
+    _marker: PhantomData<T>,
 }
 
 impl<T> Intercom<T>
@@ -104,37 +132,25 @@ where
     for<'a> DbrValue: From<&'a Vec<T>>,
 {
     pub fn load(&mut self) -> T {
-        let value = &mut *self.value.lock().unwrap();
-
-        // If there are any pending updates to this value, pull them all
-        if !self.receiver.is_empty() {
-            loop {
-                let new_value = match self.receiver.blocking_recv() {
-                    Ok(val) => val,
-                    Err(RecvError::Lagged(_)) => continue,
-                    Err(RecvError::Closed) => break,
-                };
-                *value = new_value;
-            }
-        }
+        let value = self.pv.lock().unwrap().load();
         // Convert the DbrValue into T
-        let ex: Vec<T> = match (&*value).try_into() {
+        let ex: Vec<T> = match (&value).try_into() {
             Ok(v) => v,
-            _ => panic!("Provider logic should ensure the conversion never fails!"),
+            _ => panic!("Provider logic should ensure this conversion never fails!"),
         };
         // Extract the zeroth value from this vector
         ex.first().unwrap_or(&T::default()).clone()
     }
 
     pub fn store(&mut self, value: &T) {
-        // Ensure we "discard" any messages for this instance
-        self.receiver = self.receiver.resubscribe();
-        // Not update the shared value
-        let stored_value = &mut *self.value.lock().unwrap();
-        *stored_value = (&vec![value.clone()]).into();
-        // Now send off any notifications for this
-        let _ = self
-            .sender
-            .send((self.pv_name.clone(), stored_value.clone()));
+        self.pv
+            .lock()
+            .unwrap()
+            .store(&(&vec![value.clone()]).into())
+            .expect("Provider logic should ensure this never fails");
     }
 }
+
+// pub struct IntercomProvider {
+//     pvs : Arc<Mutex<HashMap<String, Inter>
+// }
