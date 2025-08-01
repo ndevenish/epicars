@@ -583,7 +583,7 @@ impl Dbr {
         // First handle category changes - we can do this for some but not all
         Ok(match self {
             Dbr::Basic(_) => match dbr_type.category {
-                DBRCategory::Basic => self.clone(),
+                DBRCategory::Basic => Dbr::Basic(value),
                 DBRCategory::Status => Dbr::Status {
                     status: Status::default(),
                     value,
@@ -597,7 +597,10 @@ impl Dbr {
             },
             Dbr::Status { status, .. } => match dbr_type.category {
                 DBRCategory::Basic => Dbr::Basic(value),
-                DBRCategory::Status => self.clone(),
+                DBRCategory::Status => Dbr::Status {
+                    status: *status,
+                    value,
+                },
                 DBRCategory::Time => Dbr::Time {
                     status: *status,
                     timestamp: SystemTime::now(),
@@ -607,15 +610,19 @@ impl Dbr {
             },
             Dbr::Time {
                 status,
-                timestamp: _,
-                value,
+                timestamp: ts,
+                value: _,
             } => match dbr_type.category {
-                DBRCategory::Basic => Dbr::Basic(value.clone()),
+                DBRCategory::Basic => Dbr::Basic(value),
                 DBRCategory::Status => Dbr::Status {
                     status: *status,
-                    value: value.clone(),
+                    value,
                 },
-                DBRCategory::Time => self.clone(),
+                DBRCategory::Time => Dbr::Time {
+                    status: *status,
+                    timestamp: *ts,
+                    value,
+                },
                 _ => return Err(ErrorCondition::NoConvert),
             },
             Dbr::Graphics => todo!(),
