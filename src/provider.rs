@@ -74,27 +74,39 @@ pub trait Provider: Sync + Send + Clone + 'static {
 struct PV {
     name: String,
     value: Arc<Mutex<DbrValue>>,
+    /// Minimum array length. If set, at least this many array items will
+    /// be sent to subscribers, and if a longer value is assigned then this
+    /// minimum length will be increased. If None, then only the current
+    /// array length items will be sent.
+    minimum_length: Option<usize>,
+    /// The last time this value was written
     timestamp: SystemTime,
     /// Channel to send updates to EPIC clients
     sender: broadcast::Sender<Dbr>,
+    /// Trigger channel, to notify the server there is a new broadcast available
     triggers: Vec<mpsc::Sender<String>>,
 }
-
-// impl Clone for PV {
-//     fn clone(&self) -> Self {
-//         Self {
-//             name: self.name.clone(),
-//             value: self.value.clone(),
-//             timestamp: self.timestamp.clone(),
-//             sender: self.sender.clone(),
-//         }
-//     }
-// }
 
 impl PV {
     pub fn load(&self) -> DbrValue {
         let value = self.value.lock().unwrap();
         value.clone()
+    }
+
+    /// Load the value to a Dbr ready to send to an CA client
+    ///
+    /// This includes adjustments for minimum size, and encoding (e.g.
+    /// sending a string as a Char array instead of restricting to 40-chars)
+    pub fn load_for_ca(&self) -> Dbr {
+        let mut value = self.value.lock().unwrap().clone();
+        if let Some(size) = self.minimum_length {
+            let _ = value.resize(size);
+        }
+        Dbr::Time {
+            status: Status::default(),
+            timestamp: self.timestamp,
+            value,
+        }
     }
 
     pub fn store(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
@@ -103,11 +115,7 @@ impl PV {
         *stored_value = value.convert_to(stored_value.get_type())?;
         self.timestamp = SystemTime::now();
         // Now send off the new value to any listeners
-        let _ = self.sender.send(Dbr::Time {
-            status: Status::default(),
-            timestamp: self.timestamp,
-            value: value.clone(),
-        });
+        let _ = self.sender.send(self.load_for_ca());
         // Send the "please look at" triggers, filtering out any that are dead
         self.triggers = self
             .triggers
@@ -222,6 +230,7 @@ impl IntercomProvider {
         &mut self,
         name: &str,
         initial_value: DbrValue,
+        minimum_length: Option<usize>,
     ) -> Result<Arc<Mutex<PV>>, PVAlreadyExists> {
         let pv = Arc::new(Mutex::new(PV {
             name: name.to_owned(),
@@ -229,6 +238,7 @@ impl IntercomProvider {
             timestamp: SystemTime::now(),
             sender: broadcast::channel(16).0,
             triggers: Vec::new(),
+            minimum_length,
         }));
         let mut pvmap = self.pvs.lock().unwrap();
         if pvmap.contains_key(name) {
@@ -248,7 +258,7 @@ impl IntercomProvider {
         for<'a> Vec<T>: TryFrom<&'a DbrValue>,
         DbrValue: From<Vec<T>>,
     {
-        let pv = self.create_pv(name, DbrValue::from(vec![initial_value.clone()]))?;
+        let pv = self.create_pv(name, DbrValue::from(vec![initial_value.clone()]), None)?;
         Ok(Intercom::<T>::new(pv))
     }
 
@@ -256,13 +266,14 @@ impl IntercomProvider {
         &mut self,
         name: &str,
         initial_value: Vec<T>,
+        minimum_length: Option<usize>,
     ) -> Result<VecIntercom<T>, PVAlreadyExists>
     where
         T: IntoDBRBasicType + Clone + Default,
         for<'a> Vec<T>: TryFrom<&'a DbrValue>,
         DbrValue: From<Vec<T>>,
     {
-        let pv = self.create_pv(name, DbrValue::from(initial_value.clone()))?;
+        let pv = self.create_pv(name, DbrValue::from(initial_value.clone()), minimum_length)?;
         Ok(VecIntercom::<T>::new(pv))
     }
 }
@@ -277,17 +288,15 @@ impl Provider for IntercomProvider {
         pv_name: &str,
         _requested_type: Option<DBRType>,
     ) -> Result<Dbr, ErrorCondition> {
-        let pvmap = self.pvs.lock().unwrap();
-        let pv = pvmap
-            .get(pv_name)
-            .ok_or(ErrorCondition::UnavailInServ)?
-            .lock()
-            .unwrap();
-        Ok(Dbr::Time {
-            status: Status::default(),
-            timestamp: pv.timestamp,
-            value: pv.load(),
-        })
+        let pv = {
+            let pvmap = self.pvs.lock().unwrap();
+            pvmap
+                .get(pv_name)
+                .ok_or(ErrorCondition::UnavailInServ)?
+                .clone()
+        };
+        let pv = pv.lock().unwrap();
+        Ok(pv.load_for_ca())
     }
 
     fn get_access_right(

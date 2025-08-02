@@ -47,6 +47,9 @@ pub enum DbrValue {
     Float(Vec<f32>),
     Double(Vec<f64>),
 }
+/// Returned when trying to resize a DBR but it's a data type that can't
+#[derive(Debug)]
+pub struct DbrValueIsEnum;
 
 impl DbrValue {
     pub fn get_count(&self) -> usize {
@@ -255,6 +258,19 @@ impl DbrValue {
             DBRBasicType::Float => Ok(DbrValue::Float(count(be_f32, item_count).parse(data)?.1)),
             DBRBasicType::Double => Ok(DbrValue::Double(count(be_f64, item_count).parse(data)?.1)),
         }
+    }
+
+    pub fn resize(&mut self, to_size: usize) -> Result<(), DbrValueIsEnum> {
+        match self {
+            DbrValue::Enum(_) => Err(DbrValueIsEnum)?,
+            DbrValue::String(items) => items.resize(to_size, String::new()),
+            DbrValue::Char(items) => items.resize(to_size, 0),
+            DbrValue::Int(items) => items.resize(to_size, 0),
+            DbrValue::Long(items) => items.resize(to_size, 0),
+            DbrValue::Float(items) => items.resize(to_size, 0.0),
+            DbrValue::Double(items) => items.resize(to_size, 0.0),
+        };
+        Ok(())
     }
 }
 
