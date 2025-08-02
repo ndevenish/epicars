@@ -10,7 +10,7 @@ pnet = { version = "0.35.0", default-features = false, features = [
     "pnet_datalink",
     "std",
 ] }
-socket2 = "0.5.8"
+socket2 = { version = "0.5.8", features = ["all"] }
 thiserror = "2.0.11"
 tokio = { version = "1.43.1", features = ["macros", "net", "rt", "time", "io-util", "rt-multi-thread"] }
 tokio-util = "0.7.13"
