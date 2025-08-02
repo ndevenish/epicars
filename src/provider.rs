@@ -111,8 +111,11 @@ impl PV {
 
     pub fn store(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
         // Not update the shared value
-        let stored_value = &mut *self.value.lock().unwrap();
-        *stored_value = value.convert_to(stored_value.get_type())?;
+        {
+            let stored_value = &mut *self.value.lock().unwrap();
+            *stored_value = value.convert_to(stored_value.get_type())?;
+            // Ensure lock is dropped
+        }
         self.timestamp = SystemTime::now();
         // Now send off the new value to any listeners
         let _ = self.sender.send(self.load_for_ca());
