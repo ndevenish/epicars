@@ -99,7 +99,9 @@ impl PV {
     /// sending a string as a Char array instead of restricting to 40-chars)
     pub fn load_for_ca(&self) -> Dbr {
         let mut value = self.value.lock().unwrap().clone();
-        if let Some(size) = self.minimum_length {
+        if let Some(size) = self.minimum_length
+            && value.get_count() < size
+        {
             let _ = value.resize(size);
         }
         Dbr::Time {
@@ -114,6 +116,11 @@ impl PV {
         {
             let stored_value = &mut *self.value.lock().unwrap();
             *stored_value = value.convert_to(stored_value.get_type())?;
+            if let Some(size) = self.minimum_length
+                && stored_value.get_count() > size
+            {
+                self.minimum_length = Some(stored_value.get_count());
+            }
             // Ensure lock is dropped
         }
         self.timestamp = SystemTime::now();
