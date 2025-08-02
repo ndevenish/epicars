@@ -7,12 +7,12 @@ use std::{
 };
 
 use nom::{
+    Err, IResult, Parser,
     bytes::complete::take,
     combinator::all_consuming,
     error::{ErrorKind, ParseError},
     multi::many0,
     number::complete::{be_f32, be_u16, be_u32},
-    Err, IResult, Parser,
 };
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, net::TcpStream};
@@ -1311,42 +1311,50 @@ impl ErrorCondition {
 }
 impl std::fmt::Display for ErrorCondition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}",         match self {
-            Self::AllocMem => "Unable to allocate additional dynamic memory",
-            Self::Anachronism => "Requested feature is no longer supported",
-            Self::Array16kClient => "Client’s protocol revision does not support transfers exceeding 16k bytes",
-            Self::BadChId => "Invalid channel identifier",
-            Self::BadCount => "Invalid element count requested",
-            Self::BadFuncPtr => "Invalid function pointer",
-            Self::BadMask => "Invalid event selection mask",
-            Self::BadMonId => "Bad event subscription (monitor) identifier",
-            Self::BadPriority => "Invalid channel priority",
-            Self::BadStr => "Invalid string",
-            Self::BadSyncGrp => "Invalid synchronous group identifier",
-            Self::BadType => "The data type specified is invalid",
-            Self::ChanDestroy => "User destroyed channel",
-            Self::ConnSeqTmo => "Virtual circuit connection sequence aborted",
-            Self::DblClFail => "The requested local DB operation failed",
-            Self::Disconn => "Virtual circuit disconnect",
-            Self::EvDisallow => "Request inappropriate within subscription (monitor) update callback",
-            Self::GetFail => "Channel read request failed",
-            Self::Internal => "Channel Access Internal Failure",
-            Self::IoDone => "IO operations have completed",
-            Self::IoInProgress => "IO operations are in progress",
-            Self::IsAttached => "Thread is already attached to a client context",
-            Self::NoConvert => "No reasonable data conversion between client and server types",
-            Self::NoRdAccess => "Read access denied",
-            Self::Normal => "Normal successful completion",
-            Self::NoSearchAddr => "Empty PV search address list",
-            Self::NotThreaded => "Preemptive callback not enabled - additional threads may not join context",
-            Self::NoWtAccess => "Write access denied",
-            Self::PutCbInProg => "Put callback timed out",
-            Self::PutFail => "Channel write request failed",
-            Self::Timeout => "User specified timeout on IO operation expired",
-            Self::TooLarge => "The requested data transfer is greater than available memory or EPICS_CA_MAX_ARRAY_BYTES",
-            Self::UnavailInServ => "Not supported by attached service",
-            Self::UnrespTmo => "?",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::AllocMem => "Unable to allocate additional dynamic memory",
+                Self::Anachronism => "Requested feature is no longer supported",
+                Self::Array16kClient =>
+                    "Client’s protocol revision does not support transfers exceeding 16k bytes",
+                Self::BadChId => "Invalid channel identifier",
+                Self::BadCount => "Invalid element count requested",
+                Self::BadFuncPtr => "Invalid function pointer",
+                Self::BadMask => "Invalid event selection mask",
+                Self::BadMonId => "Bad event subscription (monitor) identifier",
+                Self::BadPriority => "Invalid channel priority",
+                Self::BadStr => "Invalid string",
+                Self::BadSyncGrp => "Invalid synchronous group identifier",
+                Self::BadType => "The data type specified is invalid",
+                Self::ChanDestroy => "User destroyed channel",
+                Self::ConnSeqTmo => "Virtual circuit connection sequence aborted",
+                Self::DblClFail => "The requested local DB operation failed",
+                Self::Disconn => "Virtual circuit disconnect",
+                Self::EvDisallow =>
+                    "Request inappropriate within subscription (monitor) update callback",
+                Self::GetFail => "Channel read request failed",
+                Self::Internal => "Channel Access Internal Failure",
+                Self::IoDone => "IO operations have completed",
+                Self::IoInProgress => "IO operations are in progress",
+                Self::IsAttached => "Thread is already attached to a client context",
+                Self::NoConvert => "No reasonable data conversion between client and server types",
+                Self::NoRdAccess => "Read access denied",
+                Self::Normal => "Normal successful completion",
+                Self::NoSearchAddr => "Empty PV search address list",
+                Self::NotThreaded =>
+                    "Preemptive callback not enabled - additional threads may not join context",
+                Self::NoWtAccess => "Write access denied",
+                Self::PutCbInProg => "Put callback timed out",
+                Self::PutFail => "Channel write request failed",
+                Self::Timeout => "User specified timeout on IO operation expired",
+                Self::TooLarge =>
+                    "The requested data transfer is greater than available memory or EPICS_CA_MAX_ARRAY_BYTES",
+                Self::UnavailInServ => "Not supported by attached service",
+                Self::UnrespTmo => "?",
+            }
+        )
     }
 }
 

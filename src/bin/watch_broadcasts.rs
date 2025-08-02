@@ -1,7 +1,7 @@
 use std::io::ErrorKind;
 
 use epics::{
-    messages::{self, parse_search_packet, RawMessage},
+    messages::{self, RawMessage, parse_search_packet},
     new_reusable_udp_socket,
 };
 use tokio::{net::UdpSocket, task::yield_now};
@@ -18,7 +18,9 @@ async fn main() {
             Ok(x) => x,
             Err(err) => match err.kind() {
                 ErrorKind::AddrInUse => {
-                    panic!("Error: Port 5065 already in use, without reuse flag. Is a caRepeater running?");
+                    panic!(
+                        "Error: Port 5065 already in use, without reuse flag. Is a caRepeater running?"
+                    );
                 }
                 x => panic!("IO Error: {x}"),
             },
@@ -65,7 +67,9 @@ async fn read_socket(socket: &UdpSocket) {
                                 .join(" ")
                         );
                     } else {
-                        println!("Receied code 0 CA_PROTO_VERSION packet from {sender} but we don't understand the contents");
+                        println!(
+                            "Receied code 0 CA_PROTO_VERSION packet from {sender} but we don't understand the contents"
+                        );
                     }
                 }
                 13 => {

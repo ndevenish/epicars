@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
 use nom::{
-    multi::count,
-    number::complete::{be_f32, be_f64, be_i16, be_i32, be_i8, be_u16, be_u32},
     Parser,
+    multi::count,
+    number::complete::{be_f32, be_f64, be_i8, be_i16, be_i32, be_u16, be_u32},
 };
-use num::{traits::ToBytes, NumCast};
+use num::{NumCast, traits::ToBytes};
 use std::{
     cmp,
     convert::TryFrom,
@@ -164,10 +164,10 @@ impl DbrValue {
             },
             DBRBasicType::String => match self {
                 DbrValue::String(_) => self.clone(),
-                DbrValue::Char(val) => DbrValue::String(vec![String::from_utf8(
-                    val.iter().map(|c| *c as u8).collect(),
-                )
-                .map_err(|_| ErrorCondition::NoConvert)?]),
+                DbrValue::Char(val) => DbrValue::String(vec![
+                    String::from_utf8(val.iter().map(|c| *c as u8).collect())
+                        .map_err(|_| ErrorCondition::NoConvert)?,
+                ]),
                 _ => return Err(ErrorCondition::UnavailInServ),
             },
             DBRBasicType::Enum => match self {
