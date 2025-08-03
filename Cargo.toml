@@ -1,7 +1,10 @@
 [package]
-name = "epics"
+name = "epics-cars"
 version = "0.1.0"
 edition = "2024"
+license = "BSD-3-Clause"
+repository = "https://github.com/ndevenish/epics-cars"
+description = "Standalone, pure rust implementation of EPICS CA protocol"
 
 [dependencies]
 nom = "8.0.0"

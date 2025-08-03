@@ -1,9 +1,7 @@
 use std::io::ErrorKind;
 
-use epics::{
-    messages::{self, RawMessage, parse_search_packet},
-    new_reusable_udp_socket,
-};
+use epics_cars::messages::{self, RawMessage, parse_search_packet};
+use epics_cars::server::new_reusable_udp_socket;
 use tokio::{net::UdpSocket, task::yield_now};
 
 #[tokio::main(flavor = "current_thread")]
