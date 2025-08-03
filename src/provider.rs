@@ -79,6 +79,9 @@ struct PV {
     /// minimum length will be increased. If None, then only the current
     /// array length items will be sent.
     minimum_length: Option<usize>,
+    /// The optional type to serialize as. This is useful for forcing an
+    /// otherwise String DbrValue to be DbrValue::Char when sending off.
+    force_dbr_type: Option<DBRBasicType>,
     /// The last time this value was written
     timestamp: SystemTime,
     /// Channel to send updates to EPIC clients
@@ -99,6 +102,14 @@ impl PV {
     /// sending a string as a Char array instead of restricting to 40-chars)
     pub fn load_for_ca(&self) -> Dbr {
         let mut value = self.value.lock().unwrap().clone();
+        if let Some(to_type) = self.force_dbr_type
+            && value.get_type() != to_type
+        {
+            value = value
+                .convert_to(to_type)
+                .expect("PV Logic should ensure stored value can always be converted")
+        }
+        // Handle minimum length
         if let Some(size) = self.minimum_length
             && value.get_count() < size
         {
@@ -127,10 +138,11 @@ impl PV {
     }
 
     pub fn store(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
-        // Not update the shared value
+        // Now update the shared value
         {
             let stored_value = &mut *self.value.lock().unwrap();
             *stored_value = value.convert_to(stored_value.get_type())?;
+            // Update the minimum length, if we are now longer
             if let Some(size) = self.minimum_length
                 && stored_value.get_count() > size
             {
@@ -264,6 +276,7 @@ impl IntercomProvider {
             sender: broadcast::channel(16).0,
             triggers: Vec::new(),
             minimum_length,
+            force_dbr_type: None,
         }));
         let mut pvmap = self.pvs.lock().unwrap();
         if pvmap.contains_key(name) {
