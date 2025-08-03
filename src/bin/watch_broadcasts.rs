@@ -1,8 +1,20 @@
-use std::io::ErrorKind;
+use std::{
+    io::{self, ErrorKind},
+    net::ToSocketAddrs,
+};
 
 use epicars::messages::{self, RawMessage, parse_search_packet};
-use epicars::server::new_reusable_udp_socket;
+use socket2::{Domain, Protocol, Type};
 use tokio::{net::UdpSocket, task::yield_now};
+
+pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<std::net::UdpSocket> {
+    let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+    let addr = address.to_socket_addrs()?.next().unwrap();
+    socket.bind(&addr.into())?;
+    Ok(socket.into())
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {

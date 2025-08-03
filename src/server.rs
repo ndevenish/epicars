@@ -18,13 +18,13 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    database::{DBR_BASIC_STRING, DBRType, Dbr},
+    dbr::{DBR_BASIC_STRING, DBRType, Dbr},
     messages::{
         self, AccessRights, AsBytes, CAMessage, CreateChannel, CreateChannelResponse, ECAError,
         ErrorCondition, EventAddResponse, Message, MessageError, MonitorMask, ReadNotify,
         ReadNotifyResponse, Write, parse_search_packet,
     },
-    provider::Provider,
+    providers::Provider,
 };
 
 #[doc(hidden)]

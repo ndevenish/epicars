@@ -17,7 +17,7 @@ use nom::{
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, net::TcpStream};
 
-use crate::database::{DBRBasicType, DBRType};
+use crate::dbr::{DBRBasicType, DBRType};
 
 const EPICS_VERSION: u16 = 13;
 
