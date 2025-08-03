@@ -456,7 +456,7 @@ impl DBRType {
     /// the actual value itself. This is given as a lookup table rather
     /// than a calculations.
     ///
-    /// See https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types
+    /// See <https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types>
     pub fn get_metadata_padding(&self) -> usize {
         match (self.category, self.basic_type) {
             (DBRCategory::Status, DBRBasicType::Char) => 1,
