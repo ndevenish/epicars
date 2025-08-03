@@ -11,7 +11,7 @@ use tokio::sync::{
 };
 
 use crate::{
-    database::{DBRType, Dbr, DbrValue, IntoDBRBasicType, Status},
+    database::{DBRBasicType, DBRType, Dbr, DbrValue, IntoDBRBasicType, Status},
     messages::{self, ErrorCondition, MonitorMask},
 };
 
@@ -109,6 +109,21 @@ impl PV {
             timestamp: self.timestamp,
             value,
         }
+    }
+    /// Store a value from the CA protocol to the PV
+    ///
+    /// In this case, there are special behaviour like e.g. parsing
+    /// numbers out of string data type
+    fn store_from_ca(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
+        let native_type = self.value.lock().unwrap().get_type();
+        let value = if value.get_type() == DBRBasicType::String {
+            value
+                .parse_into(native_type)
+                .map_err(|_| ErrorCondition::NoConvert)?
+        } else {
+            value.clone()
+        };
+        self.store(&value)
     }
 
     pub fn store(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
@@ -326,7 +341,7 @@ impl Provider for IntercomProvider {
             .lock()
             .unwrap();
         println!("Provider: Processing write: {value:?}");
-        if let Err(e) = pv.store(value.value()) {
+        if let Err(e) = pv.store_from_ca(value.value()) {
             println!("    Error: {e:?}");
             Err(e)
         } else {

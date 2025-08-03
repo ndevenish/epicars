@@ -5,7 +5,7 @@ use nom::{
     multi::count,
     number::complete::{be_f32, be_f64, be_i8, be_i16, be_i32, be_u16, be_u32},
 };
-use num::{NumCast, traits::ToBytes};
+use num::{NumCast, cast::AsPrimitive, traits::ToBytes};
 use std::{
     cmp,
     convert::TryFrom,
@@ -37,7 +37,7 @@ fn string_to_fixed_length_bytes(value: &str, max_length: usize) -> Vec<u8> {
     buffer
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DbrValue {
     Enum(u16),
     String(Vec<String>),
@@ -50,6 +50,12 @@ pub enum DbrValue {
 /// Returned when trying to resize a DBR but it's a data type that can't
 #[derive(Debug)]
 pub struct DbrValueIsEnum;
+
+#[derive(Debug)]
+pub enum DbrParseError {
+    SelfIsNotString,
+    CannotParse(String),
+}
 
 impl DbrValue {
     pub fn get_count(&self) -> usize {
@@ -74,6 +80,46 @@ impl DbrValue {
             DbrValue::Double(_) => DBRBasicType::Double,
         }
     }
+
+    /// Convert a DbrValue::String to another data type by parsing the numeric string
+    ///
+    /// Fails if the DbrValue is not String or if the value cannot be parsed. Asking
+    /// for a convertion from String->String just copies without doing any extra parsing.
+    pub fn parse_into(&self, basic_type: DBRBasicType) -> Result<DbrValue, DbrParseError> {
+        let DbrValue::String(val) = self else {
+            return Err(DbrParseError::SelfIsNotString);
+        };
+        Ok(match basic_type {
+            DBRBasicType::Enum => todo!(),
+            DBRBasicType::String => self.clone(),
+            DBRBasicType::Char => DbrValue::Char(
+                val.iter()
+                    .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
+                    .collect::<Result<Vec<_>, DbrParseError>>()?,
+            ),
+            DBRBasicType::Int => DbrValue::Int(
+                val.iter()
+                    .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
+                    .collect::<Result<Vec<_>, DbrParseError>>()?,
+            ),
+            DBRBasicType::Long => DbrValue::Long(
+                val.iter()
+                    .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
+                    .collect::<Result<Vec<_>, DbrParseError>>()?,
+            ),
+            DBRBasicType::Float => DbrValue::Float(
+                val.iter()
+                    .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
+                    .collect::<Result<Vec<_>, DbrParseError>>()?,
+            ),
+            DBRBasicType::Double => DbrValue::Double(
+                val.iter()
+                    .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
+                    .collect::<Result<Vec<_>, DbrParseError>>()?,
+            ),
+        })
+    }
+
     pub fn convert_to(&self, basic_type: DBRBasicType) -> Result<DbrValue, ErrorCondition> {
         /// Utility function so that we don't have to repeat the map iter conversion
         fn _try_convert_vec<T, U>(from: &[T]) -> Result<Vec<U>, ErrorCondition>
@@ -85,6 +131,18 @@ impl DbrValue {
                 .map(|n| NumCast::from(*n).ok_or(ErrorCondition::NoConvert))
                 .collect()
         }
+        /// Convert a single-item string to a numeric array
+        fn _encode_string<T>(from: &Vec<String>) -> Result<Vec<T>, ErrorCondition>
+        where
+            T: Copy + 'static,
+            u8: AsPrimitive<T>,
+        {
+            Ok(match from.as_slice() {
+                [] => Vec::new(),
+                [val] => val.as_bytes().iter().map(|c| c.as_()).collect(),
+                _ => Err(ErrorCondition::NoConvert)?,
+            })
+        }
 
         Ok(match basic_type {
             DBRBasicType::Char => match self {
@@ -93,11 +151,7 @@ impl DbrValue {
                 DbrValue::Long(val) => DbrValue::Char(_try_convert_vec(val)?),
                 DbrValue::Float(val) => DbrValue::Char(_try_convert_vec(val)?),
                 DbrValue::Double(val) => DbrValue::Char(_try_convert_vec(val)?),
-                DbrValue::String(val) => DbrValue::Char(
-                    val.iter()
-                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
-                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
-                ),
+                DbrValue::String(val) => DbrValue::Char(_encode_string(val)?),
                 DbrValue::Enum(val) => {
                     DbrValue::Char(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
@@ -108,11 +162,7 @@ impl DbrValue {
                 DbrValue::Long(val) => DbrValue::Int(_try_convert_vec(val)?),
                 DbrValue::Float(val) => DbrValue::Int(_try_convert_vec(val)?),
                 DbrValue::Double(val) => DbrValue::Int(_try_convert_vec(val)?),
-                DbrValue::String(val) => DbrValue::Int(
-                    val.iter()
-                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
-                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
-                ),
+                DbrValue::String(val) => DbrValue::Int(_encode_string(val)?),
                 DbrValue::Enum(val) => {
                     DbrValue::Int(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
@@ -123,11 +173,7 @@ impl DbrValue {
                 DbrValue::Long(_val) => self.clone(),
                 DbrValue::Float(val) => DbrValue::Long(_try_convert_vec(val)?),
                 DbrValue::Double(val) => DbrValue::Long(_try_convert_vec(val)?),
-                DbrValue::String(val) => DbrValue::Long(
-                    val.iter()
-                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
-                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
-                ),
+                DbrValue::String(val) => DbrValue::Long(_encode_string(val)?),
                 DbrValue::Enum(val) => {
                     DbrValue::Long(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
@@ -138,11 +184,7 @@ impl DbrValue {
                 DbrValue::Long(val) => DbrValue::Float(_try_convert_vec(val)?),
                 DbrValue::Float(_val) => self.clone(),
                 DbrValue::Double(val) => DbrValue::Float(_try_convert_vec(val)?),
-                DbrValue::String(val) => DbrValue::Float(
-                    val.iter()
-                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
-                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
-                ),
+                DbrValue::String(val) => DbrValue::Float(_encode_string(val)?),
                 DbrValue::Enum(val) => {
                     DbrValue::Float(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
@@ -153,11 +195,7 @@ impl DbrValue {
                 DbrValue::Long(val) => DbrValue::Double(_try_convert_vec(val)?),
                 DbrValue::Float(val) => DbrValue::Double(_try_convert_vec(val)?),
                 DbrValue::Double(_val) => self.clone(),
-                DbrValue::String(val) => DbrValue::Double(
-                    val.iter()
-                        .map(|s| s.parse().map_err(|_| ErrorCondition::NoConvert))
-                        .collect::<Result<Vec<_>, ErrorCondition>>()?,
-                ),
+                DbrValue::String(val) => DbrValue::Double(_encode_string(val)?),
                 DbrValue::Enum(val) => {
                     DbrValue::Double(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
@@ -716,5 +754,15 @@ mod tests {
             .to_bytes(None);
         assert_eq!(out_data.len(), example_packet.len());
         assert_eq!(out_data, example_packet);
+    }
+
+    #[test]
+    fn test_string_to_char() {
+        let test_string = "a test string".to_string();
+        let s = DbrValue::String(vec![test_string.clone()]);
+        let as_char = s.convert_to(DBRBasicType::Char).unwrap();
+        let re_s = as_char.convert_to(DBRBasicType::String).unwrap();
+
+        assert_eq!(s, re_s);
     }
 }
