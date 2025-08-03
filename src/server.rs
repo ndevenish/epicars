@@ -27,6 +27,7 @@ use crate::{
     provider::Provider,
 };
 
+#[doc(hidden)]
 pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<std::net::UdpSocket> {
     let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_port(true)?;

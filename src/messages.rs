@@ -44,7 +44,7 @@ pub trait CAMessage: TryFrom<RawMessage> {
 /// bytes (although this will not avoid the necessity of adding a zero
 /// byte to the end of String).
 ///
-/// Other messages can be parsed from a RawMessage with TryFrom<RawMessage>.
+/// Other messages can be parsed from a RawMessage with [`TryFrom<RawMessage>`].
 #[derive(Default, Debug)]
 pub struct RawMessage {
     pub command: u16,

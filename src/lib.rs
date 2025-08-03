@@ -12,7 +12,8 @@
 //! control layer for the facility.
 //!
 //! EPICArs approaches the problem by separating:
-//! - API representation of all the message types
+//! - Mapping and serialization/deserialization of message types, in [messages].
+//! - Representing data for transferring back and forth ("DBR" types) via CA in [database].
 //!
 //! [EPICS CA protocol]:
 //!     https://docs.epics-controls.org/en/latest/internal/ca_protocol.html
