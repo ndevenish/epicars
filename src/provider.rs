@@ -167,6 +167,20 @@ impl PV {
     }
 }
 
+impl Default for PV {
+    fn default() -> Self {
+        PV {
+            name: String::new(),
+            value: Arc::new(Mutex::new(DbrValue::Int(vec![0]))),
+            minimum_length: None,
+            force_dbr_type: None,
+            timestamp: SystemTime::now(),
+            sender: broadcast::Sender::new(16),
+            triggers: Vec::new(),
+        }
+    }
+}
+
 /// Typed interface to reading single values to/from a PV
 #[derive(Clone)]
 pub struct Intercom<T>
@@ -249,6 +263,35 @@ where
 }
 
 #[derive(Debug)]
+pub struct StringIntercom {
+    pv: Arc<Mutex<PV>>,
+}
+
+impl StringIntercom {
+    fn new(pv: Arc<Mutex<PV>>) -> Self {
+        assert!(pv.lock().unwrap().value.lock().unwrap().get_type() == DBRBasicType::String);
+        Self { pv }
+    }
+    pub fn load(&self) -> String {
+        let DbrValue::String(value) = self.pv.lock().unwrap().load() else {
+            panic!("StringIntercom PV is not of string type!");
+        };
+        match value.as_slice() {
+            [] => String::new(),
+            [value] => value.clone(),
+            _ => panic!("Got multi-value string DBRValue in StringIntercom!"),
+        }
+    }
+    pub fn store(&mut self, value: &str) {
+        self.pv
+            .lock()
+            .unwrap()
+            .store(&vec![value.to_owned()].into())
+            .expect("Provider logic should ensure this never fails");
+    }
+}
+
+#[derive(Debug)]
 pub struct PVAlreadyExists;
 
 #[derive(Clone, Default)]
@@ -263,27 +306,14 @@ impl IntercomProvider {
         }
     }
 
-    fn create_pv(
-        &mut self,
-        name: &str,
-        initial_value: DbrValue,
-        minimum_length: Option<usize>,
-    ) -> Result<Arc<Mutex<PV>>, PVAlreadyExists> {
-        let pv = Arc::new(Mutex::new(PV {
-            name: name.to_owned(),
-            value: Arc::new(Mutex::new(initial_value)),
-            timestamp: SystemTime::now(),
-            sender: broadcast::channel(16).0,
-            triggers: Vec::new(),
-            minimum_length,
-            force_dbr_type: None,
-        }));
+    fn register_pv(&mut self, pv: Arc<Mutex<PV>>) -> Result<(), PVAlreadyExists> {
+        let name = &pv.lock().unwrap().name;
         let mut pvmap = self.pvs.lock().unwrap();
         if pvmap.contains_key(name) {
             return Err(PVAlreadyExists);
         }
-        let _ = pvmap.insert(name.to_string(), pv.clone());
-        Ok(pv)
+        let _ = pvmap.insert(name.to_owned(), pv.clone());
+        Ok(())
     }
 
     pub fn add_pv<T>(
@@ -296,7 +326,12 @@ impl IntercomProvider {
         for<'a> Vec<T>: TryFrom<&'a DbrValue>,
         DbrValue: From<Vec<T>>,
     {
-        let pv = self.create_pv(name, DbrValue::from(vec![initial_value.clone()]), None)?;
+        let pv = Arc::new(Mutex::new(PV {
+            name: name.to_owned(),
+            value: Arc::new(Mutex::new(DbrValue::from(vec![initial_value.clone()]))),
+            ..Default::default()
+        }));
+        self.register_pv(pv.clone())?;
         Ok(Intercom::<T>::new(pv))
     }
 
@@ -311,8 +346,32 @@ impl IntercomProvider {
         for<'a> Vec<T>: TryFrom<&'a DbrValue>,
         DbrValue: From<Vec<T>>,
     {
-        let pv = self.create_pv(name, DbrValue::from(initial_value.clone()), minimum_length)?;
+        // let pv = self.create_pv(name, DbrValue::from(initial_value.clone()), minimum_length)?;
+        let pv = Arc::new(Mutex::new(PV {
+            name: name.to_owned(),
+            value: Arc::new(Mutex::new(DbrValue::from(initial_value.clone()))),
+            minimum_length,
+            ..Default::default()
+        }));
+        self.register_pv(pv.clone())?;
         Ok(VecIntercom::<T>::new(pv))
+    }
+
+    pub fn add_string_pv(
+        &mut self,
+        name: &str,
+        initial_value: &str,
+        minimum_u8_len: Option<usize>,
+    ) -> Result<StringIntercom, PVAlreadyExists> {
+        let pv = Arc::new(Mutex::new(PV {
+            name: name.to_owned(),
+            minimum_length: minimum_u8_len,
+            force_dbr_type: Some(DBRBasicType::Char),
+            value: Arc::new(Mutex::new(DbrValue::String(vec![initial_value.to_owned()]))),
+            ..Default::default()
+        }));
+        self.register_pv(pv.clone())?;
+        Ok(StringIntercom::new(pv))
     }
 }
 
@@ -378,5 +437,31 @@ impl Provider for IntercomProvider {
             .unwrap();
         pv.triggers.push(trigger);
         Ok(pv.sender.subscribe())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use crate::{
+        database::DBRBasicType,
+        provider::{PV, StringIntercom},
+    };
+
+    #[test]
+    fn test_string_intercom() {
+        let pv = Arc::new(Mutex::new(PV {
+            name: "TEST".to_owned(),
+            value: Arc::new(Mutex::new(vec!["Test String".to_owned()].into())),
+            force_dbr_type: Some(DBRBasicType::Char),
+            ..Default::default()
+        }));
+        let si = StringIntercom::new(pv.clone());
+        assert_eq!(si.load(), "Test String");
+        assert_eq!(
+            pv.lock().unwrap().load_for_ca().data_type().basic_type,
+            DBRBasicType::Char
+        );
     }
 }

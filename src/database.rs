@@ -345,6 +345,7 @@ impl_dbrvalue_conversions_between!(Int, i16);
 impl_dbrvalue_conversions_between!(Long, i32);
 impl_dbrvalue_conversions_between!(Float, f32);
 impl_dbrvalue_conversions_between!(Double, f64);
+impl_dbrvalue_conversions_between!(String, String);
 
 /// Basic DBR Data types, independent of category
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
