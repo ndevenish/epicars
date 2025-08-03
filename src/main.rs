@@ -13,9 +13,13 @@ async fn main() {
 
     let mut provider = IntercomProvider::new();
     let mut value = provider.add_pv("something", 42i32).unwrap();
-    let _vecvalue = provider.add_vec_pv("something2", vec![0, 1, 2, 4, 5], Some(10));
-    let _svalue = provider.add_string_pv("FILENAME", "c:\\some_file.cif", Some(32));
-    // let provider = BasicProvider {};
+    let _vecvalue = provider
+        .add_vec_pv("something2", vec![0, 1, 2, 4, 5], Some(10))
+        .unwrap();
+    let _svalue = provider
+        .add_string_pv("FILENAME", "c:\\some_file.cif", Some(32))
+        .unwrap();
+
     let _server = ServerBuilder::new(provider)
         .beacon_port(5065)
         .start()
