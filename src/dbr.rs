@@ -1,5 +1,22 @@
 #![allow(dead_code)]
 
+//! Represent CA DBR representations, for data interchange
+//!
+//! CA defines thirty-five [DBR] kinds as special structures used to transfer data back
+//! and forth. These can be broken down into seven basic array types, which define the
+//! data, and five categories of attached metadata.
+//!
+//! The basic types are all signed - `CHAR` ([i8]), `INT` ([i16]), `LONG` ([i32]),
+//! `FLOAT` ([f32]), `DOUBLE` ([f64]), and `ENUM` and `STRING`, which have special
+//! meanings. The protocol also defines `SHORT` as an alias for `INT` - this is ignored
+//! here to avoid excessive confusion.
+//!
+//! The five categories are represented as [Dbr::Basic] (where there is no metadata,
+//! only values are present in the message payload), `STS`
+//!
+//! [DBR]:
+//!     https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types
+//!
 use nom::{
     Parser,
     multi::count,
