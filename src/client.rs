@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use log::debug;
 use pnet::datalink;
 use std::{
     collections::HashMap,
@@ -57,7 +58,7 @@ impl Default for Client {
                 _ => None,
             })
             .collect();
-        println!("Addresses: {broadcast_ips:?}");
+        debug!("Addresses: {broadcast_ips:?}");
         Client {
             beacon_port: 5065,
             search_port: 5064,

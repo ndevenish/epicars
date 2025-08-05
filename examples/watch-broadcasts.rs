@@ -95,9 +95,7 @@ async fn read_socket(socket: &UdpSocket) {
                         )
                     }
                 }
-                _ => {
-                    println!()
-                }
+                _ => warn!("Unexpected broadcast packet received!"),
             }
         } else {
             error!("Got an error parsing a raw message; was it a real CA message? {msg_buf:x?}");

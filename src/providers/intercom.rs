@@ -5,6 +5,7 @@ use std::{
     time::SystemTime,
 };
 
+use log::{error, info};
 use tokio::sync::{
     broadcast::{self},
     mpsc::{self, error::TrySendError},
@@ -358,9 +359,9 @@ impl Provider for IntercomProvider {
             .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
-        println!("Provider: Processing write: {value:?}");
+        info!("Provider: Processing write: {value:?}");
         if let Err(e) = pv.store_from_ca(value.value()) {
-            println!("    Error: {e:?}");
+            error!("    Error: {e:?}");
             Err(e)
         } else {
             Ok(())
