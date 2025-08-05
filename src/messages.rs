@@ -17,7 +17,7 @@ use nom::{
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, net::TcpStream};
 
-use crate::database::{DBRBasicType, DBRType};
+use crate::dbr::{DBRBasicType, DBRType};
 
 const EPICS_VERSION: u16 = 13;
 
@@ -44,7 +44,7 @@ pub trait CAMessage: TryFrom<RawMessage> {
 /// bytes (although this will not avoid the necessity of adding a zero
 /// byte to the end of String).
 ///
-/// Other messages can be parsed from a RawMessage with TryFrom<RawMessage>.
+/// Other messages can be parsed from a RawMessage with [`TryFrom<RawMessage>`].
 #[derive(Default, Debug)]
 pub struct RawMessage {
     pub command: u16,
@@ -1352,7 +1352,7 @@ impl std::fmt::Display for ErrorCondition {
                 Self::TooLarge =>
                     "The requested data transfer is greater than available memory or EPICS_CA_MAX_ARRAY_BYTES",
                 Self::UnavailInServ => "Not supported by attached service",
-                Self::UnrespTmo => "?",
+                Self::UnrespTmo => "Virtual circuit unresponsive",
             }
         )
     }

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use epics_cars::{provider::IntercomProvider, server::ServerBuilder};
+use epicars::{ServerBuilder, providers::IntercomProvider};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() {
