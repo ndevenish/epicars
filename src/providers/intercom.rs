@@ -13,7 +13,7 @@ use tracing::{error, info};
 
 use crate::{
     Provider,
-    dbr::{DBRBasicType, DBRType, Dbr, DbrValue, IntoDBRBasicType, Status},
+    dbr::{Dbr, DbrBasicType, DbrType, DbrValue, IntoDbrBasicType, Status},
     messages::{self, ErrorCondition, MonitorMask},
 };
 
@@ -28,7 +28,7 @@ struct PV {
     minimum_length: Option<usize>,
     /// The optional type to serialize as. This is useful for forcing an
     /// otherwise String DbrValue to be DbrValue::Char when sending off.
-    force_dbr_type: Option<DBRBasicType>,
+    force_dbr_type: Option<DbrBasicType>,
     /// The last time this value was written
     timestamp: SystemTime,
     /// Channel to send updates to EPIC clients
@@ -74,7 +74,7 @@ impl PV {
     /// numbers out of string data type
     fn store_from_ca(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
         let native_type = self.value.lock().unwrap().get_type();
-        let value = if value.get_type() == DBRBasicType::String {
+        let value = if value.get_type() == DbrBasicType::String {
             value
                 .parse_into(native_type)
                 .map_err(|_| ErrorCondition::NoConvert)?
@@ -132,7 +132,7 @@ impl Default for PV {
 #[derive(Clone)]
 pub struct Intercom<T>
 where
-    T: IntoDBRBasicType,
+    T: IntoDbrBasicType,
 {
     pv: Arc<Mutex<PV>>,
     _marker: PhantomData<T>,
@@ -140,7 +140,7 @@ where
 
 impl<T> Intercom<T>
 where
-    T: IntoDBRBasicType + Clone + Default,
+    T: IntoDbrBasicType + Clone + Default,
     for<'a> Vec<T>: TryFrom<&'a DbrValue>,
     DbrValue: From<Vec<T>>,
 {
@@ -174,7 +174,7 @@ where
 #[derive(Clone)]
 pub struct VecIntercom<T>
 where
-    T: IntoDBRBasicType,
+    T: IntoDbrBasicType,
 {
     pv: Arc<Mutex<PV>>,
     _marker: PhantomData<T>,
@@ -182,7 +182,7 @@ where
 
 impl<T> VecIntercom<T>
 where
-    T: IntoDBRBasicType + Clone + Default,
+    T: IntoDbrBasicType + Clone + Default,
     for<'a> Vec<T>: TryFrom<&'a DbrValue>,
     DbrValue: From<Vec<T>>,
 {
@@ -216,7 +216,7 @@ pub struct StringIntercom {
 
 impl StringIntercom {
     fn new(pv: Arc<Mutex<PV>>) -> Self {
-        assert!(pv.lock().unwrap().value.lock().unwrap().get_type() == DBRBasicType::String);
+        assert!(pv.lock().unwrap().value.lock().unwrap().get_type() == DbrBasicType::String);
         Self { pv }
     }
     pub fn load(&self) -> String {
@@ -226,7 +226,7 @@ impl StringIntercom {
         match value.as_slice() {
             [] => String::new(),
             [value] => value.clone(),
-            _ => panic!("Got multi-value string DBRValue in StringIntercom!"),
+            _ => panic!("Got multi-value string DbrValue in StringIntercom!"),
         }
     }
     pub fn store(&mut self, value: &str) {
@@ -269,7 +269,7 @@ impl IntercomProvider {
         initial_value: T,
     ) -> Result<Intercom<T>, PVAlreadyExists>
     where
-        T: IntoDBRBasicType + Clone + Default,
+        T: IntoDbrBasicType + Clone + Default,
         for<'a> Vec<T>: TryFrom<&'a DbrValue>,
         DbrValue: From<Vec<T>>,
     {
@@ -289,7 +289,7 @@ impl IntercomProvider {
         minimum_length: Option<usize>,
     ) -> Result<VecIntercom<T>, PVAlreadyExists>
     where
-        T: IntoDBRBasicType + Clone + Default,
+        T: IntoDbrBasicType + Clone + Default,
         for<'a> Vec<T>: TryFrom<&'a DbrValue>,
         DbrValue: From<Vec<T>>,
     {
@@ -313,7 +313,7 @@ impl IntercomProvider {
         let pv = Arc::new(Mutex::new(PV {
             name: name.to_owned(),
             minimum_length: minimum_u8_len,
-            force_dbr_type: Some(DBRBasicType::Char),
+            force_dbr_type: Some(DbrBasicType::Char),
             value: Arc::new(Mutex::new(DbrValue::String(vec![initial_value.to_owned()]))),
             ..Default::default()
         }));
@@ -330,7 +330,7 @@ impl Provider for IntercomProvider {
     fn read_value(
         &self,
         pv_name: &str,
-        _requested_type: Option<DBRType>,
+        _requested_type: Option<DbrType>,
     ) -> Result<Dbr, ErrorCondition> {
         let pv = {
             let pvmap = self.pvs.lock().unwrap();
@@ -371,7 +371,7 @@ impl Provider for IntercomProvider {
     fn monitor_value(
         &mut self,
         pv_name: &str,
-        _data_type: DBRType,
+        _data_type: DbrType,
         _data_count: usize,
         _mask: MonitorMask,
         trigger: mpsc::Sender<String>,
@@ -392,7 +392,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::{
-        dbr::DBRBasicType,
+        dbr::DbrBasicType,
         providers::intercom::{PV, StringIntercom},
     };
 
@@ -401,14 +401,14 @@ mod tests {
         let pv = Arc::new(Mutex::new(PV {
             name: "TEST".to_owned(),
             value: Arc::new(Mutex::new(vec!["Test String".to_owned()].into())),
-            force_dbr_type: Some(DBRBasicType::Char),
+            force_dbr_type: Some(DbrBasicType::Char),
             ..Default::default()
         }));
         let si = StringIntercom::new(pv.clone());
         assert_eq!(si.load(), "Test String");
         assert_eq!(
             pv.lock().unwrap().load_for_ca().data_type().basic_type,
-            DBRBasicType::Char
+            DbrBasicType::Char
         );
     }
 }

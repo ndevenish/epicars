@@ -7,7 +7,7 @@ use tokio::sync::{
 };
 
 use crate::{
-    dbr::{DBRType, Dbr},
+    dbr::{Dbr, DbrType},
     messages::{self, ErrorCondition, MonitorMask},
 };
 
@@ -28,7 +28,7 @@ pub trait Provider: Sync + Send + Clone + 'static {
     fn read_value(
         &self,
         pv_name: &str,
-        requested_type: Option<DBRType>,
+        requested_type: Option<DbrType>,
     ) -> Result<Dbr, ErrorCondition>;
 
     #[allow(unused_variables)]
@@ -57,7 +57,7 @@ pub trait Provider: Sync + Send + Clone + 'static {
     fn monitor_value(
         &mut self,
         pv_name: &str,
-        data_type: DBRType,
+        data_type: DbrType,
         data_count: usize,
         mask: MonitorMask,
         trigger: mpsc::Sender<String>,

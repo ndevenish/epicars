@@ -86,15 +86,15 @@ impl DbrValue {
             DbrValue::Double(val) => val.len(),
         }
     }
-    pub fn get_type(&self) -> DBRBasicType {
+    pub fn get_type(&self) -> DbrBasicType {
         match self {
-            DbrValue::Enum(_) => DBRBasicType::Enum,
-            DbrValue::String(_) => DBRBasicType::String,
-            DbrValue::Char(_) => DBRBasicType::Char,
-            DbrValue::Int(_) => DBRBasicType::Int,
-            DbrValue::Long(_) => DBRBasicType::Long,
-            DbrValue::Float(_) => DBRBasicType::Float,
-            DbrValue::Double(_) => DBRBasicType::Double,
+            DbrValue::Enum(_) => DbrBasicType::Enum,
+            DbrValue::String(_) => DbrBasicType::String,
+            DbrValue::Char(_) => DbrBasicType::Char,
+            DbrValue::Int(_) => DbrBasicType::Int,
+            DbrValue::Long(_) => DbrBasicType::Long,
+            DbrValue::Float(_) => DbrBasicType::Float,
+            DbrValue::Double(_) => DbrBasicType::Double,
         }
     }
 
@@ -102,34 +102,34 @@ impl DbrValue {
     ///
     /// Fails if the DbrValue is not String or if the value cannot be parsed. Asking
     /// for a convertion from String->String just copies without doing any extra parsing.
-    pub fn parse_into(&self, basic_type: DBRBasicType) -> Result<DbrValue, DbrParseError> {
+    pub fn parse_into(&self, basic_type: DbrBasicType) -> Result<DbrValue, DbrParseError> {
         let DbrValue::String(val) = self else {
             return Err(DbrParseError::SelfIsNotString);
         };
         Ok(match basic_type {
-            DBRBasicType::Enum => todo!(),
-            DBRBasicType::String => self.clone(),
-            DBRBasicType::Char => DbrValue::Char(
+            DbrBasicType::Enum => todo!(),
+            DbrBasicType::String => self.clone(),
+            DbrBasicType::Char => DbrValue::Char(
                 val.iter()
                     .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
                     .collect::<Result<Vec<_>, DbrParseError>>()?,
             ),
-            DBRBasicType::Int => DbrValue::Int(
+            DbrBasicType::Int => DbrValue::Int(
                 val.iter()
                     .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
                     .collect::<Result<Vec<_>, DbrParseError>>()?,
             ),
-            DBRBasicType::Long => DbrValue::Long(
+            DbrBasicType::Long => DbrValue::Long(
                 val.iter()
                     .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
                     .collect::<Result<Vec<_>, DbrParseError>>()?,
             ),
-            DBRBasicType::Float => DbrValue::Float(
+            DbrBasicType::Float => DbrValue::Float(
                 val.iter()
                     .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
                     .collect::<Result<Vec<_>, DbrParseError>>()?,
             ),
-            DBRBasicType::Double => DbrValue::Double(
+            DbrBasicType::Double => DbrValue::Double(
                 val.iter()
                     .map(|s| s.parse().map_err(|_| DbrParseError::CannotParse(s.clone())))
                     .collect::<Result<Vec<_>, DbrParseError>>()?,
@@ -137,7 +137,7 @@ impl DbrValue {
         })
     }
 
-    pub fn convert_to(&self, basic_type: DBRBasicType) -> Result<DbrValue, ErrorCondition> {
+    pub fn convert_to(&self, basic_type: DbrBasicType) -> Result<DbrValue, ErrorCondition> {
         /// Utility function so that we don't have to repeat the map iter conversion
         fn _try_convert_vec<T, U>(from: &[T]) -> Result<Vec<U>, ErrorCondition>
         where
@@ -162,7 +162,7 @@ impl DbrValue {
         }
 
         Ok(match basic_type {
-            DBRBasicType::Char => match self {
+            DbrBasicType::Char => match self {
                 DbrValue::Char(_val) => self.clone(),
                 DbrValue::Int(val) => DbrValue::Char(_try_convert_vec(val)?),
                 DbrValue::Long(val) => DbrValue::Char(_try_convert_vec(val)?),
@@ -173,7 +173,7 @@ impl DbrValue {
                     DbrValue::Char(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
             },
-            DBRBasicType::Int => match self {
+            DbrBasicType::Int => match self {
                 DbrValue::Char(val) => DbrValue::Int(_try_convert_vec(val)?),
                 DbrValue::Int(_val) => self.clone(),
                 DbrValue::Long(val) => DbrValue::Int(_try_convert_vec(val)?),
@@ -184,7 +184,7 @@ impl DbrValue {
                     DbrValue::Int(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
             },
-            DBRBasicType::Long => match self {
+            DbrBasicType::Long => match self {
                 DbrValue::Char(val) => DbrValue::Long(_try_convert_vec(val)?),
                 DbrValue::Int(val) => DbrValue::Long(_try_convert_vec(val)?),
                 DbrValue::Long(_val) => self.clone(),
@@ -195,7 +195,7 @@ impl DbrValue {
                     DbrValue::Long(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
             },
-            DBRBasicType::Float => match self {
+            DbrBasicType::Float => match self {
                 DbrValue::Char(val) => DbrValue::Float(_try_convert_vec(val)?),
                 DbrValue::Int(val) => DbrValue::Float(_try_convert_vec(val)?),
                 DbrValue::Long(val) => DbrValue::Float(_try_convert_vec(val)?),
@@ -206,7 +206,7 @@ impl DbrValue {
                     DbrValue::Float(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
             },
-            DBRBasicType::Double => match self {
+            DbrBasicType::Double => match self {
                 DbrValue::Char(val) => DbrValue::Double(_try_convert_vec(val)?),
                 DbrValue::Int(val) => DbrValue::Double(_try_convert_vec(val)?),
                 DbrValue::Long(val) => DbrValue::Double(_try_convert_vec(val)?),
@@ -217,7 +217,7 @@ impl DbrValue {
                     DbrValue::Double(vec![NumCast::from(*val).ok_or(ErrorCondition::NoConvert)?])
                 }
             },
-            DBRBasicType::String => match self {
+            DbrBasicType::String => match self {
                 DbrValue::String(_) => self.clone(),
                 DbrValue::Char(val) => DbrValue::String(vec![
                     String::from_utf8(val.iter().map(|c| *c as u8).collect())
@@ -225,7 +225,7 @@ impl DbrValue {
                 ]),
                 _ => return Err(ErrorCondition::UnavailInServ),
             },
-            DBRBasicType::Enum => match self {
+            DbrBasicType::Enum => match self {
                 DbrValue::Enum(_val) => self.clone(),
                 _ => return Err(ErrorCondition::NoConvert),
             },
@@ -286,19 +286,19 @@ impl DbrValue {
     }
 
     pub fn decode_value(
-        data_type: DBRBasicType,
+        data_type: DbrBasicType,
         item_count: usize,
         data: &[u8],
     ) -> Result<DbrValue, nom::Err<nom::error::Error<&[u8]>>> {
         match data_type {
-            DBRBasicType::Enum => {
+            DbrBasicType::Enum => {
                 assert!(
                     item_count == 1,
                     "Multiple item count makes no sense for enum"
                 );
                 Ok(DbrValue::Enum(be_u16.parse(data)?.1))
             }
-            DBRBasicType::String => Ok(DbrValue::String(
+            DbrBasicType::String => Ok(DbrValue::String(
                 data.chunks(40)
                     .map(|d| {
                         let strlen = d.iter().position(|&c| c == 0x00).unwrap();
@@ -307,11 +307,11 @@ impl DbrValue {
                     .map(|s| s.to_string())
                     .collect(),
             )),
-            DBRBasicType::Char => Ok(DbrValue::Char(count(be_i8, item_count).parse(data)?.1)),
-            DBRBasicType::Int => Ok(DbrValue::Int(count(be_i16, item_count).parse(data)?.1)),
-            DBRBasicType::Long => Ok(DbrValue::Long(count(be_i32, item_count).parse(data)?.1)),
-            DBRBasicType::Float => Ok(DbrValue::Float(count(be_f32, item_count).parse(data)?.1)),
-            DBRBasicType::Double => Ok(DbrValue::Double(count(be_f64, item_count).parse(data)?.1)),
+            DbrBasicType::Char => Ok(DbrValue::Char(count(be_i8, item_count).parse(data)?.1)),
+            DbrBasicType::Int => Ok(DbrValue::Int(count(be_i16, item_count).parse(data)?.1)),
+            DbrBasicType::Long => Ok(DbrValue::Long(count(be_i32, item_count).parse(data)?.1)),
+            DbrBasicType::Float => Ok(DbrValue::Float(count(be_f32, item_count).parse(data)?.1)),
+            DbrBasicType::Double => Ok(DbrValue::Double(count(be_f64, item_count).parse(data)?.1)),
         }
     }
 
@@ -340,21 +340,12 @@ macro_rules! impl_dbrvalue_conversions_between {
         impl TryFrom<&DbrValue> for Vec<$typ> {
             type Error = ErrorCondition;
             fn try_from(value: &DbrValue) -> Result<Self, Self::Error> {
-                Ok(match value.convert_to(DBRBasicType::$variant)? {
+                Ok(match value.convert_to(DbrBasicType::$variant)? {
                     DbrValue::$variant(v) => v,
                     _ => unreachable!(),
                 })
             }
         }
-        // impl TryFrom<&mut DbrValue> for Vec<$typ> {
-        //     type Error = ErrorCondition;
-        //     fn try_from(value: &mut DbrValue) -> Result<Self, Self::Error> {
-        //         Ok(match value.convert_to(DBRBasicType::$variant)? {
-        //             DbrValue::$variant(v) => v,
-        //             _ => unreachable!(),
-        //         })
-        //     }
-        // }
     };
 }
 impl_dbrvalue_conversions_between!(Char, i8);
@@ -366,7 +357,7 @@ impl_dbrvalue_conversions_between!(String, String);
 
 /// Basic DBR Data types, independent of category
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum DBRBasicType {
+pub enum DbrBasicType {
     String = 0,
     Int = 1,
     Float = 2,
@@ -375,7 +366,7 @@ pub enum DBRBasicType {
     Long = 5,
     Double = 6,
 }
-impl TryFrom<u16> for DBRBasicType {
+impl TryFrom<u16> for DbrBasicType {
     type Error = ();
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
@@ -392,15 +383,15 @@ impl TryFrom<u16> for DBRBasicType {
 }
 
 /// Marks a type as being convertible to a DBRValue representation
-pub trait IntoDBRBasicType {
-    fn get_dbr_basic_type() -> DBRBasicType;
+pub trait IntoDbrBasicType {
+    fn get_dbr_basic_type() -> DbrBasicType;
 }
 
 macro_rules! impl_into_dbr_basic_type {
     ($t:ty, $variant:ident) => {
-        impl IntoDBRBasicType for $t {
-            fn get_dbr_basic_type() -> DBRBasicType {
-                DBRBasicType::$variant
+        impl IntoDbrBasicType for $t {
+            fn get_dbr_basic_type() -> DbrBasicType {
+                DbrBasicType::$variant
             }
         }
     };
@@ -417,14 +408,14 @@ impl_into_dbr_basic_type!(String, String);
 
 /// Mapping of DBR categories
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum DBRCategory {
+pub enum DbrCategory {
     Basic = 0,
     Status = 1,
     Time = 2,
     Graphics = 3,
     Control = 4,
 }
-impl TryFrom<u16> for DBRCategory {
+impl TryFrom<u16> for DbrCategory {
     type Error = ();
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
@@ -439,17 +430,17 @@ impl TryFrom<u16> for DBRCategory {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct DBRType {
-    pub basic_type: DBRBasicType,
-    pub category: DBRCategory,
+pub struct DbrType {
+    pub basic_type: DbrBasicType,
+    pub category: DbrCategory,
 }
 
-pub const DBR_BASIC_STRING: DBRType = DBRType {
-    basic_type: DBRBasicType::String,
-    category: DBRCategory::Basic,
+pub const DBR_BASIC_STRING: DbrType = DbrType {
+    basic_type: DbrBasicType::String,
+    category: DbrCategory::Basic,
 };
 
-impl TryFrom<u16> for DBRType {
+impl TryFrom<u16> for DbrType {
     type Error = ();
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -459,13 +450,13 @@ impl TryFrom<u16> for DBRType {
     }
 }
 
-impl From<DBRType> for u16 {
-    fn from(value: DBRType) -> Self {
+impl From<DbrType> for u16 {
+    fn from(value: DbrType) -> Self {
         value.category as u16 * 7 + value.basic_type as u16
     }
 }
 
-impl DBRType {
+impl DbrType {
     /// Give the lookup for the padding for each DBR type
     ///
     /// When encoding a return packet, there is a datatype-specific
@@ -476,15 +467,15 @@ impl DBRType {
     /// See <https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types>
     pub fn get_metadata_padding(&self) -> usize {
         match (self.category, self.basic_type) {
-            (DBRCategory::Status, DBRBasicType::Char) => 1,
-            (DBRCategory::Status, DBRBasicType::Double) => 4,
-            (DBRCategory::Time, DBRBasicType::Int) => 2,
-            (DBRCategory::Time, DBRBasicType::Enum) => 2,
-            (DBRCategory::Time, DBRBasicType::Char) => 3,
-            (DBRCategory::Time, DBRBasicType::Double) => 4,
-            (DBRCategory::Graphics, DBRBasicType::Float) => 2,
-            (DBRCategory::Graphics, DBRBasicType::Char) => 1,
-            (DBRCategory::Control, DBRBasicType::Char) => 1,
+            (DbrCategory::Status, DbrBasicType::Char) => 1,
+            (DbrCategory::Status, DbrBasicType::Double) => 4,
+            (DbrCategory::Time, DbrBasicType::Int) => 2,
+            (DbrCategory::Time, DbrBasicType::Enum) => 2,
+            (DbrCategory::Time, DbrBasicType::Char) => 3,
+            (DbrCategory::Time, DbrBasicType::Double) => 4,
+            (DbrCategory::Graphics, DbrBasicType::Float) => 2,
+            (DbrCategory::Graphics, DbrBasicType::Char) => 1,
+            (DbrCategory::Control, DbrBasicType::Char) => 1,
             _ => 0,
         }
     }
@@ -536,23 +527,23 @@ impl Dbr {
             Dbr::Control => todo!(),
         }
     }
-    pub fn data_type(&self) -> DBRType {
+    pub fn data_type(&self) -> DbrType {
         match self {
-            Dbr::Basic(value) => DBRType {
+            Dbr::Basic(value) => DbrType {
                 basic_type: value.get_type(),
-                category: DBRCategory::Basic,
+                category: DbrCategory::Basic,
             },
-            Dbr::Status { status: _, value } => DBRType {
+            Dbr::Status { status: _, value } => DbrType {
                 basic_type: value.get_type(),
-                category: DBRCategory::Status,
+                category: DbrCategory::Status,
             },
             Dbr::Time {
                 status: _,
                 timestamp: _,
                 value,
-            } => DBRType {
+            } => DbrType {
                 basic_type: value.get_type(),
-                category: DBRCategory::Time,
+                category: DbrCategory::Time,
             },
             Dbr::Graphics => todo!(),
             Dbr::Control => todo!(),
@@ -560,25 +551,25 @@ impl Dbr {
     }
 
     pub fn from_bytes(
-        data_type: DBRType,
+        data_type: DbrType,
         data_count: usize,
         data: &[u8],
     ) -> Result<Dbr, nom::Err<nom::error::Error<&[u8]>>> {
-        if data_type.category == DBRCategory::Control {
+        if data_type.category == DbrCategory::Control {
             todo!("Don't understand CTRL structure usage well enough to parse yet");
         }
-        if data_type.category == DBRCategory::Graphics {
+        if data_type.category == DbrCategory::Graphics {
             todo!("Don't understand GR structure usage well enough to parse yet");
         }
 
-        let (data, status) = if data_type.category != DBRCategory::Basic {
+        let (data, status) = if data_type.category != DbrCategory::Basic {
             let (d, (status, severity)) = (be_i16, be_i16).parse(data)?;
             (d, Some(Status { status, severity }))
         } else {
             (data, None)
         };
 
-        let (data, timestamp) = if data_type.category == DBRCategory::Time {
+        let (data, timestamp) = if data_type.category == DbrCategory::Time {
             let (input, (time_s, time_ns)) = (be_i32, be_u32).parse(data)?;
             (
                 input,
@@ -597,18 +588,18 @@ impl Dbr {
         let value = DbrValue::decode_value(data_type.basic_type, data_count, data)?;
 
         Ok(match data_type.category {
-            DBRCategory::Basic => Dbr::Basic(value),
-            DBRCategory::Status => Dbr::Status {
+            DbrCategory::Basic => Dbr::Basic(value),
+            DbrCategory::Status => Dbr::Status {
                 status: status.unwrap(),
                 value,
             },
-            DBRCategory::Time => Dbr::Time {
+            DbrCategory::Time => Dbr::Time {
                 status: status.unwrap(),
                 timestamp: timestamp.unwrap(),
                 value,
             },
-            DBRCategory::Graphics => todo!(),
-            DBRCategory::Control => todo!(),
+            DbrCategory::Graphics => todo!(),
+            DbrCategory::Control => todo!(),
         })
     }
 
@@ -650,17 +641,17 @@ impl Dbr {
         Ok(real_elems)
     }
 
-    pub fn convert_to(&self, dbr_type: DBRType) -> Result<Dbr, ErrorCondition> {
+    pub fn convert_to(&self, dbr_type: DbrType) -> Result<Dbr, ErrorCondition> {
         let value = self.value().convert_to(dbr_type.basic_type)?;
         // First handle category changes - we can do this for some but not all
         Ok(match self {
             Dbr::Basic(_) => match dbr_type.category {
-                DBRCategory::Basic => Dbr::Basic(value),
-                DBRCategory::Status => Dbr::Status {
+                DbrCategory::Basic => Dbr::Basic(value),
+                DbrCategory::Status => Dbr::Status {
                     status: Status::default(),
                     value,
                 },
-                DBRCategory::Time => Dbr::Time {
+                DbrCategory::Time => Dbr::Time {
                     status: Status::default(),
                     timestamp: SystemTime::now(),
                     value,
@@ -668,12 +659,12 @@ impl Dbr {
                 _ => return Err(ErrorCondition::NoConvert),
             },
             Dbr::Status { status, .. } => match dbr_type.category {
-                DBRCategory::Basic => Dbr::Basic(value),
-                DBRCategory::Status => Dbr::Status {
+                DbrCategory::Basic => Dbr::Basic(value),
+                DbrCategory::Status => Dbr::Status {
                     status: *status,
                     value,
                 },
-                DBRCategory::Time => Dbr::Time {
+                DbrCategory::Time => Dbr::Time {
                     status: *status,
                     timestamp: SystemTime::now(),
                     value,
@@ -685,12 +676,12 @@ impl Dbr {
                 timestamp: ts,
                 value: _,
             } => match dbr_type.category {
-                DBRCategory::Basic => Dbr::Basic(value),
-                DBRCategory::Status => Dbr::Status {
+                DbrCategory::Basic => Dbr::Basic(value),
+                DbrCategory::Status => Dbr::Status {
                     status: *status,
                     value,
                 },
-                DBRCategory::Time => Dbr::Time {
+                DbrCategory::Time => Dbr::Time {
                     status: *status,
                     timestamp: *ts,
                     value,
@@ -712,11 +703,11 @@ mod tests {
     #[test]
     fn single_or_vec() {
         let v: DbrValue = vec![500i32].into();
-        assert!(v.convert_to(DBRBasicType::Int).is_ok());
-        assert!(v.convert_to(DBRBasicType::Char).is_err());
+        assert!(v.convert_to(DbrBasicType::Int).is_ok());
+        assert!(v.convert_to(DbrBasicType::Char).is_err());
         assert_eq!(v.to_bytes(None).1, vec![0x00, 0x00, 0x01, 0xF4]);
         assert_eq!(
-            v.convert_to(DBRBasicType::Int).unwrap().to_bytes(None).1,
+            v.convert_to(DbrBasicType::Int).unwrap().to_bytes(None).1,
             vec![0x01, 0xF4]
         );
 
@@ -737,12 +728,12 @@ mod tests {
                 .collect::<Vec<u8>>()
         );
         // Try converting this to an int with truncation
-        let v = v.convert_to(DBRBasicType::Int).unwrap();
+        let v = v.convert_to(DbrBasicType::Int).unwrap();
         assert_eq!(v.to_bytes(None).1, vec![0x01, 0xf4, 0x00, 0x0c]);
 
         assert_eq!(
             DbrValue::Float(vec![455.9f32])
-                .convert_to(DBRBasicType::Long)
+                .convert_to(DbrBasicType::Long)
                 .unwrap()
                 .to_bytes(NonZeroUsize::new(5))
                 .1,
@@ -764,9 +755,9 @@ mod tests {
         };
 
         let (_size, out_data) = dbr
-            .convert_to(DBRType {
-                basic_type: DBRBasicType::Long,
-                category: DBRCategory::Time,
+            .convert_to(DbrType {
+                basic_type: DbrBasicType::Long,
+                category: DbrCategory::Time,
             })
             .unwrap()
             .to_bytes(None);
@@ -778,8 +769,8 @@ mod tests {
     fn test_string_to_char() {
         let test_string = "a test string".to_string();
         let s = DbrValue::String(vec![test_string.clone()]);
-        let as_char = s.convert_to(DBRBasicType::Char).unwrap();
-        let re_s = as_char.convert_to(DBRBasicType::String).unwrap();
+        let as_char = s.convert_to(DbrBasicType::Char).unwrap();
+        let re_s = as_char.convert_to(DbrBasicType::String).unwrap();
 
         assert_eq!(s, re_s);
     }

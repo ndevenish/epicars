@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    dbr::{DBR_BASIC_STRING, DBRType, Dbr},
+    dbr::{DBR_BASIC_STRING, Dbr, DbrType},
     messages::{
         self, AccessRights, AsBytes, CAMessage, CreateChannel, CreateChannelResponse, ECAError,
         ErrorCondition, EventAddResponse, Message, MessageError, MonitorMask, ReadNotify,
@@ -245,7 +245,7 @@ struct Channel {
 
 #[derive(Debug)]
 struct PVSubscription {
-    data_type: DBRType,
+    data_type: DbrType,
     data_count: usize,
     subscription_id: u32,
     mask: MonitorMask,

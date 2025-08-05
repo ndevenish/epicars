@@ -17,7 +17,7 @@ use nom::{
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, net::TcpStream};
 
-use crate::dbr::{DBRBasicType, DBRType};
+use crate::dbr::{DbrBasicType, DbrType};
 
 const EPICS_VERSION: u16 = 13;
 
@@ -682,7 +682,7 @@ impl CAMessage for CreateChannel {
 
 #[derive(Debug)]
 pub struct CreateChannelResponse {
-    pub data_type: DBRBasicType,
+    pub data_type: DbrBasicType,
     pub data_count: u32,
     pub client_id: u32,
     pub server_id: u32,
@@ -971,7 +971,7 @@ pub struct MonitorMask {
 
 #[derive(Debug)]
 pub struct EventAdd {
-    pub data_type: DBRType,
+    pub data_type: DbrType,
     pub data_count: u32,
 
     /// Server SID of the channel on which to register this subscription
@@ -993,7 +993,7 @@ impl TryFrom<RawMessage> for EventAdd {
         let (_, (_, _, _, mask)) = (be_f32::<&[u8], MessageError>, be_f32, be_f32, be_u16)
             .parse(value.payload.as_slice())?;
         Ok(EventAdd {
-            data_type: DBRType::try_from(value.field_1_data_type)
+            data_type: DbrType::try_from(value.field_1_data_type)
                 .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
             data_count: value.field_2_data_count,
             server_id: value.field_3_parameter_1,
@@ -1031,7 +1031,7 @@ impl CAMessage for EventAdd {
 
 #[derive(Debug)]
 pub struct EventAddResponse {
-    pub data_type: DBRType,
+    pub data_type: DbrType,
     pub data_count: u32,
 
     // /// Server SID of the channel on which to register this subscription
@@ -1048,7 +1048,7 @@ impl TryFrom<RawMessage> for EventAddResponse {
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
         value.expect_id(1)?;
         Ok(EventAddResponse {
-            data_type: DBRType::try_from(value.field_1_data_type)
+            data_type: DbrType::try_from(value.field_1_data_type)
                 .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
             data_count: value.field_2_data_count,
             subscription_id: value.field_3_parameter_1,
@@ -1076,7 +1076,7 @@ pub struct EventCancel {}
 
 #[derive(Debug)]
 pub struct ReadNotify {
-    pub data_type: DBRType,
+    pub data_type: DbrType,
     pub data_count: u32,
     pub server_id: u32,
     pub client_ioid: u32,
@@ -1132,7 +1132,7 @@ impl CAMessage for ReadNotify {
 
 #[derive(Debug)]
 pub struct ReadNotifyResponse {
-    data_type: DBRType,
+    data_type: DbrType,
     data_count: u32,
     status_id: u32,
     client_ioid: u32,
@@ -1157,7 +1157,7 @@ impl TryFrom<RawMessage> for ReadNotifyResponse {
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
         value.expect_id(15)?;
         Ok(ReadNotifyResponse {
-            data_type: DBRType::try_from(value.field_1_data_type)
+            data_type: DbrType::try_from(value.field_1_data_type)
                 .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
             data_count: value.field_2_data_count,
             status_id: value.field_3_parameter_1,
@@ -1178,7 +1178,7 @@ pub struct WriteChannel {}
 
 #[derive(Debug)]
 pub struct Write {
-    pub data_type: DBRType,
+    pub data_type: DbrType,
     pub data_count: u32,
     pub server_id: u32,
     pub client_ioid: u32,
@@ -1203,7 +1203,7 @@ impl TryFrom<RawMessage> for Write {
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
         value.expect_id(4)?;
         Ok(Write {
-            data_type: DBRType::try_from(value.field_1_data_type)
+            data_type: DbrType::try_from(value.field_1_data_type)
                 .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
             data_count: value.field_2_data_count,
             server_id: value.field_3_parameter_1,
