@@ -1352,7 +1352,7 @@ impl std::fmt::Display for ErrorCondition {
                 Self::TooLarge =>
                     "The requested data transfer is greater than available memory or EPICS_CA_MAX_ARRAY_BYTES",
                 Self::UnavailInServ => "Not supported by attached service",
-                Self::UnrespTmo => "?",
+                Self::UnrespTmo => "Virtual circuit unresponsive",
             }
         )
     }
