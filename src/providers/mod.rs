@@ -1,3 +1,5 @@
+//! Interface between the CA Server and rust code
+
 pub mod intercom;
 pub use intercom::IntercomProvider;
 

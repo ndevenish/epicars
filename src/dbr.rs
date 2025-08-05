@@ -1,18 +1,51 @@
 #![allow(dead_code)]
 
-//! Represent CA DBR representations, for data interchange
+//! Represent CA DBR representations, for data interchange.
 //!
 //! CA defines thirty-five [DBR] kinds as special structures used to transfer data back
 //! and forth. These can be broken down into seven basic array types, which define the
-//! data, and five categories of attached metadata.
+//! data, and five categories of attached metadata. This module models this, and
+//! provides tools for handling generic data, converting between data types, and
+//! serialization/deserialization for communication over CA.
 //!
-//! The basic types are all signed - `CHAR` ([i8]), `INT` ([i16]), `LONG` ([i32]),
-//! `FLOAT` ([f32]), `DOUBLE` ([f64]), and `ENUM` and `STRING`, which have special
-//! meanings. The protocol also defines `SHORT` as an alias for `INT` - this is ignored
-//! here to avoid excessive confusion.
+//! The basic types are enumerated in [`DbrBasicType`] and are represented in
+//! [`DbrValue`] - all numeric data types in CA are signed, most can represent arrays
+//! (in this crate, not necessarily in the epics-base implementation of CA). The
+//! options, and the native type used to represent, are:
+//! - [`DbrValue::Char`] ([`Vec<i8>`])
+//! - [`DbrValue::Int`] ([`Vec<i16>`])
+//! - [`DbrValue::Long`] ([`Vec<i32>`])
+//! - [`DbrValue::Float`] ([`Vec<f32>`])
+//! - [`DbrValue::Double`] ([`Vec<f64>`])
+//! - [`DbrValue::Enum`] ([`u16`] by encoding) which is a special case - it reresents an
+//!   index of an array of `[[u8; 26]; 16]` string options, normally stored on
+//!   [`Dbr::Graphics`] but not yet implemented in this library.
+//! - [`DbrValue::String`] - natively in CA this is a `[u8; 40]`, but for interchange
+//!   here is represented by [`Vec<String>`], and is converted back and forth to
+//!   fixed-length as required for communication. There is minimal support for
+//!   manupulating this type, because mostly strings are implemented as Char arrays "in
+//!   the wild" of our facility, and I am currently unsure whether this is practically
+//!   ever manipulated as an array.
 //!
-//! The five categories are represented as [Dbr::Basic] (where there is no metadata,
-//! only values are present in the message payload), `STS`
+//! The protocol also defines `SHORT` as an alias for `INT` - this is ignored here to
+//! avoid excessive confusion.
+//!
+//! In CA, these seven data types can be sent with five kinds of metadata attached.
+//! These are enumerated by [`DbrCategory`] and represented by [`Dbr`]. The five
+//! categories are:
+//! - [`Dbr::Basic`] - No extra metadata included, just the plain data value.
+//! - [`Dbr::Status`] - Carries information about alarm status and severity in addition
+//!   to the data.
+//! - [`Dbr::Time`] - All of the information from [`Dbr::Status`], but with associated
+//!   timestamp information.
+//! - [`Dbr::Graphics`] - In CA, this controls information about the represented value
+//!   e.g. units, limits. **This is currently unimplemented**.
+//! - [`Dbr::Control`] - This can be used to fetch enum values, but further uses are
+//!   unclear. **This is currently unimplemented**.
+//!
+//! Both [`DbrCategory`] and [`DbrBasicType`] are combined in the [`DbrType`] struct,
+//! which provides interfaces to convert to/from the integer representation of types
+//! used by the CA protocol.
 //!
 //! [DBR]:
 //!     https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types
@@ -54,6 +87,7 @@ fn string_to_fixed_length_bytes(value: &str, max_length: usize) -> Vec<u8> {
     buffer
 }
 
+/// Represent actual data transferred over CA
 #[derive(Clone, Debug, PartialEq)]
 pub enum DbrValue {
     Enum(u16),
@@ -64,10 +98,11 @@ pub enum DbrValue {
     Float(Vec<f32>),
     Double(Vec<f64>),
 }
-/// Returned when trying to resize a DBR but it's a data type that can't
+/// Error returned when trying to resize a DBR but it's a data type that can't
 #[derive(Debug)]
-pub struct DbrValueIsEnum;
+pub struct DbrValueIsEnumError;
 
+/// Types of errors that can be returned from [`DbrValue::parse_into`]
 #[derive(Debug)]
 pub enum DbrParseError {
     SelfIsNotString,
@@ -315,9 +350,9 @@ impl DbrValue {
         }
     }
 
-    pub fn resize(&mut self, to_size: usize) -> Result<(), DbrValueIsEnum> {
+    pub fn resize(&mut self, to_size: usize) -> Result<(), DbrValueIsEnumError> {
         match self {
-            DbrValue::Enum(_) => Err(DbrValueIsEnum)?,
+            DbrValue::Enum(_) => Err(DbrValueIsEnumError)?,
             DbrValue::String(items) => items.resize(to_size, String::new()),
             DbrValue::Char(items) => items.resize(to_size, 0),
             DbrValue::Int(items) => items.resize(to_size, 0),
@@ -429,6 +464,7 @@ impl TryFrom<u16> for DbrCategory {
     }
 }
 
+/// Represent and translate from ID every possible combination of `DBR_*_*`
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct DbrType {
     pub basic_type: DbrBasicType,
@@ -481,6 +517,7 @@ impl DbrType {
     }
 }
 
+/// Represent alarm status of the record
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Status {
     pub status: i16,
@@ -490,11 +527,14 @@ pub struct Status {
 /// Structured unit of exchange for records in the CA protocol
 #[derive(Clone, Debug)]
 pub enum Dbr {
+    /// Value only, with no metadata
     Basic(DbrValue),
+    /// Alarm status metadata alongside the record value
     Status {
         status: Status,
         value: DbrValue,
     },
+    /// Timestamp, alarm status, and value
     Time {
         status: Status,
         timestamp: SystemTime,
@@ -505,6 +545,7 @@ pub enum Dbr {
 }
 
 impl Dbr {
+    /// Retrieve the [`DbrValue`] contained by this DBR
     pub fn value(&self) -> &DbrValue {
         match self {
             Dbr::Basic(value) => value,
@@ -518,6 +559,7 @@ impl Dbr {
             Dbr::Control => todo!(),
         }
     }
+    /// If a DBR type encoding alarm status, fetch that
     pub fn status(&self) -> Option<Status> {
         match self {
             Dbr::Basic(_) => None,

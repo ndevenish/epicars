@@ -38,6 +38,7 @@ pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<std::
     Ok(socket.into())
 }
 
+/// Serve data to CA clients by managing the Circuit/Channel lifecycles and interfacing with [`Provider`].
 pub struct Server<L: Provider> {
     /// Broadcast port to sent beacons
     beacon_port: u16,
@@ -556,6 +557,7 @@ impl<L: Provider> Circuit<L> {
     }
 }
 
+/// Construct a [Server] object by setting up multiple aspects before running
 pub struct ServerBuilder<L: Provider> {
     beacon_port: u16,
     search_port: u16,

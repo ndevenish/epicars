@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+//! Implementations of CA message types and utilities to constrct/[de]serialize them
+
 use std::{
     io::{self, Cursor},
     net::Ipv4Addr,

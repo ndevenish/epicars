@@ -18,7 +18,11 @@
 //! - A [Server] that manages connection lifecycles and other connection protocols.
 //! - [Provider], a trait that [Server] uses to talk to values in your application.
 //! - Example [providers] that provide built-in simple approaches to managing exposed
-//!   variables.
+//!   variables. Included at this time are:
+//!   - [`providers::IntercomProvider`]: Provides access objects to access record data
+//!     as a natively mapped data type. The access objects can be cloned and passed
+//!     across thread boundaries, and retain access to the same data (internally stored
+//!     in an `Arc<Mutex<dbr::DbrValue>>`).
 //!
 //! ## Example
 //!
@@ -68,7 +72,7 @@
 //!   left as "good enough" until PVAccess becomes common eough that we don't need the
 //!   CA interface any more.
 //! - Completely implement data types. Notably, `ENUM` types are not well handled, the
-//!   `CTRL` and `GR` data types are not handled, and some of the precise behaviour of
+//!   `CTRL` and `GR` data categories are not handled, and some of the precise behaviour of
 //!   `STR` have yet to be nailed down. These will be tackled when the use cases are
 //!   better understood.
 //!
