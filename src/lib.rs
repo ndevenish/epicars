@@ -5,6 +5,10 @@
 //! This crate is a pure-rust implementation of the [EPICS CA protocol]. It does not
 //! depend on the C-based [epics-base] project at all.
 //!
+//! <div class="warning">This is a very early version of this library. Interfaces or
+//! structure may be changed around wildly between versions until a comfortable
+//! final design is settled upon.</div>
+//!
 //! Whereas the full model of IOC and the EPICS database is extremely flexible and
 //! expansive, that comes at a complexity and tooling cost that is not necessary for a
 //! lot of smaller projects that just want to expose the ability to have a couple of
@@ -72,8 +76,8 @@
 //!   left as "good enough" until PVAccess becomes common eough that we don't need the
 //!   CA interface any more.
 //! - Completely implement data types. Notably, `ENUM` types are not well handled, the
-//!   `CTRL` and `GR` data categories are not handled, and some of the precise behaviour of
-//!   `STR` have yet to be nailed down. These will be tackled when the use cases are
+//!   `CTRL` and `GR` data categories are not handled, and some of the precise behaviour
+//!   of `STR` have yet to be nailed down. These will be tackled when the use cases are
 //!   better understood.
 //!
 //!
