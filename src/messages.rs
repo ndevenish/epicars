@@ -638,10 +638,9 @@ pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, MessageError> {
     Ok(messages)
 }
 
-/// Message CA_PROTO_CREATE_CHAN.
+/// Requests creation of channel.
 ///
-/// Requests creation of channel. Server will allocate required
-/// resources and return initialized SID. Sent over TCP.
+/// Server will allocate required resources and return initialized SID. Sent over TCP.
 #[derive(Debug)]
 pub struct CreateChannel {
     pub client_id: u32,
@@ -682,6 +681,7 @@ impl CAMessage for CreateChannel {
     }
 }
 
+/// Confirming that a [`CreateChannel`] request was successful.
 #[derive(Debug)]
 pub struct CreateChannelResponse {
     pub data_type: DbrBasicType,
@@ -717,6 +717,9 @@ impl CAMessage for CreateChannelResponse {
     }
 }
 
+/// Reports that channel creation failed.
+///
+/// This response is sent to when channel creation in [`CreateChannel`] fails.
 #[derive(Debug)]
 pub struct CreateChannelFailure {
     client_id: u32,
@@ -765,12 +768,11 @@ impl TryFrom<u32> for AccessRight {
     }
 }
 
-/// Message CA_PROTO_ACCESS_RIGHTS
+/// Notifies of access rights for a channel.
 ///
-/// Notifies of access rights for a channel. This value is determined
-/// based on host and client name and may change during runtime. Client
-/// cannot change access rights nor can it explicitly query its value,
-/// so last received value must be stored.
+/// This value is determined based on host and client name and may
+/// change during runtime. Client cannot change access rights nor can it
+/// explicitly query its value, so last received value must be stored.
 #[derive(Debug)]
 pub struct AccessRights {
     pub client_id: u32,
@@ -800,6 +802,9 @@ impl CAMessage for AccessRights {
     }
 }
 
+/// Connection verify used by CA_V43.
+///
+/// Sent over TCP.
 #[derive(Default)]
 pub struct Echo;
 
@@ -822,6 +827,9 @@ impl CAMessage for Echo {
     }
 }
 
+/// Sends local username to virtual circuit peer.
+///
+/// This name identifies the user and affects access rights.
 #[derive(Debug)]
 pub struct ClientName {
     pub name: String,
@@ -936,6 +944,10 @@ impl CAMessage for EventsOff {
     }
 }
 
+/// Clears a channel.
+///
+/// This command will cause server to release the associated channel resources and no
+/// longer accept any requests for this SID/CID.
 #[derive(Debug)]
 pub struct ClearChannel {
     pub server_id: u32,
