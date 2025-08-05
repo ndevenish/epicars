@@ -4,9 +4,9 @@ use std::{
 };
 
 use epicars::messages::{self, RawMessage, parse_search_packet};
-use log::{error, info, warn};
 use socket2::{Domain, Protocol, Type};
 use tokio::{net::UdpSocket, task::yield_now};
+use tracing::{error, info, warn};
 
 pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<std::net::UdpSocket> {
     let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
@@ -19,7 +19,7 @@ pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<std::
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    colog::init();
+    tracing_subscriber::fmt::init();
 
     tokio::spawn(async {
         let std_sock = match new_reusable_udp_socket("0.0.0.0:5065") {

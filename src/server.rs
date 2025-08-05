@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use core::str;
-use log::{debug, error, info, warn};
 use pnet::datalink;
 use socket2::{Domain, Protocol, Type};
 use std::{
@@ -17,6 +16,7 @@ use tokio::{
     sync::{broadcast, mpsc},
 };
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use crate::{
     dbr::{DBR_BASIC_STRING, DBRType, Dbr},

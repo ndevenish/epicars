@@ -5,11 +5,11 @@ use std::{
     time::SystemTime,
 };
 
-use log::{error, info};
 use tokio::sync::{
     broadcast::{self},
     mpsc::{self, error::TrySendError},
 };
+use tracing::{error, info};
 
 use crate::{
     Provider,

@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
-use log::debug;
 use pnet::datalink;
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr},
     time::Instant,
 };
+use tracing::debug;
 
 struct Circuit {
     address: Ipv4Addr,
