@@ -7,6 +7,7 @@ repository = "https://github.com/ndevenish/epics-cars"
 description = "Standalone, pure rust implementation of EPICS CA protocol"
 
 [dependencies]
+log = "0.4.27"
 nom = "8.0.0"
 num = "0.4.3"
 pnet = { version = "0.35.0", default-features = false, features = [
@@ -17,3 +18,6 @@ socket2 = { version = "0.5.8", features = ["all"] }
 thiserror = "2.0.11"
 tokio = { version = "1.43.1", features = ["macros", "net", "rt", "time", "io-util", "rt-multi-thread"] }
 tokio-util = "0.7.13"
+
+[dev-dependencies]
+colog = "1.3.0"

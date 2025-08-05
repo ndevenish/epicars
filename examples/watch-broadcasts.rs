@@ -4,6 +4,7 @@ use std::{
 };
 
 use epicars::messages::{self, RawMessage, parse_search_packet};
+use log::{error, info, warn};
 use socket2::{Domain, Protocol, Type};
 use tokio::{net::UdpSocket, task::yield_now};
 
@@ -18,11 +19,8 @@ pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<std::
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    // const BEACON: Token = Token(0);
-    // const SEARCH: Token = Token(1);
+    colog::init();
 
-    // let mut poll = mio::Poll::new().unwrap();
-    // let mut events = mio::Events::with_capacity(128);
     tokio::spawn(async {
         let std_sock = match new_reusable_udp_socket("0.0.0.0:5065") {
             Ok(x) => x,
@@ -51,7 +49,7 @@ async fn main() {
             read_socket(&socket_search).await;
         }
     });
-    println!("Waiting for packets on 0.0.0.0:5065, 0.0.0.0:5064",);
+    info!("Waiting for packets on 0.0.0.0:5065, 0.0.0.0:5064",);
     loop {
         yield_now().await;
     }
@@ -67,7 +65,7 @@ async fn read_socket(socket: &UdpSocket) {
             match raw.command {
                 0 => {
                     if let Ok(searches) = parse_search_packet(msg_buf) {
-                        println!(
+                        info!(
                             "Received SEARCH for {} names from {sender}: {}",
                             searches.len(),
                             searches
@@ -77,21 +75,21 @@ async fn read_socket(socket: &UdpSocket) {
                                 .join(" ")
                         );
                     } else {
-                        println!(
+                        error!(
                             "Receied code 0 CA_PROTO_VERSION packet from {sender} but we don't understand the contents"
                         );
                     }
                 }
                 13 => {
                     let beacon: messages::RsrvIsUp = raw.try_into().unwrap();
-                    println!(
+                    info!(
                         "Received BEACON {}:{} ({}) from {sender}",
                         beacon.server_ip.map(|f| f.into()).unwrap_or(sender.ip()),
                         beacon.server_port,
                         beacon.beacon_id,
                     );
                     if !leftover.is_empty() {
-                        println!(
+                        warn!(
                             "Warning: After parsing BEACON, {} bytes were remaining",
                             leftover.len()
                         )
@@ -102,7 +100,7 @@ async fn read_socket(socket: &UdpSocket) {
                 }
             }
         } else {
-            println!("Got an error parsing a raw message; was it a real CA message? {msg_buf:x?}");
+            error!("Got an error parsing a raw message; was it a real CA message? {msg_buf:x?}");
             break;
         }
     }
