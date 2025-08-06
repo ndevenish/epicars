@@ -245,14 +245,7 @@ impl From<&RawMessage> for MessageHeader {
 }
 impl From<RawMessage> for MessageHeader {
     fn from(value: RawMessage) -> Self {
-        Self {
-            command: value.command,
-            field_1_data_type: value.field_1_data_type,
-            field_2_data_count: value.field_2_data_count,
-            field_3_parameter_1: value.field_3_parameter_1,
-            field_4_parameter_2: value.field_4_parameter_2,
-            payload_size: value.payload_size() as u32,
-        }
+        MessageHeader::from(&value)
     }
 }
 
