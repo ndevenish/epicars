@@ -12,7 +12,6 @@
 //!   `CA_PROTO_SNAPSHOT`.
 //! - `REPEATER_CONFIRM`, `REPEATER_REGISTER`, as we don't interact with repeaters yet.
 //! - `CA_PROTO_NOT_FOUND` over unclear rules as to when it is sent.
-//! - `CA_PROTO_WRITE_NOTIFY`: TODO (have not seen sent by clients)
 //!
 use std::{
     io::{self, Cursor},
@@ -296,6 +295,7 @@ pub enum Message {
     ECAError(ECAError),
     Echo,
     EventAdd(EventAdd),
+    EventCancel(EventCancel),
     EventAddResponse(EventAddResponse),
     EventsOff,
     EventsOn,
@@ -307,6 +307,7 @@ pub enum Message {
     SearchResponse(SearchResponse),
     ServerDisconnect(ServerDisconnect),
     Write(Write),
+    WriteNotify(WriteNotify),
     Version(Version),
 }
 
@@ -322,6 +323,7 @@ impl AsBytes for Message {
             Message::ECAError(msg) => msg.as_bytes(),
             Message::Echo => Echo.as_bytes(),
             Message::EventAdd(message) => message.as_bytes(),
+            Message::EventCancel(message) => message.as_bytes(),
             Message::EventAddResponse(message) => message.as_bytes(),
             Message::EventsOff => EventsOff.as_bytes(),
             Message::EventsOn => EventsOn.as_bytes(),
@@ -334,6 +336,107 @@ impl AsBytes for Message {
             Message::ServerDisconnect(msg) => msg.as_bytes(),
             Message::Version(msg) => msg.as_bytes(),
             Message::Write(msg) => msg.as_bytes(),
+            Message::WriteNotify(msg) => msg.as_bytes(),
+        }
+    }
+}
+
+impl Message {
+    /// Parse message sent to the server, directly from a stream.
+    ///
+    /// Handles any message that could be sent to the server, not messages that could be
+    /// sent to a client. This is because some response messages have the same command
+    /// ID but different fields, so it is impossible to tell which is which purely from
+    /// the contents of the message.
+    pub async fn read_server_message<T: AsyncRead + Unpin>(
+        source: &mut T,
+    ) -> Result<Self, MessageError> {
+        let message = RawMessage::read(source).await?;
+
+        Ok(match message.command {
+            0 => Self::Version(message.try_into()?),
+            1 => Self::EventAdd(message.try_into()?),
+            2 => Self::EventCancel(message.try_into()?),
+            4 => Self::Write(message.try_into()?),
+            6 => Self::Search(message.try_into()?),
+            8 => Self::EventsOff,
+            9 => Self::EventsOn,
+            12 => Self::ClearChannel(message.try_into()?),
+            15 => Self::ReadNotify(message.try_into()?),
+            18 => Self::CreateChannel(message.try_into()?),
+            23 => Self::Echo,
+            20 => Self::ClientName(message.try_into()?),
+            21 => Self::HostName(message.try_into()?),
+            unknown => Err(MessageError::UnknownCommandId(unknown))?,
+        })
+    }
+}
+
+/// Represent any message that can be sent to a Server
+pub enum ServerMessage {
+    ClearChannel(ClearChannel),
+    ClientName(ClientName),
+    CreateChannel(CreateChannel),
+    Echo,
+    EventAdd(EventAdd),
+    EventCancel(EventCancel),
+    EventsOff,
+    EventsOn,
+    HostName(HostName),
+    ReadNotify(ReadNotify),
+    Search(Search),
+    Write(Write),
+    WriteNotify(WriteNotify),
+    Version(Version),
+}
+
+impl ServerMessage {
+    /// Parse message sent to the server, directly from a stream.
+    ///
+    /// Handles any message that could be sent to the server, not messages that could be
+    /// sent to a client. This is because some response messages have the same command
+    /// ID but different fields, so it is impossible to tell which is which purely from
+    /// the contents of the message.
+    pub async fn parse<T: AsyncRead + Unpin>(source: &mut T) -> Result<Self, MessageError> {
+        let message = RawMessage::read(source).await?;
+
+        Ok(match message.command {
+            0 => Self::Version(message.try_into()?),
+            1 => Self::EventAdd(message.try_into()?),
+            2 => Self::EventCancel(message.try_into()?),
+            4 => Self::Write(message.try_into()?),
+            6 => Self::Search(message.try_into()?),
+            8 => Self::EventsOff,
+            9 => Self::EventsOn,
+            12 => Self::ClearChannel(message.try_into()?),
+            15 => Self::ReadNotify(message.try_into()?),
+            19 => Self::WriteNotify(message.try_into()?),
+            18 => Self::CreateChannel(message.try_into()?),
+            20 => Self::ClientName(message.try_into()?),
+            21 => Self::HostName(message.try_into()?),
+            23 => Self::Echo,
+            unknown => Err(MessageError::UnknownCommandId(unknown))?,
+        })
+    }
+}
+
+impl From<ServerMessage> for Message {
+    fn from(value: ServerMessage) -> Self {
+        match value {
+            ServerMessage::ClearChannel(msg) => Message::ClearChannel(msg),
+            ServerMessage::ClientName(msg) => Message::ClientName(msg),
+            ServerMessage::CreateChannel(msg) => Message::CreateChannel(msg),
+            ServerMessage::Echo => Message::Echo,
+            ServerMessage::EventAdd(msg) => Message::EventAdd(msg),
+            ServerMessage::EventCancel(msg) => Message::EventCancel(msg),
+            ServerMessage::EventsOff => Message::EventsOff,
+            ServerMessage::EventsOn => Message::EventsOn,
+            ServerMessage::HostName(msg) => Message::HostName(msg),
+            ServerMessage::ReadNotify(msg) => Message::ReadNotify(msg),
+            ServerMessage::Search(msg) => Message::Search(msg),
+            ServerMessage::Write(msg) => Message::Write(msg),
+            ServerMessage::WriteNotify(msg) => Message::WriteNotify(msg),
+            ServerMessage::Version(msg) => Message::Version(msg),
         }
     }
 }
@@ -387,35 +490,6 @@ impl ParseError<&[u8]> for MessageError {
     }
     fn or(self, other: Self) -> Self {
         other
-    }
-}
-impl Message {
-    /// Parse message sent to the server, directly from a stream.
-    ///
-    /// Handles any message that could be sent to the server, not messages that could be
-    /// sent to a client. This is because some response messages have the same command
-    /// ID but different fields, so it is impossible to tell which is which purely from
-    /// the contents of the message.
-    pub async fn read_server_message<T: AsyncRead + Unpin>(
-        source: &mut T,
-    ) -> Result<Self, MessageError> {
-        let message = RawMessage::read(source).await?;
-
-        Ok(match message.command {
-            0 => Self::Version(message.try_into()?),
-            1 => Self::EventAdd(message.try_into()?),
-            4 => Self::Write(message.try_into()?),
-            6 => Self::Search(message.try_into()?),
-            8 => Self::EventsOff,
-            9 => Self::EventsOn,
-            12 => Self::ClearChannel(message.try_into()?),
-            15 => Self::ReadNotify(message.try_into()?),
-            18 => Self::CreateChannel(message.try_into()?),
-            23 => Self::Echo,
-            20 => Self::ClientName(message.try_into()?),
-            21 => Self::HostName(message.try_into()?),
-            unknown => Err(MessageError::UnknownCommandId(unknown))?,
-        })
     }
 }
 
@@ -1134,7 +1208,48 @@ impl CAMessage for EventAddResponse {
 ///
 /// This message will stop event updates for specified channel. Sent over TCP.
 #[derive(Debug)]
-pub struct EventCancel {}
+pub struct EventCancel {
+    pub data_type: DbrType,
+    pub data_count: u32,
+
+    /// Server SID of the channel on which to cancel this subscription
+    pub server_id: u32,
+    /// Client ID identifying this subscription
+    pub subscription_id: u32,
+}
+
+impl TryFrom<RawMessage> for EventCancel {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(2)?;
+        if value.payload_size() != 0 {
+            return Err(MessageError::InvalidField(
+                "Payload present, should be zero".to_string(),
+            ));
+        }
+        Ok(EventCancel {
+            data_type: DbrType::try_from(value.field_1_data_type)
+                .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
+            data_count: value.field_2_data_count,
+            server_id: value.field_3_parameter_1,
+            subscription_id: value.field_4_parameter_2,
+        })
+    }
+}
+
+impl CAMessage for EventCancel {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 2,
+            field_1_data_type: self.data_type.into(),
+            field_2_data_count: self.data_count,
+            field_3_parameter_1: self.server_id,
+            field_4_parameter_2: self.subscription_id,
+            ..Default::default()
+        }
+        .write(writer)
+    }
+}
 
 /// Read value of a channel.
 ///
@@ -1254,7 +1369,7 @@ pub struct Write {
 impl From<&Write> for RawMessage {
     fn from(value: &Write) -> Self {
         RawMessage {
-            command: 15,
+            command: 4,
             field_1_data_type: value.data_type.into(),
             field_2_data_count: value.data_count,
             field_3_parameter_1: value.server_id,
@@ -1280,6 +1395,100 @@ impl TryFrom<RawMessage> for Write {
 }
 
 impl CAMessage for Write {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage::from(self).write(writer)
+    }
+}
+
+#[derive(Debug)]
+pub struct WriteNotify {
+    pub data_type: DbrType,
+    pub data_count: u32,
+    pub server_id: u32,
+    pub client_ioid: u32,
+    pub data: Vec<u8>,
+}
+
+impl WriteNotify {
+    pub fn respond(&self, status_code: u32) -> WriteNotifyResponse {
+        WriteNotifyResponse {
+            data_type: self.data_type,
+            data_count: self.data_count,
+            client_ioid: self.client_ioid,
+            status_code,
+        }
+    }
+}
+
+impl From<&WriteNotify> for RawMessage {
+    fn from(value: &WriteNotify) -> Self {
+        RawMessage {
+            command: 19,
+            field_1_data_type: value.data_type.into(),
+            field_2_data_count: value.data_count,
+            field_3_parameter_1: value.server_id,
+            field_4_parameter_2: value.client_ioid,
+            payload: value.data.clone(),
+        }
+    }
+}
+
+impl TryFrom<RawMessage> for WriteNotify {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(19)?;
+        Ok(WriteNotify {
+            data_type: DbrType::try_from(value.field_1_data_type)
+                .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
+            data_count: value.field_2_data_count,
+            server_id: value.field_3_parameter_1,
+            client_ioid: value.field_4_parameter_2,
+            data: value.payload,
+        })
+    }
+}
+
+impl CAMessage for WriteNotify {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage::from(self).write(writer)
+    }
+}
+
+pub struct WriteNotifyResponse {
+    pub data_type: DbrType,
+    pub data_count: u32,
+    pub client_ioid: u32,
+    pub status_code: u32,
+}
+
+impl From<&WriteNotifyResponse> for RawMessage {
+    fn from(value: &WriteNotifyResponse) -> Self {
+        RawMessage {
+            command: 19,
+            field_1_data_type: value.data_type.into(),
+            field_2_data_count: value.data_count,
+            field_3_parameter_1: value.status_code,
+            field_4_parameter_2: value.client_ioid,
+            ..Default::default()
+        }
+    }
+}
+
+impl TryFrom<RawMessage> for WriteNotifyResponse {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(19)?;
+        Ok(WriteNotifyResponse {
+            data_type: DbrType::try_from(value.field_1_data_type)
+                .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
+            data_count: value.field_2_data_count,
+            status_code: value.field_3_parameter_1,
+            client_ioid: value.field_4_parameter_2,
+        })
+    }
+}
+
+impl CAMessage for WriteNotifyResponse {
     fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage::from(self).write(writer)
     }
