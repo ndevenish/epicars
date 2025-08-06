@@ -50,7 +50,7 @@ async fn main() {
     loop {
         value.store(&(value.load() + 1));
         println!("Value is now: {}", value.load());
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 ```
