@@ -364,82 +364,83 @@ impl Message {
             12 => Self::ClearChannel(message.try_into()?),
             15 => Self::ReadNotify(message.try_into()?),
             18 => Self::CreateChannel(message.try_into()?),
-            23 => Self::Echo,
-            20 => Self::ClientName(message.try_into()?),
-            21 => Self::HostName(message.try_into()?),
-            unknown => Err(MessageError::UnknownCommandId(unknown))?,
-        })
-    }
-}
-
-/// Represent any message that can be sent to a Server
-pub enum ServerMessage {
-    ClearChannel(ClearChannel),
-    ClientName(ClientName),
-    CreateChannel(CreateChannel),
-    Echo,
-    EventAdd(EventAdd),
-    EventCancel(EventCancel),
-    EventsOff,
-    EventsOn,
-    HostName(HostName),
-    ReadNotify(ReadNotify),
-    Search(Search),
-    Write(Write),
-    WriteNotify(WriteNotify),
-    Version(Version),
-}
-
-impl ServerMessage {
-    /// Parse message sent to the server, directly from a stream.
-    ///
-    /// Handles any message that could be sent to the server, not messages that could be
-    /// sent to a client. This is because some response messages have the same command
-    /// ID but different fields, so it is impossible to tell which is which purely from
-    /// the contents of the message.
-    pub async fn parse<T: AsyncRead + Unpin>(source: &mut T) -> Result<Self, MessageError> {
-        let message = RawMessage::read(source).await?;
-
-        Ok(match message.command {
-            0 => Self::Version(message.try_into()?),
-            1 => Self::EventAdd(message.try_into()?),
-            2 => Self::EventCancel(message.try_into()?),
-            4 => Self::Write(message.try_into()?),
-            6 => Self::Search(message.try_into()?),
-            8 => Self::EventsOff,
-            9 => Self::EventsOn,
-            12 => Self::ClearChannel(message.try_into()?),
-            15 => Self::ReadNotify(message.try_into()?),
             19 => Self::WriteNotify(message.try_into()?),
-            18 => Self::CreateChannel(message.try_into()?),
+            23 => Self::Echo,
             20 => Self::ClientName(message.try_into()?),
             21 => Self::HostName(message.try_into()?),
-            23 => Self::Echo,
             unknown => Err(MessageError::UnknownCommandId(unknown))?,
         })
     }
 }
 
-impl From<ServerMessage> for Message {
-    fn from(value: ServerMessage) -> Self {
-        match value {
-            ServerMessage::ClearChannel(msg) => Message::ClearChannel(msg),
-            ServerMessage::ClientName(msg) => Message::ClientName(msg),
-            ServerMessage::CreateChannel(msg) => Message::CreateChannel(msg),
-            ServerMessage::Echo => Message::Echo,
-            ServerMessage::EventAdd(msg) => Message::EventAdd(msg),
-            ServerMessage::EventCancel(msg) => Message::EventCancel(msg),
-            ServerMessage::EventsOff => Message::EventsOff,
-            ServerMessage::EventsOn => Message::EventsOn,
-            ServerMessage::HostName(msg) => Message::HostName(msg),
-            ServerMessage::ReadNotify(msg) => Message::ReadNotify(msg),
-            ServerMessage::Search(msg) => Message::Search(msg),
-            ServerMessage::Write(msg) => Message::Write(msg),
-            ServerMessage::WriteNotify(msg) => Message::WriteNotify(msg),
-            ServerMessage::Version(msg) => Message::Version(msg),
-        }
-    }
-}
+// /// Represent any message that can be sent to a Server
+// pub enum ServerMessage {
+//     ClearChannel(ClearChannel),
+//     ClientName(ClientName),
+//     CreateChannel(CreateChannel),
+//     Echo,
+//     EventAdd(EventAdd),
+//     EventCancel(EventCancel),
+//     EventsOff,
+//     EventsOn,
+//     HostName(HostName),
+//     ReadNotify(ReadNotify),
+//     Search(Search),
+//     Write(Write),
+//     WriteNotify(WriteNotify),
+//     Version(Version),
+// }
+
+// impl ServerMessage {
+//     /// Parse message sent to the server, directly from a stream.
+//     ///
+//     /// Handles any message that could be sent to the server, not messages that could be
+//     /// sent to a client. This is because some response messages have the same command
+//     /// ID but different fields, so it is impossible to tell which is which purely from
+//     /// the contents of the message.
+//     pub async fn parse<T: AsyncRead + Unpin>(source: &mut T) -> Result<Self, MessageError> {
+//         let message = RawMessage::read(source).await?;
+
+//         Ok(match message.command {
+//             0 => Self::Version(message.try_into()?),
+//             1 => Self::EventAdd(message.try_into()?),
+//             2 => Self::EventCancel(message.try_into()?),
+//             4 => Self::Write(message.try_into()?),
+//             6 => Self::Search(message.try_into()?),
+//             8 => Self::EventsOff,
+//             9 => Self::EventsOn,
+//             12 => Self::ClearChannel(message.try_into()?),
+//             15 => Self::ReadNotify(message.try_into()?),
+//             19 => Self::WriteNotify(message.try_into()?),
+//             18 => Self::CreateChannel(message.try_into()?),
+//             20 => Self::ClientName(message.try_into()?),
+//             21 => Self::HostName(message.try_into()?),
+//             23 => Self::Echo,
+//             unknown => Err(MessageError::UnknownCommandId(unknown))?,
+//         })
+//     }
+// }
+
+// impl From<ServerMessage> for Message {
+//     fn from(value: ServerMessage) -> Self {
+//         match value {
+//             ServerMessage::ClearChannel(msg) => Message::ClearChannel(msg),
+//             ServerMessage::ClientName(msg) => Message::ClientName(msg),
+//             ServerMessage::CreateChannel(msg) => Message::CreateChannel(msg),
+//             ServerMessage::Echo => Message::Echo,
+//             ServerMessage::EventAdd(msg) => Message::EventAdd(msg),
+//             ServerMessage::EventCancel(msg) => Message::EventCancel(msg),
+//             ServerMessage::EventsOff => Message::EventsOff,
+//             ServerMessage::EventsOn => Message::EventsOn,
+//             ServerMessage::HostName(msg) => Message::HostName(msg),
+//             ServerMessage::ReadNotify(msg) => Message::ReadNotify(msg),
+//             ServerMessage::Search(msg) => Message::Search(msg),
+//             ServerMessage::Write(msg) => Message::Write(msg),
+//             ServerMessage::WriteNotify(msg) => Message::WriteNotify(msg),
+//             ServerMessage::Version(msg) => Message::Version(msg),
+//         }
+//     }
+// }
 
 /// Unified thiserror enum to represent failures from functions in this module.
 #[derive(Error, Debug)]
