@@ -1,9 +1,9 @@
 # EPICArs: EPICS-CA Implementation in Pure Rust
 
-[![Crates.io](https://img.shields.io/crates/v/epicars.svg)](https://crates.io/crates/your_crate)
+[![Crates.io](https://img.shields.io/crates/v/epicars.svg)](https://crates.io/crates/epicars)
 [![Docs.rs](https://docs.rs/epicars/badge.svg)](https://docs.rs/epicars)
 [![CI](https://github.com/ndevenish/epicars/actions/workflows/rust.yml/badge.svg)](https://github.com/ndevenish/epics_cars/actions)
-[![License](https://img.shields.io/crates/l/your_crate)](https://crates.io/crates/your_crate)
+[![License](https://img.shields.io/crates/l/epicars)](https://crates.io/crates/epicars)
 
 Rust implementation of EPICS CA protocol and basic variable access layers.
 
