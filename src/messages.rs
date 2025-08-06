@@ -1,7 +1,14 @@
 #![allow(dead_code)]
 
 //! Implementations of CA message types and utilities to constrct/[de]serialize them
-
+//!
+//! Not implemented yet:
+//! - Deprecated `CA_PROTO_READ` and `CA_PROTO_READ_SYNC`.
+//! - Obsolete `CA_PROTO_BUILD`, `CA_PROTO_READ_BUILD`, `CA_PROTO_SIGNAL`, and `CA_PROTO_SNAPSHOT`.
+//! - `REPEATER_CONFIRM`, `REPEATER_REGISTER`, as we don't interact with repeaters yet.
+//! - `CA_PROTO_NOT_FOUND` over unclear rules as to when it is sent.
+//! - `CA_PROTO_WRITE_NOTIFY`: TODO (have not seen sent by clients)
+//!
 use std::{
     io::{self, Cursor},
     net::Ipv4Addr,
@@ -574,6 +581,7 @@ impl CAMessage for Search {
     }
 }
 
+/// Response message sent in reply to a [`Search`].
 #[derive(Debug)]
 pub struct SearchResponse {
     pub port_number: u16,
@@ -856,6 +864,9 @@ impl CAMessage for ClientName {
     }
 }
 
+/// Sends local host name to virtual circuit peer.
+///
+/// This name can affect access rights in the CA protocol. Sent over TCP.
 #[derive(Debug)]
 pub struct HostName {
     pub name: String,
@@ -880,6 +891,9 @@ impl CAMessage for HostName {
     }
 }
 
+/// Notifies the client that server has disconnected the channel.
+///
+/// This may be since the channel has been destroyed on server. Sent over TCP.
 #[derive(Debug)]
 pub struct ServerDisconnect {
     pub client_id: u32,
@@ -904,6 +918,11 @@ impl CAMessage for ServerDisconnect {
     }
 }
 
+/// Enables the server to resume sending updates for this circuit.
+///
+/// Sent over TCP. This mechanism is used by clients with slow CPU to prevent
+/// congestion when they are unable to handle all updates received. Effective
+/// automated handling of flow control is beyond the scope of this document.
 #[derive(Debug)]
 pub struct EventsOn;
 
@@ -924,6 +943,11 @@ impl CAMessage for EventsOn {
     }
 }
 
+/// Disables a server from sending subscription updates over this circuit.
+///
+/// Sent over TCP. This mechanism is used by clients with slow CPU to prevent
+/// congestion when they are unable to handle all updates received. Effective
+/// automated handling of flow control is beyond the scope of this document.
 #[derive(Debug)]
 pub struct EventsOff;
 
@@ -983,6 +1007,9 @@ pub struct MonitorMask {
     pub property: bool,
 }
 
+/// Creates a subscription on a channel, allowing the client to be notified of changes in value.
+///
+/// A request will produce at least one response. Sent over TCP.
 #[derive(Debug)]
 pub struct EventAdd {
     pub data_type: DbrType,
@@ -1043,6 +1070,7 @@ impl CAMessage for EventAdd {
     }
 }
 
+/// Reponse to an [`EventAdd`]
 #[derive(Debug)]
 pub struct EventAddResponse {
     pub data_type: DbrType,
@@ -1085,9 +1113,16 @@ impl CAMessage for EventAddResponse {
         .write(writer)
     }
 }
+
+/// Clears event subscription.
+///
+/// This message will stop event updates for specified channel. Sent over TCP.
 #[derive(Debug)]
 pub struct EventCancel {}
 
+/// Read value of a channel.
+///
+/// Sent over TCP.
 #[derive(Debug)]
 pub struct ReadNotify {
     pub data_type: DbrType,
@@ -1144,6 +1179,7 @@ impl CAMessage for ReadNotify {
     }
 }
 
+/// Response to [`ReadNotify`].
 #[derive(Debug)]
 pub struct ReadNotifyResponse {
     data_type: DbrType,
@@ -1187,9 +1223,9 @@ impl CAMessage for ReadNotifyResponse {
     }
 }
 
-#[derive(Debug)]
-pub struct WriteChannel {}
-
+/// Writes new channel value.
+///
+/// Sent over TCP.
 #[derive(Debug)]
 pub struct Write {
     pub data_type: DbrType,
@@ -1417,6 +1453,12 @@ impl TryFrom<u32> for ErrorCondition {
     }
 }
 
+/// Sends error message and code.
+///
+/// This message is only sent from server to client in response to any request
+/// that fails and does not include error code in response. This applies to all
+/// asynchronous commands. Error message will contain a copy of original
+/// request and textual description of the error. Sent over UDP.
 #[derive(Debug)]
 pub struct ECAError {
     pub error_message: String,
