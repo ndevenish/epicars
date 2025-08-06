@@ -39,8 +39,8 @@ pub trait Provider: Sync + Send + Clone + 'static {
         pv_name: &str,
         client_user_name: Option<&str>,
         client_host_name: Option<&str>,
-    ) -> messages::AccessRight {
-        messages::AccessRight::Read
+    ) -> messages::Access {
+        messages::Access::Read
     }
 
     /// Write a value sent by a client to a PV

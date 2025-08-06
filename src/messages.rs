@@ -1,10 +1,15 @@
 #![allow(dead_code)]
 
-//! Implementations of CA message types and utilities to constrct/[de]serialize them
+//! Implementations of CA message types and utilities to constrct/\[de\]serialize them
+//!
+//! The central enum is [`Message`], which represents any message that can be sent
+//! through CA and it's utility function [`Message::read_server_message`], which
+//! directly parses a message from a TCP stream.
 //!
 //! Not implemented yet:
 //! - Deprecated `CA_PROTO_READ` and `CA_PROTO_READ_SYNC`.
-//! - Obsolete `CA_PROTO_BUILD`, `CA_PROTO_READ_BUILD`, `CA_PROTO_SIGNAL`, and `CA_PROTO_SNAPSHOT`.
+//! - Obsolete `CA_PROTO_BUILD`, `CA_PROTO_READ_BUILD`, `CA_PROTO_SIGNAL`, and
+//!   `CA_PROTO_SNAPSHOT`.
 //! - `REPEATER_CONFIRM`, `REPEATER_REGISTER`, as we don't interact with repeaters yet.
 //! - `CA_PROTO_NOT_FOUND` over unclear rules as to when it is sent.
 //! - `CA_PROTO_WRITE_NOTIFY`: TODO (have not seen sent by clients)
@@ -24,14 +29,14 @@ use nom::{
     number::complete::{be_f32, be_u16, be_u32},
 };
 use thiserror::Error;
-use tokio::{io::AsyncReadExt, net::TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::dbr::{DbrBasicType, DbrType};
 
 const EPICS_VERSION: u16 = 13;
 
-/// A basic trait to tie nom parseability to the struct without a
-/// plethora of named functions.
+/// A basic trait to tie message parsing/serialization to a struct.
+///
 /// Also adds common interface for writing a message struct to a writer.
 pub trait CAMessage: TryFrom<RawMessage> {
     fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()>;
@@ -65,7 +70,7 @@ pub struct RawMessage {
 }
 
 impl RawMessage {
-    async fn read(source: &mut TcpStream) -> Result<RawMessage, MessageError> {
+    async fn read<T: AsyncRead + Unpin>(source: &mut T) -> Result<RawMessage, MessageError> {
         let mut data = vec![0u8; 16];
         source.read_exact(data.as_mut_slice()).await?;
         let (input, (command, payload_size, field_1)) = (
@@ -160,7 +165,7 @@ impl CAMessage for RawMessage {
     }
 }
 
-/// Parsing message headers, without attempting to read the payload
+/// Represent/parse just the header of a message, without trying to read the payload.
 #[derive(Debug)]
 pub struct MessageHeader {
     pub command: u16,
@@ -275,6 +280,11 @@ impl CAMessage for MessageHeader {
         Ok(())
     }
 }
+
+/// Represent any message.
+///
+/// Provides utility function [`Message::read_server_message`] to translate a
+/// raw stream into parsed messages.
 #[derive(Debug)]
 pub enum Message {
     AccessRights(AccessRights),
@@ -327,6 +337,8 @@ impl AsBytes for Message {
         }
     }
 }
+
+/// Unified thiserror enum to represent failures from functions in this module.
 #[derive(Error, Debug)]
 pub enum MessageError {
     #[error("IO Error Occured: {0}")]
@@ -378,14 +390,15 @@ impl ParseError<&[u8]> for MessageError {
     }
 }
 impl Message {
-    /// Parse message sent to the server, directly from a TCP stream
+    /// Parse message sent to the server, directly from a stream.
     ///
-    /// Handles any message that could be sent to the server, not
-    /// messages that could be sent to a client. This is because some
-    /// response messages have the same command ID but different fields,
-    /// so it is impossible to tell which is which purely from the
-    /// contents of the message.
-    pub async fn read_server_message(source: &mut TcpStream) -> Result<Self, MessageError> {
+    /// Handles any message that could be sent to the server, not messages that could be
+    /// sent to a client. This is because some response messages have the same command
+    /// ID but different fields, so it is impossible to tell which is which purely from
+    /// the contents of the message.
+    pub async fn read_server_message<T: AsyncRead + Unpin>(
+        source: &mut T,
+    ) -> Result<Self, MessageError> {
         let message = RawMessage::read(source).await?;
 
         Ok(match message.command {
@@ -439,6 +452,7 @@ pub struct RsrvIsUp {
     pub protocol_version: u16,
 }
 
+/// Utility trait for objects that can be turned into raw byte streams
 pub trait AsBytes {
     fn as_bytes(&self) -> Vec<u8>;
 }
@@ -637,6 +651,7 @@ impl CAMessage for SearchResponse {
     }
 }
 
+/// Parse a raw buffer representing a search packet into an array of [`Search`] messages.
 pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, MessageError> {
     // Starts with a version packet
     let (input, _) = Version::parse(input)?;
@@ -753,22 +768,23 @@ impl CAMessage for CreateChannelFailure {
     }
 }
 
+/// Enumerate access rights for [`AccessRights`] message
 #[derive(Debug, Copy, Clone)]
-pub enum AccessRight {
+pub enum Access {
     None = 0,
     Read = 1,
     Write = 2,
     ReadWrite = 3,
 }
 
-impl TryFrom<u32> for AccessRight {
+impl TryFrom<u32> for Access {
     type Error = MessageError;
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(AccessRight::None),
-            1 => Ok(AccessRight::Read),
-            2 => Ok(AccessRight::Write),
-            3 => Ok(AccessRight::ReadWrite),
+            0 => Ok(Access::None),
+            1 => Ok(Access::Read),
+            2 => Ok(Access::Write),
+            3 => Ok(Access::ReadWrite),
             _ => Err(MessageError::InvalidField(format!(
                 "Invalid AccessRight: {value}"
             ))),
@@ -784,7 +800,7 @@ impl TryFrom<u32> for AccessRight {
 #[derive(Debug)]
 pub struct AccessRights {
     pub client_id: u32,
-    pub access_rights: AccessRight,
+    pub access_rights: Access,
 }
 
 impl TryFrom<RawMessage> for AccessRights {
@@ -1277,6 +1293,7 @@ enum ErrorSeverity {
     Severe = 4,
 }
 
+/// Possible error codes for [`ECAError`] messages.
 #[derive(Debug, Copy, Clone)]
 pub enum ErrorCondition {
     Normal = 0,

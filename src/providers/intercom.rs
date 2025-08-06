@@ -348,8 +348,8 @@ impl Provider for IntercomProvider {
         _pv_name: &str,
         _client_user_name: Option<&str>,
         _client_host_name: Option<&str>,
-    ) -> messages::AccessRight {
-        messages::AccessRight::ReadWrite
+    ) -> messages::Access {
+        messages::Access::ReadWrite
     }
 
     fn write_value(&mut self, pv_name: &str, value: Dbr) -> Result<(), ErrorCondition> {
