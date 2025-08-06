@@ -52,35 +52,6 @@
 //! }
 //! ```
 //!
-//! ## Current Status of crate
-//!
-//! What is currently present:
-//! - Replying to searches, accepting connections, and serving values to clients.
-//! - Supporting `camonitor` functionality to receive updates of PV values.
-//! - Translating values between different data types upon request; you can `caget` an
-//!   e.g. [i8] as an [i32] and this will automatically convert. You can also do the
-//!   inverse, and this will work as long as the data are representable as the target
-//!   type without loss.
-//! - Because of the [Provider] trait, it's reasonable simple to run the server
-//!   asynchronously (currently required, and using tokio) but still allow access the
-//!   the current values synchronously. The built-in example providers do this.
-//! - Mapping Rust [String] to CA `CHAR` arrays back and forth.
-//!
-//! What this doesn't do (yet):
-//! - Work as a client to connect to repeaters, other CA servers, and IOCs. This will be
-//!   worked on when the server portions are satisfactorily working and ergonomic
-//!   "enough" to use (this was the reason this implementaiton was written).
-//! - Match exact behaviours of epics-base in terms of translation, error handling, and
-//!   what it allows. This requires careful study of the EPICS code, and the building of
-//!   an exhaustive test suite - this has not yet become a priority, but it may just be
-//!   left as "good enough" until PVAccess becomes common eough that we don't need the
-//!   CA interface any more.
-//! - Completely implement data types. Notably, `ENUM` types are not well handled, the
-//!   `CTRL` and `GR` data categories are not handled, and some of the precise behaviour
-//!   of `STR` have yet to be nailed down. These will be tackled when the use cases are
-//!   better understood.
-//!
-//!
 //! [EPICS CA protocol]:
 //!     https://docs.epics-controls.org/en/latest/internal/ca_protocol.html
 //! [epics-base]: https://github.com/epics-base/epics-base
