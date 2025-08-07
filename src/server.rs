@@ -16,7 +16,7 @@ use tokio::{
     sync::{broadcast, mpsc},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
     dbr::{DBR_BASIC_STRING, Dbr, DbrType},
@@ -202,6 +202,7 @@ impl<L: Provider> Server<L> {
         });
     }
 
+    #[instrument(skip_all)]
     fn handle_tcp_connections(&mut self, listener: TcpListener) {
         let library = self.library_provider.clone();
         tokio::spawn(async move {
@@ -225,7 +226,8 @@ impl<L: Provider> Server<L> {
 
 struct Circuit<L: Provider> {
     id: u64,
-    last_message: Instant,
+    last_echo_message: Instant,
+    echo_countdown: Duration,
     client_version: u16,
     client_host_name: Option<String>,
     client_user_name: Option<String>,
@@ -254,6 +256,11 @@ struct PVSubscription {
 }
 
 impl<L: Provider> Circuit<L> {
+    /// Return how long until we discopnnect this circuit for inactivity. None = Past time.
+    fn time_until_disconnect(&self) -> Option<Duration> {
+        (self.last_echo_message + self.echo_countdown).checked_duration_since(Instant::now())
+    }
+
     async fn do_version_exchange(stream: &mut TcpStream) -> Result<u16, MessageError> {
         // Send our Version
         stream
@@ -268,6 +275,8 @@ impl<L: Provider> Circuit<L> {
             }
         })
     }
+
+    #[instrument(name = "Circuit", skip(stream, library))]
     async fn start(id: u64, mut stream: TcpStream, library: L) {
         info!("{id}: Starting circuit with {:?}", stream.peer_addr());
         let client_version = Circuit::<L>::do_version_exchange(&mut stream)
@@ -278,7 +287,8 @@ impl<L: Provider> Circuit<L> {
         let (monitor_value_available, mut monitor_updates) = mpsc::channel::<String>(32);
         let mut circuit = Circuit {
             id,
-            last_message: Instant::now(),
+            last_echo_message: Instant::now(),
+            echo_countdown: Duration::from_secs(30),
             client_version,
             client_host_name: None,
             client_user_name: None,
@@ -291,7 +301,27 @@ impl<L: Provider> Circuit<L> {
 
         // Now, everything else is based on responding to events
         loop {
+            let time_until_disconnect = circuit.time_until_disconnect().unwrap_or(Duration::ZERO);
+
+            println!(
+                "Time until disconnect: {:.2} s",
+                time_until_disconnect.as_secs_f32()
+            );
+
             tokio::select! {
+                () = tokio::time::sleep(time_until_disconnect) => {
+                    info!("{id}: Too long since client sent echo, disconnecting client.");
+                    // Write the disconnect message
+                    let _ = stream
+                    .write_all(
+                        &messages::ServerDisconnect {
+                            client_id: id as u32,
+                        }
+                        .as_bytes(),
+                    )
+                    .await;
+                    break;
+                },
                 pv_name = monitor_updates.recv() => match pv_name {
                     Some(pv_name) => match circuit.handle_monitor_update(&pv_name).await {
                         Ok(messages) => {
@@ -396,7 +426,11 @@ impl<L: Provider> Circuit<L> {
     async fn handle_message(&mut self, message: Message) -> Result<Vec<Message>, MessageError> {
         let id = self.id;
         match message {
-            Message::Echo => Ok(vec![Message::Echo]),
+            Message::Echo => {
+                println!("{id}: Client sent echo, resetting timer");
+                self.last_echo_message = Instant::now();
+                Ok(vec![Message::Echo])
+            }
             Message::EventAdd(msg) => {
                 debug!("{id}: {}: Got {:?}", msg.server_id, msg);
                 let channel = &mut self.channels.get_mut(&msg.server_id).unwrap();

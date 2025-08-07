@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use epicars::{ServerBuilder, providers::IntercomProvider};
-use tracing::info;
+use tracing::{info, level_filters::LevelFilter};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() {
@@ -11,7 +11,9 @@ async fn main() {
         default_panic(info);
         std::process::exit(1);
     }));
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_max_level(LevelFilter::DEBUG)
+        .init();
 
     let mut provider = IntercomProvider::new();
     let mut value = provider.add_pv("something", 42i32).unwrap();
