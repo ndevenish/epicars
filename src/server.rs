@@ -421,6 +421,7 @@ impl<L: Provider> Circuit<L> {
                 });
                 Ok(Vec::new())
             }
+            Message::EventCancel(_) => todo!(),
             Message::ClientName(name) if self.client_user_name.is_none() => {
                 info!("{id}: Got client username: {}", name.name);
                 self.client_user_name = Some(name.name);
