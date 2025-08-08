@@ -64,7 +64,6 @@ impl SearcherBuilder {
                 .broadcast_addresses
                 .unwrap_or_else(get_default_broadcast_ips),
         };
-        debug!("Constructed searcher: {searcher:?}");
         searcher
             .start_searching(request_recv)
             .await
