@@ -3,8 +3,10 @@
 use pnet::datalink;
 use std::{
     collections::HashMap,
+    future,
     io::ErrorKind,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    pin::Pin,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -124,7 +126,8 @@ impl Searcher {
                         Err(e) => {
                             error!("Error waiting for search responses: {e}");
                         },
-                    }
+                    },
+                    // _ = state.next_attempt() => state.handle_retries(&send_socket).await,
                 };
             }
         });
@@ -156,27 +159,33 @@ pub struct CouldNotFindError;
 #[derive(Debug)]
 struct SearchAttempt {
     name: String,
-    attempts: u8,
+    // attempts: u8,
     started_search_at: Instant,
     active_searches: Vec<u32>,
-    last_search_at: Instant,
+    next_search_at: Instant,
     /// How are results reported back to the requesters?
     reporter: broadcast::Sender<Option<SocketAddr>>,
 }
 impl SearchAttempt {
-    /// Get the time that we should try to search again
-    fn get_next_search_timestamp(&self) -> Option<Instant> {
-        None
+    /// Register the fact that we ran a new search and calculate next timings
+    fn search(&mut self, search_id: u32) -> messages::Search {
+        let backoff = Duration::from_millis(32 * 2u64.pow(self.active_searches.len() as u32));
+        self.active_searches.push(search_id);
+        self.next_search_at = Instant::now() + backoff;
+        messages::Search {
+            search_id,
+            channel_name: self.name.clone(),
+            ..Default::default()
+        }
     }
 }
 impl Default for SearchAttempt {
     fn default() -> Self {
         SearchAttempt {
             name: String::new(),
-            attempts: 0,
             started_search_at: Instant::now(),
             active_searches: Vec::new(),
-            last_search_at: Instant::now(),
+            next_search_at: Instant::now(),
             reporter: broadcast::Sender::new(1),
         }
     }
@@ -198,6 +207,27 @@ struct SearcherInternal {
     search_id: u32,
 }
 impl SearcherInternal {
+    /// Wait until it's time for the next tracked attempt
+    fn next_attempt(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let next_wake = self.per_pv_info.values().map(|v| v.next_search_at).min();
+        match next_wake {
+            None => Box::pin(future::pending()),
+            Some(instant) => {
+                if instant < Instant::now() {
+                    Box::pin(future::ready(()))
+                } else {
+                    Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(
+                        instant,
+                    )))
+                }
+            }
+        }
+    }
+    fn next_search_id(&mut self) -> u32 {
+        let id = self.search_id;
+        self.search_id = self.search_id.wrapping_add(1);
+        id
+    }
     async fn handle_new_requests(
         &mut self,
         socket: &UdpSocket,
@@ -282,6 +312,40 @@ impl SearcherInternal {
             // Report this to all the listeners
             debug!("Found server for {pv_name}: {server_origin:?}");
             let _ = info.reporter.send(Some(server_origin));
+        }
+    }
+
+    async fn handle_retries(&mut self, socket: &UdpSocket) {
+        let now = Instant::now();
+        // Take this now so we don't have to borrow self twice
+        let mut search_id = self.search_id;
+
+        let mut search_messages = self
+            .per_pv_info
+            .values_mut()
+            .filter(|s| s.next_search_at < now)
+            .map(|s| {
+                let sid = search_id;
+                search_id = search_id.wrapping_add(1);
+                debug!("Sending retry search for: {}", s.name);
+                Message::Search(s.search(sid))
+            })
+            .peekable();
+
+        if search_messages.peek().is_some() {
+            let buf: Vec<_> = vec![Message::Version(messages::Version::default())]
+                .into_iter()
+                .chain(search_messages)
+                .flat_map(|m| m.as_bytes())
+                .collect();
+            for ip in &self.broadcast_addresses {
+                let target_addr = (*ip, self.search_port).into();
+                debug!("Sending retry to: {target_addr}");
+                socket
+                    .send_to::<SocketAddr>(&buf, target_addr)
+                    .await
+                    .expect("Socket sending failed");
+            }
         }
     }
 }
