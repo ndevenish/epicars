@@ -35,7 +35,7 @@ struct Circuit {
     port: u16,
 }
 
-struct SearcherBuilder {
+pub struct SearcherBuilder {
     search_port: u16,
     stop_token: CancellationToken,
     broadcast_addresses: Option<Vec<IpAddr>>,
@@ -51,10 +51,10 @@ impl Default for SearcherBuilder {
     }
 }
 impl SearcherBuilder {
-    fn new() -> Self {
+    pub fn new() -> Self {
         SearcherBuilder::default()
     }
-    async fn start(self) -> Result<Searcher, io::Error> {
+    pub async fn start(self) -> Result<Searcher, io::Error> {
         let (send, request_recv) = mpsc::channel(32);
         let mut searcher = Searcher {
             pending_requests: send,
@@ -64,13 +64,16 @@ impl SearcherBuilder {
                 .broadcast_addresses
                 .unwrap_or_else(get_default_broadcast_ips),
         };
+        debug!("Constructed searcher: {searcher:?}");
         searcher
             .start_searching(request_recv)
             .await
             .and(Ok(searcher))
     }
 }
-struct Searcher {
+
+#[derive(Debug)]
+pub struct Searcher {
     /// Submit requests to search for new PVs
     pending_requests: mpsc::Sender<(
         String,
@@ -92,6 +95,7 @@ impl Searcher {
         )>,
     ) -> Result<(), io::Error> {
         let send_socket = UdpSocket::bind("0.0.0.0:0").await?;
+        send_socket.set_broadcast(true).unwrap();
 
         let mut state = SearcherInternal {
             search_port: self.search_port,
@@ -121,11 +125,11 @@ impl Searcher {
     }
 
     /// Get the SocketAddr for the server serving a specific PV
-    async fn search_for(&self, name: String) -> Result<SocketAddr, CouldNotFindError> {
+    pub async fn search_for(&self, name: &str) -> Result<SocketAddr, CouldNotFindError> {
         let (ret_send, ret_recv) = oneshot::channel::<broadcast::Receiver<Option<SocketAddr>>>();
         // Send the request into our async search loop
         self.pending_requests
-            .send((name, ret_send))
+            .send((name.to_string(), ret_send))
             .await
             .map_err(|_| CouldNotFindError)?;
         // Get the receiver back from here
@@ -140,7 +144,7 @@ impl Searcher {
 }
 
 #[derive(Debug)]
-struct CouldNotFindError;
+pub struct CouldNotFindError;
 
 struct SearchAttempt {
     name: String,
@@ -204,6 +208,7 @@ impl SearcherInternal {
                 channel_name: name.clone(),
                 ..Default::default()
             }));
+            debug!("Sending search for {name}");
             // Increment our search counter
             self.search_id = self.search_id.wrapping_add(1);
         }
@@ -212,8 +217,10 @@ impl SearcherInternal {
         let buffer: Vec<_> = messages.into_iter().flat_map(|m| m.as_bytes()).collect();
         // Send it to all of our broadcast IPs
         for ip in &self.broadcast_addresses {
+            let target_addr = (*ip, self.search_port).into();
+            debug!("Sending to: {target_addr}");
             socket
-                .send_to::<SocketAddr>(&buffer, (*ip, self.search_port).into())
+                .send_to::<SocketAddr>(&buffer, target_addr)
                 .await
                 .expect("Socket sending failed");
         }
