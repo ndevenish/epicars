@@ -6,7 +6,7 @@ use std::{
     io::ErrorKind,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::{
     io,
@@ -57,6 +57,7 @@ impl SearcherBuilder {
     pub async fn start(self) -> Result<Searcher, io::Error> {
         let (send, request_recv) = mpsc::channel(32);
         let mut searcher = Searcher {
+            timeout: Duration::from_secs(1),
             pending_requests: send,
             search_port: self.search_port,
             stop_token: CancellationToken::new(),
@@ -73,6 +74,7 @@ impl SearcherBuilder {
 
 #[derive(Debug)]
 pub struct Searcher {
+    timeout: Duration,
     /// Submit requests to search for new PVs
     pending_requests: mpsc::Sender<(
         String,
@@ -86,6 +88,9 @@ pub struct Searcher {
 }
 
 impl Searcher {
+    pub async fn start() -> Result<Searcher, io::Error> {
+        SearcherBuilder::new().start().await
+    }
     async fn start_searching(
         &mut self,
         mut incoming_requests: mpsc::Receiver<(
@@ -104,9 +109,10 @@ impl Searcher {
         };
 
         tokio::spawn(async move {
+            let mut buffer = vec![0u8; 0xFFFF];
             loop {
                 let mut requests = Vec::new();
-                let mut buffer = vec![0u8; 0xFFFF];
+                // Work out when the next time-based check should occue
 
                 select! {
                     _ = state.stop_token.cancelled() => break,
@@ -147,15 +153,32 @@ impl Searcher {
 #[derive(Debug)]
 pub struct CouldNotFindError;
 
+#[derive(Debug)]
 struct SearchAttempt {
     name: String,
-    attempt: u8,
-    timestamp: Instant,
+    attempts: u8,
+    started_search_at: Instant,
+    active_searches: Vec<u32>,
+    last_search_at: Instant,
+    /// How are results reported back to the requesters?
+    reporter: broadcast::Sender<Option<SocketAddr>>,
 }
 impl SearchAttempt {
     /// Get the time that we should try to search again
     fn get_next_search_timestamp(&self) -> Option<Instant> {
         None
+    }
+}
+impl Default for SearchAttempt {
+    fn default() -> Self {
+        SearchAttempt {
+            name: String::new(),
+            attempts: 0,
+            started_search_at: Instant::now(),
+            active_searches: Vec::new(),
+            last_search_at: Instant::now(),
+            reporter: broadcast::Sender::new(1),
+        }
     }
 }
 
@@ -166,11 +189,12 @@ struct SearcherInternal {
     search_port: u16,
     /// Interfaces to broadcast onto
     broadcast_addresses: Vec<IpAddr>,
-    /// Keep track of outstanding requests
-    in_flight: HashMap<u32, SearchAttempt>,
-    /// Per-PV data for in-flight requests
-    per_pv_info: HashMap<String, (broadcast::Sender<Option<SocketAddr>>, Vec<u32>)>,
+    /// Search IDs of outstanding requests to the PV name
+    in_flight: HashMap<u32, String>,
+    /// Data about all the PVs we are searching for
+    per_pv_info: HashMap<String, SearchAttempt>,
     stop_token: CancellationToken,
+    /// The next search ID to send
     search_id: u32,
 }
 impl SearcherInternal {
@@ -188,21 +212,18 @@ impl SearcherInternal {
         let mut messages = vec![Message::Version(messages::Version::default())];
         for (name, waiter_reply) in requests {
             // Get or create an entry in our per-PV map to keep track of everything
-            let (update_sender, search_ids) = self
+            let info = self
                 .per_pv_info
                 .entry(name.clone())
-                .or_insert_with(|| (broadcast::Sender::new(1), Vec::new()));
-            let _ = waiter_reply.send(update_sender.subscribe());
-            // Register this search attempt
-            self.in_flight.insert(
-                self.search_id,
-                SearchAttempt {
+                .or_insert_with(|| SearchAttempt {
                     name: name.clone(),
-                    attempt: 0,
-                    timestamp: Instant::now(),
-                },
-            );
-            search_ids.push(self.search_id);
+                    ..Default::default()
+                });
+            // Give the requester a place to wait for replies
+            let _ = waiter_reply.send(info.reporter.subscribe());
+            // Register this search attempt
+            self.in_flight.insert(self.search_id, name.clone());
+            info.active_searches.push(self.search_id);
             // Build the search message for this
             messages.push(Message::Search(messages::Search {
                 search_id: self.search_id,
@@ -242,15 +263,15 @@ impl SearcherInternal {
                 }
             };
             // What was this a response to?
-            let Some(search) = self.in_flight.remove(&response.search_id) else {
+            let Some(pv_name) = self.in_flight.remove(&response.search_id) else {
                 warn!("Received unrequested or duplicate search response");
                 continue;
             };
             // Now we know we have a response to an actual request - clear out any past
             // requests for this and send the notification up to the caller
-            let (success_sender, searchers) = self.per_pv_info.remove(&search.name).unwrap();
+            let info = self.per_pv_info.remove(&pv_name).unwrap();
             // Get rid of any other in-flight searches for this
-            for search_id in searchers {
+            for search_id in info.active_searches {
                 self.in_flight.remove(&search_id);
             }
             let server_origin = (
@@ -259,8 +280,8 @@ impl SearcherInternal {
             )
                 .into();
             // Report this to all the listeners
-            debug!("Found server for {}: {server_origin:?}", search.name);
-            let _ = success_sender.send(Some(server_origin));
+            debug!("Found server for {pv_name}: {server_origin:?}");
+            let _ = info.reporter.send(Some(server_origin));
         }
     }
 }

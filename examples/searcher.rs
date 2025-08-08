@@ -1,6 +1,6 @@
 use std::env;
 
-use epicars::client::SearcherBuilder;
+use epicars::client::Searcher;
 
 use tracing::level_filters::LevelFilter;
 
@@ -21,7 +21,7 @@ async fn main() {
         return;
     }
 
-    let searcher = SearcherBuilder::new().start().await.unwrap();
+    let searcher = Searcher::start().await.unwrap();
 
     println!("Started searcher. Requesting a PV.");
     for arg in env::args().skip(1) {
