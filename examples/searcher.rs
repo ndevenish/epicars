@@ -1,8 +1,8 @@
-use std::{env, time::Duration};
+use std::env;
 
 use epicars::client::SearcherBuilder;
 
-use tracing::{info, level_filters::LevelFilter};
+use tracing::level_filters::LevelFilter;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() {
