@@ -58,7 +58,6 @@
 //! ["DBR" types]:
 //!     https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types
 
-#[doc(hidden)]
 pub mod client;
 
 pub mod dbr;
