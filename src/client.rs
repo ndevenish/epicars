@@ -111,7 +111,9 @@ impl Searcher {
 
                 select! {
                     _ = state.stop_token.cancelled() => break,
-                    _ = incoming_requests.recv_many(&mut requests, 32) => state.handle_new_requests(&send_socket, requests).await,
+                    _ = incoming_requests.recv_many(&mut requests, 32) => if requests.is_empty() { break; } else {
+                        state.handle_new_requests(&send_socket, requests).await
+                    },
                     result = send_socket.recv_from(&mut buffer) => match result {
                         Ok((size, sender)) => state.handle_response(&buffer[..size], sender).await,
                         Err(e) => {

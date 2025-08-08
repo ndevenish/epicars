@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{env, time::Duration};
 
 use epicars::client::SearcherBuilder;
 
@@ -16,11 +16,19 @@ async fn main() {
         .with_max_level(LevelFilter::DEBUG)
         .init();
 
+    if env::args().len() == 1 {
+        println!("Usage: searcher [[PV_NAME] ...]");
+        return;
+    }
+
     let searcher = SearcherBuilder::new().start().await.unwrap();
 
     println!("Started searcher. Requesting a PV.");
-    println!(
-        "Searching result: {:?}",
-        searcher.search_for("SOMETHING").await
-    );
+    for arg in env::args().skip(1) {
+        println!("Searching for: {arg}");
+        match searcher.search_for(&arg).await {
+            Ok(addr) => println!("Found: {addr:?}"),
+            Err(_) => println!("Could not find PV in search time"),
+        }
+    }
 }
