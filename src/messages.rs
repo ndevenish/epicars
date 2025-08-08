@@ -544,7 +544,7 @@ fn padded_string(length: usize) -> impl for<'a> FnMut(&'a [u8]) -> IResult<&'a [
 
 fn pad_string(string: &str) -> Vec<u8> {
     let mut bytes = string.as_bytes().to_vec();
-    let padded_len = (bytes.len() + 1).div_ceil(8);
+    let padded_len = (bytes.len() + 1).div_ceil(8) * 8;
     bytes.resize(padded_len, 0);
     bytes
 }
