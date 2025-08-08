@@ -127,7 +127,16 @@ impl Searcher {
                             error!("Error waiting for search responses: {e}");
                         },
                     },
-                    // _ = state.next_attempt() => state.handle_retries(&send_socket).await,
+                    _ = state.next_attempt() => if let Some(buf) = state.handle_retries() {
+                        for ip in &state.broadcast_addresses {
+                            let target_addr = (*ip, state.search_port).into();
+                            debug!("Sending retry to: {target_addr}");
+                            send_socket
+                                .send_to::<SocketAddr>(&buf, target_addr)
+                                .await
+                                .expect("Socket sending failed");
+                        }
+                    },
                 };
             }
         });
@@ -208,7 +217,7 @@ struct SearcherInternal {
 }
 impl SearcherInternal {
     /// Wait until it's time for the next tracked attempt
-    fn next_attempt(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    fn next_attempt(&self) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
         let next_wake = self.per_pv_info.values().map(|v| v.next_search_at).min();
         match next_wake {
             None => Box::pin(future::pending()),
@@ -315,7 +324,7 @@ impl SearcherInternal {
         }
     }
 
-    async fn handle_retries(&mut self, socket: &UdpSocket) {
+    fn handle_retries(&mut self) -> Option<Vec<u8>> {
         let now = Instant::now();
         // Take this now so we don't have to borrow self twice
         let mut search_id = self.search_id;
@@ -333,19 +342,15 @@ impl SearcherInternal {
             .peekable();
 
         if search_messages.peek().is_some() {
-            let buf: Vec<_> = vec![Message::Version(messages::Version::default())]
-                .into_iter()
-                .chain(search_messages)
-                .flat_map(|m| m.as_bytes())
-                .collect();
-            for ip in &self.broadcast_addresses {
-                let target_addr = (*ip, self.search_port).into();
-                debug!("Sending retry to: {target_addr}");
-                socket
-                    .send_to::<SocketAddr>(&buf, target_addr)
-                    .await
-                    .expect("Socket sending failed");
-            }
+            Some(
+                vec![Message::Version(messages::Version::default())]
+                    .into_iter()
+                    .chain(search_messages)
+                    .flat_map(|m| m.as_bytes())
+                    .collect(),
+            )
+        } else {
+            None
         }
     }
 }
