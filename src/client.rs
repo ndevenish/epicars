@@ -11,6 +11,7 @@ use std::{
 use tokio::{
     io,
     net::UdpSocket,
+    select,
     sync::{mpsc, oneshot, watch},
 };
 use tokio_util::sync::CancellationToken;
@@ -83,14 +84,16 @@ impl Client {
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
 
-            while !stop.is_cancelled() {
-                match broadcast_socket.recv_from(&mut buf).await {
+            loop {
+                select! {
+                    _ = stop.cancelled() => break,
+                    r = broadcast_socket.recv_from(&mut buf) => match r {
                     Ok((size, addr)) => {
                         if let Ok((_, beacon)) = RsrvIsUp::parse(&buf[..size]) {
                             debug!("Observed beacon: {beacon:?}");
                             let send_ip =
-                                beacon.server_ip.map(|f| IpAddr::V4(a)).unwrap_or(addr.ip());
-                            let beacons = beacon_map.lock().unwrap();
+                                beacon.server_ip.map(|f| IpAddr::V4(f)).unwrap_or(addr.ip());
+                            let mut beacons = beacon_map.lock().unwrap();
                             beacons.insert(
                                 (send_ip, beacon.server_port),
                                 (beacon.beacon_id, Instant::now()),
@@ -102,6 +105,7 @@ impl Client {
                         warn!("Got unresumable error whilst watching broadcasts: {e:?}");
                         break;
                     }
+                }
                 }
             }
         });
