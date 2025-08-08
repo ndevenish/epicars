@@ -27,4 +27,5 @@ tokio-util = "0.7.13"
 tracing = "0.1.41"
 
 [dev-dependencies]
+clap = { version = "4.5.43", features = ["derive"] }
 tracing-subscriber = "0.3.19"

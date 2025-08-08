@@ -99,6 +99,10 @@ impl Searcher {
     pub async fn start() -> Result<Searcher, io::Error> {
         SearcherBuilder::new().start().await
     }
+    pub fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
     async fn start_searching(
         &mut self,
         mut incoming_requests: mpsc::Receiver<(
