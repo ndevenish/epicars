@@ -146,6 +146,10 @@ impl RawMessage {
             },
         ))
     }
+    pub fn parse_all(buffer: &[u8]) -> Result<Vec<RawMessage>, MessageError> {
+        let (_, messages) = all_consuming(many0(RawMessage::parse)).parse(buffer)?;
+        Ok(messages)
+    }
 }
 
 impl CAMessage for RawMessage {
@@ -301,6 +305,7 @@ pub enum Message {
     ServerDisconnect(ServerDisconnect),
     Write(Write),
     WriteNotify(WriteNotify),
+    WriteNotifyResponse(WriteNotifyResponse),
     Version(Version),
 }
 
@@ -330,6 +335,7 @@ impl AsBytes for Message {
             Message::Version(msg) => msg.as_bytes(),
             Message::Write(msg) => msg.as_bytes(),
             Message::WriteNotify(msg) => msg.as_bytes(),
+            Message::WriteNotifyResponse(msg) => msg.as_bytes(),
         }
     }
 }
@@ -363,6 +369,43 @@ impl Message {
             21 => Self::HostName(message.try_into()?),
             unknown => Err(MessageError::UnknownCommandId(unknown))?,
         })
+    }
+    /// Parse message sent to the client, directly from a stream.
+    ///
+    /// Handles any message that could be sent to the client, not messages that could be
+    /// sent to a server. This is because some response messages have the same command
+    /// ID but different fields, so it is impossible to tell which is which purely from
+    /// the contents of the message.
+    pub async fn read_client_message<T: AsyncRead + Unpin>(
+        source: &mut T,
+    ) -> Result<Self, MessageError> {
+        let message = RawMessage::read(source).await?;
+        Self::from_raw_client_message(message)
+    }
+
+    pub fn from_raw_client_message(message: RawMessage) -> Result<Self, MessageError> {
+        Ok(match message.command {
+            0 => Self::Version(message.try_into()?),
+            1 => Self::EventAddResponse(message.try_into()?),
+            6 => Self::SearchResponse(message.try_into()?),
+            11 => Self::ECAError(message.try_into()?),
+            15 => Self::ReadNotifyResponse(message.try_into()?),
+            18 => Self::CreateChannelResponse(message.try_into()?),
+            19 => Self::WriteNotifyResponse(message.try_into()?),
+            23 => Self::Echo,
+            21 => Self::CreateChannelFailure(message.try_into()?),
+            27 => Self::ServerDisconnect(message.try_into()?),
+            unknown => Err(MessageError::UnknownCommandId(unknown))?,
+        })
+    }
+
+    pub fn parse_many_client_messages(buffer: &[u8]) -> Result<Vec<Message>, MessageError> {
+        let messages = RawMessage::parse_all(buffer)?;
+        let result: Result<Vec<Message>, MessageError> = messages
+            .into_iter()
+            .map(Message::from_raw_client_message)
+            .collect();
+        result
     }
 }
 
@@ -619,6 +662,16 @@ pub struct Search {
     /// Indicating whether failed search response should be returned.
     pub should_reply: bool,
     pub protocol_version: u16,
+}
+impl Default for Search {
+    fn default() -> Self {
+        Self {
+            search_id: 0,
+            channel_name: String::new(),
+            should_reply: false,
+            protocol_version: EPICS_VERSION,
+        }
+    }
 }
 impl Search {
     /// Construct a search response. is_udp required because field is
@@ -1448,6 +1501,7 @@ impl CAMessage for WriteNotify {
     }
 }
 
+#[derive(Debug)]
 pub struct WriteNotifyResponse {
     pub data_type: DbrType,
     pub data_count: u32,
