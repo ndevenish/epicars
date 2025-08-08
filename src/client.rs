@@ -12,7 +12,7 @@ use tokio::{
     io,
     net::UdpSocket,
     select,
-    sync::{mpsc, oneshot, watch},
+    sync::{mpsc, oneshot},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -35,7 +35,7 @@ pub struct Client {
     /// This can be used to trigger e.g. re-searching on the appearance
     /// of a new beacon server or the case of one restarting (at which
     /// point the beacon ID resets).
-    observed_beacons: Arc<Mutex<HashMap<(IpAddr, u16), (u32, Instant)>>>,
+    observed_beacons: Arc<Mutex<HashMap<SocketAddr, (u32, Instant)>>>,
     /// Active name searches and how long ago we sent them
     name_searches: HashMap<String, (u32, Instant, oneshot::Sender<SocketAddr>)>,
     search_request_queue: Option<mpsc::Sender<(String, oneshot::Sender<SocketAddr>)>>,
@@ -59,7 +59,7 @@ impl Client {
 
     pub async fn start(&mut self) {
         // Open a UDP socket to listen for broadcast replies
-        let search_reply_socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let _search_reply_socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
 
         self.watch_broadcasts(self.cancellation.clone())
             .await
@@ -68,9 +68,9 @@ impl Client {
     }
 
     async fn manage_search_lifecycle(&mut self) -> Result<(), io::Error> {
-        let (send, recv) = mpsc::channel(32);
+        let (send, _recv) = mpsc::channel(32);
         self.search_request_queue = Some(send);
-        let send_socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let _send_socket = UdpSocket::bind("0.0.0.0:0").await?;
         tokio::spawn(async move {});
         Ok(())
     }
@@ -92,10 +92,10 @@ impl Client {
                         if let Ok((_, beacon)) = RsrvIsUp::parse(&buf[..size]) {
                             debug!("Observed beacon: {beacon:?}");
                             let send_ip =
-                                beacon.server_ip.map(|f| IpAddr::V4(f)).unwrap_or(addr.ip());
+                                beacon.server_ip.map(IpAddr::V4).unwrap_or(addr.ip());
                             let mut beacons = beacon_map.lock().unwrap();
                             beacons.insert(
-                                (send_ip, beacon.server_port),
+                                (send_ip, beacon.server_port).into(),
                                 (beacon.beacon_id, Instant::now()),
                             );
                         }
@@ -116,7 +116,7 @@ impl Client {
 impl Default for Client {
     fn default() -> Self {
         let interfaces = datalink::interfaces();
-        let broadcast_ips: Vec<Ipv4Addr> = interfaces
+        let _broadcast_ips: Vec<Ipv4Addr> = interfaces
             .into_iter()
             .filter(|i| !i.is_loopback())
             .flat_map(|i| i.ips.into_iter())
