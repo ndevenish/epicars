@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+use num::{FromPrimitive, traits::WrappingAdd};
 use pnet::datalink;
 use std::{
+    cmp::min,
     collections::HashMap,
     future,
     io::ErrorKind,
@@ -32,15 +34,18 @@ fn get_default_broadcast_ips() -> Vec<IpAddr> {
         .collect()
 }
 
-struct Circuit {
-    address: Ipv4Addr,
-    port: u16,
+/// Increments a mutable reference in place, and returns the original value
+fn wrapping_add<T: WrappingAdd + FromPrimitive + Copy>(value: &mut T) -> T {
+    let id = *value;
+    *value = value.wrapping_add(&T::from_u8(1).unwrap());
+    id
 }
 
 pub struct SearcherBuilder {
     search_port: u16,
     stop_token: CancellationToken,
     broadcast_addresses: Option<Vec<IpAddr>>,
+    timeout: Option<Duration>,
 }
 
 impl Default for SearcherBuilder {
@@ -49,6 +54,7 @@ impl Default for SearcherBuilder {
             search_port: 5064,
             stop_token: CancellationToken::new(),
             broadcast_addresses: None,
+            timeout: Some(Duration::from_secs(1)),
         }
     }
 }
@@ -59,7 +65,7 @@ impl SearcherBuilder {
     pub async fn start(self) -> Result<Searcher, io::Error> {
         let (send, request_recv) = mpsc::channel(32);
         let mut searcher = Searcher {
-            timeout: Duration::from_secs(1),
+            timeout: self.timeout,
             pending_requests: send,
             search_port: self.search_port,
             stop_token: CancellationToken::new(),
@@ -76,7 +82,7 @@ impl SearcherBuilder {
 
 #[derive(Debug)]
 pub struct Searcher {
-    timeout: Duration,
+    timeout: Option<Duration>,
     /// Submit requests to search for new PVs
     pending_requests: mpsc::Sender<(
         String,
@@ -107,6 +113,7 @@ impl Searcher {
             search_port: self.search_port,
             broadcast_addresses: self.broadcast_addresses.clone(),
             stop_token: self.stop_token.clone(),
+            timeout: self.timeout,
             ..Default::default()
         };
 
@@ -127,7 +134,7 @@ impl Searcher {
                             error!("Error waiting for search responses: {e}");
                         },
                     },
-                    _ = state.next_attempt() => if let Some(buf) = state.handle_retries() {
+                    _ = state.next_attempt() => if let Some(buf) = state.handle_retries_and_timeouts() {
                         for ip in &state.broadcast_addresses {
                             let target_addr = (*ip, state.search_port).into();
                             debug!("Sending retry to: {target_addr}");
@@ -169,16 +176,17 @@ pub struct CouldNotFindError;
 struct SearchAttempt {
     name: String,
     // attempts: u8,
-    started_search_at: Instant,
+    search_expires_at: Option<Instant>,
     active_searches: Vec<u32>,
     next_search_at: Instant,
     /// How are results reported back to the requesters?
     reporter: broadcast::Sender<Option<SocketAddr>>,
 }
 impl SearchAttempt {
-    /// Register the fact that we ran a new search and calculate next timings
-    fn search(&mut self, search_id: u32) -> messages::Search {
-        let backoff = Duration::from_millis(32 * 2u64.pow(self.active_searches.len() as u32));
+    /// Recalculate timings and return a new search message
+    fn new_search(&mut self, search_id: u32) -> messages::Search {
+        let backoff =
+            Duration::from_millis(32 * 2u64.pow(min(self.active_searches.len(), 11) as u32));
         self.active_searches.push(search_id);
         self.next_search_at = Instant::now() + backoff;
         messages::Search {
@@ -192,7 +200,7 @@ impl Default for SearchAttempt {
     fn default() -> Self {
         SearchAttempt {
             name: String::new(),
-            started_search_at: Instant::now(),
+            search_expires_at: None,
             active_searches: Vec::new(),
             next_search_at: Instant::now(),
             reporter: broadcast::Sender::new(1),
@@ -214,11 +222,17 @@ struct SearcherInternal {
     stop_token: CancellationToken,
     /// The next search ID to send
     search_id: u32,
+    timeout: Option<Duration>,
 }
 impl SearcherInternal {
     /// Wait until it's time for the next tracked attempt
     fn next_attempt(&self) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
-        let next_wake = self.per_pv_info.values().map(|v| v.next_search_at).min();
+        let next_wake = self
+            .per_pv_info
+            .values()
+            .flat_map(|v| [Some(v.next_search_at), v.search_expires_at])
+            .flatten()
+            .min();
         match next_wake {
             None => Box::pin(future::pending()),
             Some(instant) => {
@@ -232,11 +246,7 @@ impl SearcherInternal {
             }
         }
     }
-    fn next_search_id(&mut self) -> u32 {
-        let id = self.search_id;
-        self.search_id = self.search_id.wrapping_add(1);
-        id
-    }
+
     async fn handle_new_requests(
         &mut self,
         socket: &UdpSocket,
@@ -256,22 +266,17 @@ impl SearcherInternal {
                 .entry(name.clone())
                 .or_insert_with(|| SearchAttempt {
                     name: name.clone(),
+                    search_expires_at: self.timeout.map(|t| Instant::now() + t),
                     ..Default::default()
                 });
             // Give the requester a place to wait for replies
             let _ = waiter_reply.send(info.reporter.subscribe());
+            let search_id = wrapping_add(&mut self.search_id);
             // Register this search attempt
-            self.in_flight.insert(self.search_id, name.clone());
-            info.active_searches.push(self.search_id);
+            self.in_flight.insert(search_id, name.clone());
             // Build the search message for this
-            messages.push(Message::Search(messages::Search {
-                search_id: self.search_id,
-                channel_name: name.clone(),
-                ..Default::default()
-            }));
+            messages.push(Message::Search(info.new_search(search_id)));
             debug!("Sending search for {name}");
-            // Increment our search counter
-            self.search_id = self.search_id.wrapping_add(1);
         }
 
         // Build a single search packet for all of these
@@ -324,20 +329,39 @@ impl SearcherInternal {
         }
     }
 
-    fn handle_retries(&mut self) -> Option<Vec<u8>> {
+    fn handle_retries_and_timeouts(&mut self) -> Option<Vec<u8>> {
         let now = Instant::now();
-        // Take this now so we don't have to borrow self twice
-        let mut search_id = self.search_id;
+
+        // discard any expired searches
+        self.per_pv_info.retain(|_, v| match v.search_expires_at {
+            None => true,
+            Some(time) => {
+                if time < now {
+                    // We are discarding this. Send the termination signal,
+                    let _ = v.reporter.send(None);
+                    // And then remove from the in-flight register
+                    for id in v.active_searches.iter() {
+                        let _ = self.in_flight.remove(id);
+                    }
+                    debug!(
+                        "Dropping search for {} as reached search timeout {:.2} ms ago",
+                        v.name,
+                        (now - time).as_secs_f32() * 1000.0
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+        });
 
         let mut search_messages = self
             .per_pv_info
             .values_mut()
             .filter(|s| s.next_search_at < now)
             .map(|s| {
-                let sid = search_id;
-                search_id = search_id.wrapping_add(1);
                 debug!("Sending retry search for: {}", s.name);
-                Message::Search(s.search(sid))
+                Message::Search(s.new_search(wrapping_add(&mut self.search_id)))
             })
             .peekable();
 
@@ -353,6 +377,11 @@ impl SearcherInternal {
             None
         }
     }
+}
+
+struct Circuit {
+    address: Ipv4Addr,
+    port: u16,
 }
 
 pub struct Client {
@@ -442,5 +471,17 @@ impl Default for Client {
             circuits: Vec::new(),
             cancellation: CancellationToken::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::client::wrapping_add;
+
+    #[test]
+    fn test_wrapping_add() {
+        let mut i = 3u32;
+        assert_eq!(wrapping_add(&mut i), 3);
+        assert_eq!(i, 4);
     }
 }
