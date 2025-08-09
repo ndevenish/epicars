@@ -1,15 +1,11 @@
-#![allow(dead_code)]
-
 use num::{FromPrimitive, traits::WrappingAdd};
 use pnet::datalink;
 use std::{
     cmp::min,
     collections::HashMap,
     future,
-    io::ErrorKind,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     pin::Pin,
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -21,7 +17,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
-use crate::messages::{self, AsBytes, CAMessage, Message, RsrvIsUp};
+use crate::messages::{self, AsBytes, Message};
 
 fn get_default_broadcast_ips() -> Vec<IpAddr> {
     let interfaces = datalink::interfaces();
@@ -46,6 +42,8 @@ pub struct SearcherBuilder {
     stop_token: CancellationToken,
     broadcast_addresses: Option<Vec<IpAddr>>,
     timeout: Option<Duration>,
+    /// The socket that is UDP bound to receive replies
+    bind_address: SocketAddr,
 }
 
 impl Default for SearcherBuilder {
@@ -55,6 +53,7 @@ impl Default for SearcherBuilder {
             stop_token: CancellationToken::new(),
             broadcast_addresses: None,
             timeout: Some(Duration::from_secs(1)),
+            bind_address: "0.0.0.0:0".parse().unwrap(),
         }
     }
 }
@@ -72,11 +71,24 @@ impl SearcherBuilder {
             broadcast_addresses: self
                 .broadcast_addresses
                 .unwrap_or_else(get_default_broadcast_ips),
+            bind_address: self.bind_address,
         };
         searcher
             .start_searching(request_recv)
             .await
             .and(Ok(searcher))
+    }
+    pub fn stop_token(mut self, token: CancellationToken) -> Self {
+        self.stop_token = token.child_token();
+        self
+    }
+    pub fn search_port(mut self, port: u16) -> Self {
+        self.search_port = port;
+        self
+    }
+    pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -93,6 +105,7 @@ pub struct Searcher {
     /// Interfaces to broadcast onto
     broadcast_addresses: Vec<IpAddr>,
     stop_token: CancellationToken,
+    bind_address: SocketAddr,
 }
 
 impl Searcher {
@@ -110,7 +123,7 @@ impl Searcher {
             oneshot::Sender<broadcast::Receiver<Option<SocketAddr>>>,
         )>,
     ) -> Result<(), io::Error> {
-        let send_socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let send_socket = UdpSocket::bind(self.bind_address).await?;
         send_socket.set_broadcast(true).unwrap();
 
         let mut state = SearcherInternal {
@@ -170,6 +183,19 @@ impl Searcher {
             .await
             .unwrap_or(None)
             .ok_or(CouldNotFindError)
+    }
+
+    pub fn stop(&self) {
+        self.stop_token.cancel();
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.stop_token.is_cancelled()
+    }
+}
+
+impl Drop for Searcher {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -383,104 +409,9 @@ impl SearcherInternal {
     }
 }
 
-struct Circuit {
-    address: Ipv4Addr,
-    port: u16,
-}
-
-pub struct Client {
-    /// Port to listen for server beacon messages
-    beacon_port: u16,
-    /// Multicast port on which to send searches
-    search_port: u16,
-    /// Interfaces to broadcast onto
-    broadcast_addresses: Vec<IpAddr>,
-    /// Servers we have seen broadcasting.
-    /// This can be used to trigger e.g. re-searching on the appearance
-    /// of a new beacon server or the case of one restarting (at which
-    /// point the beacon ID resets).
-    observed_beacons: Arc<Mutex<HashMap<SocketAddr, (u32, Instant)>>>,
-    /// Active name searches and how long ago we sent them
-    // name_searches: HashMap<u32, (String, Instant, oneshot::Sender<SocketAddr>)>,
-    /// Active connections to different servers
-    circuits: Vec<Circuit>,
-    /// The cancellation token
-    cancellation: CancellationToken,
-}
-
-impl Client {
-    pub fn new(beacon_port: u16, search_port: u16, broadcast_addresses: Vec<IpAddr>) -> Client {
-        Client {
-            beacon_port,
-            search_port,
-            broadcast_addresses,
-            ..Default::default()
-        }
-    }
-
-    pub async fn start(&mut self) {
-        // Open a UDP socket to listen for broadcast replies
-        let _search_reply_socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
-
-        self.watch_broadcasts(self.cancellation.clone())
-            .await
-            .unwrap();
-    }
-
-    /// Watch for broadcast beacons, and record their ID and timestamp into the client map
-    async fn watch_broadcasts(&self, stop: CancellationToken) -> Result<(), io::Error> {
-        let port = self.beacon_port;
-        let beacon_map = self.observed_beacons.clone();
-        // Bind the socket first, so that we know early if it fails
-        let broadcast_socket = UdpSocket::bind(SocketAddr::new([0, 0, 0, 0].into(), port)).await?;
-        tokio::spawn(async move {
-            let mut buf: Vec<u8> = vec![0; 0xFFFF];
-
-            loop {
-                select! {
-                    _ = stop.cancelled() => break,
-                    r = broadcast_socket.recv_from(&mut buf) => match r {
-                    Ok((size, addr)) => {
-                        if let Ok((_, beacon)) = RsrvIsUp::parse(&buf[..size]) {
-                            debug!("Observed beacon: {beacon:?}");
-                            let send_ip =
-                                beacon.server_ip.map(IpAddr::V4).unwrap_or(addr.ip());
-                            let mut beacons = beacon_map.lock().unwrap();
-                            beacons.insert(
-                                (send_ip, beacon.server_port).into(),
-                                (beacon.beacon_id, Instant::now()),
-                            );
-                        }
-                    }
-                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                    Err(e) => {
-                        warn!("Got unresumable error whilst watching broadcasts: {e:?}");
-                        break;
-                    }
-                }
-                }
-            }
-        });
-        Ok(())
-    }
-}
-
-impl Default for Client {
-    fn default() -> Self {
-        Client {
-            beacon_port: 5065,
-            search_port: 5064,
-            broadcast_addresses: Vec::new(),
-            observed_beacons: Arc::new(Mutex::new(HashMap::new())),
-            circuits: Vec::new(),
-            cancellation: CancellationToken::new(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use crate::client::wrapping_add;
+    use crate::client::searcher::wrapping_add;
 
     #[test]
     fn test_wrapping_add() {

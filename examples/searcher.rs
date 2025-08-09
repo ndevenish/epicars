@@ -1,7 +1,7 @@
 use clap::Parser;
 use epicars::client::Searcher;
 
-use tracing::{Level, level_filters::LevelFilter};
+use tracing::level_filters::LevelFilter;
 
 #[derive(Parser)]
 struct Options {
