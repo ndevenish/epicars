@@ -28,7 +28,7 @@ use nom::{
     number::complete::{be_f32, be_u16, be_u32},
 };
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use crate::dbr::{DbrBasicType, DbrType};
 
@@ -418,8 +418,58 @@ impl Message {
             .collect();
         result
     }
+
+    pub async fn write_all_messages<T: AsyncWriteExt + Unpin>(
+        messages: &[Message],
+        to: &mut T,
+    ) -> io::Result<()> {
+        let buffer: Vec<u8> = messages.iter().flat_map(|m| m.as_bytes()).collect();
+        to.write_all(&buffer).await
+    }
 }
 
+/// Macro to help define all the From<X> implementations
+macro_rules! impl_from_for {
+    ($($ty:ident),* $(,)?) => {
+        $(
+            impl From<$ty> for Message {
+                fn from(value: $ty) -> Self {
+                    Message::$ty(value)
+                }
+            }
+        )*
+    };
+}
+
+impl_from_for!(
+    AccessRights,
+    ClearChannel,
+    ClientName,
+    CreateChannel,
+    CreateChannelFailure,
+    CreateChannelResponse,
+    ECAError,
+    EventAdd,
+    EventCancel,
+    EventAddResponse,
+    HostName,
+    ReadNotify,
+    ReadNotifyResponse,
+    RsrvIsUp,
+    Search,
+    SearchResponse,
+    ServerDisconnect,
+    Write,
+    WriteNotify,
+    WriteNotifyResponse,
+    Version
+);
+
+// impl From<Version> for Message {
+//     fn from(value: Version) -> Self {
+//         Message::Version(value)
+//     }
+// }
 // /// Represent any message that can be sent to a Server
 // pub enum ServerMessage {
 //     ClearChannel(ClearChannel),
@@ -631,6 +681,11 @@ impl CAMessage for RsrvIsUp {
 pub struct Version {
     pub priority: u16,
     pub protocol_version: u16,
+}
+impl Version {
+    pub fn is_compatible(&self) -> bool {
+        self.protocol_version == EPICS_VERSION
+    }
 }
 impl Default for Version {
     fn default() -> Self {

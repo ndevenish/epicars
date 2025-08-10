@@ -3,6 +3,7 @@ use pnet::datalink;
 use std::{
     cmp::min,
     collections::HashMap,
+    fmt::Display,
     future,
     net::{IpAddr, SocketAddr},
     pin::Pin,
@@ -205,6 +206,14 @@ impl Drop for Searcher {
 
 #[derive(Debug)]
 pub struct CouldNotFindError;
+
+impl Display for CouldNotFindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Could not find the requested PV")
+    }
+}
+
+impl std::error::Error for CouldNotFindError {}
 
 #[derive(Debug)]
 struct SearchAttempt {

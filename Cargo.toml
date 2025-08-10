@@ -25,6 +25,7 @@ tokio = { version = "1.43.1", features = [
 ] }
 tokio-util = "0.7.13"
 tracing = "0.1.41"
+whoami = { version = "1.6.0", default-features = false }
 
 [dev-dependencies]
 clap = { version = "4.5.43", features = ["derive"] }
