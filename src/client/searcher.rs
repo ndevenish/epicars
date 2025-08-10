@@ -90,6 +90,10 @@ impl SearcherBuilder {
         self.timeout = timeout;
         self
     }
+    pub fn broadcast_to(mut self, addresses: Vec<IpAddr>) -> Self {
+        self.broadcast_addresses = Some(addresses);
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -411,12 +415,59 @@ impl SearcherInternal {
 
 #[cfg(test)]
 mod test {
-    use crate::client::searcher::wrapping_add;
+    use std::net::IpAddr;
+
+    use tokio::net::UdpSocket;
+
+    use crate::{
+        client::{SearcherBuilder, searcher::wrapping_add},
+        messages::{AsBytes, Message},
+    };
 
     #[test]
     fn test_wrapping_add() {
         let mut i = 3u32;
         assert_eq!(wrapping_add(&mut i), 3);
         assert_eq!(i, 4);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_search() {
+        // Set up a receiver
+        let incoming = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = incoming.local_addr().unwrap().port();
+
+        let subtask = tokio::spawn(async move {
+            let s = SearcherBuilder::new()
+                .search_port(port)
+                .broadcast_to(vec![IpAddr::V4([127, 0, 0, 1].into())])
+                .start()
+                .await
+                .unwrap();
+            assert_eq!(
+                s.search_for("TEST").await.unwrap(),
+                "127.0.0.1:6464".to_string().parse().unwrap()
+            );
+        });
+
+        // Receive and validate this request
+        let mut buffer = [0u8; 16384];
+        let (size, source) = incoming.recv_from(&mut buffer).await.unwrap();
+        let messages = Message::parse_many_server_messages(&buffer[..size]).unwrap();
+        println!("{messages:?}");
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(messages[0], Message::Version(_)));
+        let Message::Search(search_msg) = &messages[1] else {
+            panic!("Didn't get a search message");
+        };
+        assert_eq!(search_msg.channel_name, "TEST");
+
+        // Send a message back
+        incoming
+            .send_to(&search_msg.respond(None, 6464, true).as_bytes(), source)
+            .await
+            .unwrap();
+
+        subtask.await.unwrap();
     }
 }

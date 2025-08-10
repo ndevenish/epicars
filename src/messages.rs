@@ -341,35 +341,6 @@ impl AsBytes for Message {
 }
 
 impl Message {
-    /// Parse message sent to the server, directly from a stream.
-    ///
-    /// Handles any message that could be sent to the server, not messages that could be
-    /// sent to a client. This is because some response messages have the same command
-    /// ID but different fields, so it is impossible to tell which is which purely from
-    /// the contents of the message.
-    pub async fn read_server_message<T: AsyncRead + Unpin>(
-        source: &mut T,
-    ) -> Result<Self, MessageError> {
-        let message = RawMessage::read(source).await?;
-
-        Ok(match message.command {
-            0 => Self::Version(message.try_into()?),
-            1 => Self::EventAdd(message.try_into()?),
-            2 => Self::EventCancel(message.try_into()?),
-            4 => Self::Write(message.try_into()?),
-            6 => Self::Search(message.try_into()?),
-            8 => Self::EventsOff,
-            9 => Self::EventsOn,
-            12 => Self::ClearChannel(message.try_into()?),
-            15 => Self::ReadNotify(message.try_into()?),
-            18 => Self::CreateChannel(message.try_into()?),
-            19 => Self::WriteNotify(message.try_into()?),
-            23 => Self::Echo,
-            20 => Self::ClientName(message.try_into()?),
-            21 => Self::HostName(message.try_into()?),
-            unknown => Err(MessageError::UnknownCommandId(unknown))?,
-        })
-    }
     /// Parse message sent to the client, directly from a stream.
     ///
     /// Handles any message that could be sent to the client, not messages that could be
@@ -404,6 +375,46 @@ impl Message {
         let result: Result<Vec<Message>, MessageError> = messages
             .into_iter()
             .map(Message::from_raw_client_message)
+            .collect();
+        result
+    }
+
+    /// Parse message sent to the server, directly from a stream.
+    ///
+    /// Handles any message that could be sent to the server, not messages that could be
+    /// sent to a client. This is because some response messages have the same command
+    /// ID but different fields, so it is impossible to tell which is which purely from
+    /// the contents of the message.
+    pub async fn read_server_message<T: AsyncRead + Unpin>(
+        source: &mut T,
+    ) -> Result<Self, MessageError> {
+        let message = RawMessage::read(source).await?;
+        Self::from_raw_server_message(message)
+    }
+    pub fn from_raw_server_message(message: RawMessage) -> Result<Self, MessageError> {
+        Ok(match message.command {
+            0 => Self::Version(message.try_into()?),
+            1 => Self::EventAdd(message.try_into()?),
+            2 => Self::EventCancel(message.try_into()?),
+            4 => Self::Write(message.try_into()?),
+            6 => Self::Search(message.try_into()?),
+            8 => Self::EventsOff,
+            9 => Self::EventsOn,
+            12 => Self::ClearChannel(message.try_into()?),
+            15 => Self::ReadNotify(message.try_into()?),
+            18 => Self::CreateChannel(message.try_into()?),
+            19 => Self::WriteNotify(message.try_into()?),
+            23 => Self::Echo,
+            20 => Self::ClientName(message.try_into()?),
+            21 => Self::HostName(message.try_into()?),
+            unknown => Err(MessageError::UnknownCommandId(unknown))?,
+        })
+    }
+    pub fn parse_many_server_messages(buffer: &[u8]) -> Result<Vec<Message>, MessageError> {
+        let messages = RawMessage::parse_all(buffer)?;
+        let result: Result<Vec<Message>, MessageError> = messages
+            .into_iter()
+            .map(Message::from_raw_server_message)
             .collect();
         result
     }
