@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use num::{FromPrimitive, traits::WrappingAdd};
 use pnet::datalink;
 use std::{
     collections::HashMap,
@@ -13,7 +12,10 @@ use tokio::{io, net::UdpSocket, select};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::messages::{CAMessage, RsrvIsUp};
+use crate::{
+    client::Searcher,
+    messages::{CAMessage, RsrvIsUp},
+};
 
 fn get_default_broadcast_ips() -> Vec<IpAddr> {
     let interfaces = datalink::interfaces();
@@ -24,13 +26,6 @@ fn get_default_broadcast_ips() -> Vec<IpAddr> {
         .filter(|i| i.is_ipv4())
         .map(|f| f.broadcast())
         .collect()
-}
-
-/// Increments a mutable reference in place, and returns the original value
-fn wrapping_add<T: WrappingAdd + FromPrimitive + Copy>(value: &mut T) -> T {
-    let id = *value;
-    *value = value.wrapping_add(&T::from_u8(1).unwrap());
-    id
 }
 
 struct Circuit {
@@ -56,25 +51,27 @@ pub struct Client {
     circuits: Vec<Circuit>,
     /// The cancellation token
     cancellation: CancellationToken,
+    searcher: Searcher,
 }
 
 impl Client {
-    pub fn new(beacon_port: u16, search_port: u16, broadcast_addresses: Vec<IpAddr>) -> Client {
-        Client {
-            beacon_port,
-            search_port,
-            broadcast_addresses,
-            ..Default::default()
-        }
+    pub async fn new() -> Result<Client, io::Error> {
+        let mut client = Client {
+            beacon_port: 5065,
+            search_port: 5064,
+            broadcast_addresses: get_default_broadcast_ips(),
+            observed_beacons: Arc::new(Mutex::new(HashMap::new())),
+            circuits: Vec::new(),
+            cancellation: CancellationToken::new(),
+            searcher: Searcher::start().await.unwrap(),
+        };
+        client.start().await?;
+        Ok(client)
     }
 
-    pub async fn start(&mut self) {
-        // Open a UDP socket to listen for broadcast replies
-        let _search_reply_socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
-
-        self.watch_broadcasts(self.cancellation.clone())
-            .await
-            .unwrap();
+    async fn start(&mut self) -> Result<(), io::Error> {
+        self.watch_broadcasts(self.cancellation.clone()).await?;
+        Ok(())
     }
 
     /// Watch for broadcast beacons, and record their ID and timestamp into the client map
@@ -112,18 +109,5 @@ impl Client {
             }
         });
         Ok(())
-    }
-}
-
-impl Default for Client {
-    fn default() -> Self {
-        Client {
-            beacon_port: 5065,
-            search_port: 5064,
-            broadcast_addresses: Vec::new(),
-            observed_beacons: Arc::new(Mutex::new(HashMap::new())),
-            circuits: Vec::new(),
-            cancellation: CancellationToken::new(),
-        }
     }
 }

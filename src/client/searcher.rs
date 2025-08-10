@@ -216,6 +216,7 @@ struct SearchAttempt {
     /// How are results reported back to the requesters?
     reporter: broadcast::Sender<Option<SocketAddr>>,
 }
+
 impl SearchAttempt {
     /// Recalculate timings and return a new search message
     fn new_search(&mut self, search_id: u32) -> messages::Search {
