@@ -124,7 +124,7 @@ impl Decoder for RawMessageDecoder {
                 .unwrap();
             MessageHeader {
                 command,
-                payload_size: payload_size,
+                payload_size,
                 field_1_data_type: field_1,
                 field_2_data_count: field_2,
                 field_3_parameter_1: field_3,
