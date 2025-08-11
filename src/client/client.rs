@@ -9,7 +9,7 @@ use std::{
     time::Instant,
 };
 use tokio::{
-    io::{self, AsyncReadExt},
+    io::{self, AsyncReadExt, AsyncWriteExt, split},
     net::TcpStream,
     select,
     sync::{mpsc, oneshot},
@@ -138,29 +138,44 @@ struct CircuitInternal {
     cancel: CancellationToken,
 }
 impl CircuitInternal {
-    async fn circuit_lifecycle(&mut self, mut tcp: TcpStream) {
+    async fn circuit_lifecycle(&mut self, tcp: TcpStream) {
         debug!("Started circuit to {}", self.address);
-        let mut framed = FramedRead::with_capacity(&mut tcp, ClientMessage {}, 16384usize);
+        let (tcp_rx, mut tcp_tx) = split(tcp);
+        let mut framed = FramedRead::with_capacity(tcp_rx, ClientMessage {}, 16384usize);
         loop {
-            select! {
+            let messages_out = select! {
+                _ = self.cancel.cancelled() => break,
                 Some(message) = framed.next() => match message {
                     Ok(message) => self.handle_message(message).await,
                     Err(e) => {
                         error!("Got error processing server message: {e}");
+                        continue;
                     }
                 },
                 request = self.requests_rx.recv() => match request {
                     None => break,
                     Some(req) => self.handle_request(req).await
                 },
+            };
+            // Send any messages out
+            if Message::write_all_messages(&messages_out, &mut tcp_tx)
+                .await
+                .is_err()
+            {
+                error!("Failed to write messages to io stream, aborting");
             }
         }
+        self.cancel.cancel();
+        let _ = tcp_tx.shutdown().await;
     }
-    async fn handle_request(&mut self, _request: CircuitRequest) {
+
+    async fn handle_request(&mut self, _request: CircuitRequest) -> Vec<Message> {
         todo!();
+        Vec::new()
     }
-    async fn handle_message(&mut self, _message: Message) {
-        todo!();
+    async fn handle_message(&mut self, message: Message) -> Vec<Message> {
+        println!("Handling message from server: {message:?}");
+        Vec::new()
     }
 }
 
