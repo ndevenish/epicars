@@ -23,7 +23,8 @@ tokio = { version = "1.43.1", features = [
     "io-util",
     "rt-multi-thread",
 ] }
-tokio-util = "0.7.13"
+tokio-stream = "0.1.17"
+tokio-util = {version = "0.7.13", features = ["codec"]}
 tracing = "0.1.41"
 whoami = { version = "1.6.0", default-features = false }
 

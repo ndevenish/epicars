@@ -14,13 +14,14 @@ use tokio::{
     select,
     sync::{mpsc, oneshot},
 };
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tokio_stream::StreamExt;
+use tokio_util::{codec::FramedRead, sync::CancellationToken};
+use tracing::{debug, error, warn};
 
 use crate::{
     client::{Searcher, searcher::CouldNotFindError},
     dbr::{Dbr, DbrType, DbrValue},
-    messages::{self, CAMessage, Message, RsrvIsUp},
+    messages::{self, CAMessage, ClientMessage, Message, RsrvIsUp},
     utils::new_reusable_udp_socket,
 };
 
@@ -141,8 +142,15 @@ struct CircuitInternal {
 impl CircuitInternal {
     async fn circuit_lifecycle(&mut self) {
         debug!("Started circuit to {}", self.address);
+        let mut framed = FramedRead::with_capacity(&mut self.tcp, ClientMessage {}, 16384usize);
         loop {
             select! {
+                Some(message) = framed.next() => match message {
+                    Ok(message) => self.handle_message(message).await,
+                    Err(e) => {
+                        error!("Got error processing server message: {e}");
+                    }
+                },
                 request = self.requests_rx.recv() => match request {
                     None => break,
                     Some(req) => self.handle_request(req).await
@@ -151,6 +159,9 @@ impl CircuitInternal {
         }
     }
     async fn handle_request(&mut self, _request: CircuitRequest) {
+        todo!();
+    }
+    async fn handle_message(&mut self, _message: Message) {
         todo!();
     }
 }

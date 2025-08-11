@@ -29,6 +29,10 @@ use nom::{
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio_util::{
+    bytes::{Buf, BytesMut},
+    codec::Decoder,
+};
 
 use crate::dbr::{DbrBasicType, DbrType};
 
@@ -66,6 +70,86 @@ pub struct RawMessage {
     field_3_parameter_1: u32,
     field_4_parameter_2: u32,
     payload: Vec<u8>,
+}
+
+pub struct RawMessageDecoder;
+
+impl Decoder for RawMessageDecoder {
+    type Item = RawMessage;
+    type Error = std::io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if src.len() < 4 {
+            return Ok(None);
+        }
+        let (_, (command, payload_size)) = (be_u16::<&[u8], nom::error::Error<&[u8]>>, be_u16)
+            .parse_complete(&src[..4])
+            .unwrap();
+        let header_len = if payload_size == 0xFFFF {
+            32usize
+        } else {
+            16usize
+        };
+        if src.len() < header_len {
+            return Ok(None);
+        }
+
+        let header = if header_len == 16 {
+            let (_, (field_1, field_2, field_3, field_4)) = (
+                be_u16::<&[u8], nom::error::Error<&[u8]>>,
+                be_u16,
+                be_u32,
+                be_u32,
+            )
+                .parse_complete(&src[4..16])
+                .unwrap();
+            MessageHeader {
+                command,
+                payload_size: payload_size as u32,
+                field_1_data_type: field_1,
+                field_2_data_count: field_2 as u32,
+                field_3_parameter_1: field_3,
+                field_4_parameter_2: field_4,
+            }
+        } else {
+            let (_, (field_1, _, field_3, field_4, payload_size, field_2)) = (
+                be_u16::<&[u8], nom::error::Error<&[u8]>>,
+                take(2usize),
+                be_u32,
+                be_u32,
+                be_u32,
+                be_u32,
+            )
+                .parse_complete(&src[4..32])
+                .unwrap();
+            MessageHeader {
+                command,
+                payload_size: payload_size,
+                field_1_data_type: field_1,
+                field_2_data_count: field_2,
+                field_3_parameter_1: field_3,
+                field_4_parameter_2: field_4,
+            }
+        };
+        // Now we have the full header, we know how long the payload is
+        let full_message_length = header_len + (header.payload_size as usize);
+        src.reserve(full_message_length);
+        if src.len() < full_message_length {
+            return Ok(None);
+        }
+        let payload = src[header_len..full_message_length].to_owned();
+        debug_assert!(payload.len() == header.payload_size as usize);
+        src.advance(full_message_length);
+        // Now we have all of the data!
+        Ok(Some(RawMessage {
+            command: header.command,
+            field_1_data_type: header.field_1_data_type,
+            field_2_data_count: header.field_2_data_count,
+            field_3_parameter_1: header.field_3_parameter_1,
+            field_4_parameter_2: header.field_4_parameter_2,
+            payload,
+        }))
+    }
 }
 
 impl RawMessage {
@@ -464,6 +548,21 @@ impl_from_for!(
     WriteNotifyResponse,
     Version
 );
+
+/// Handle messages that can only be sent to a client
+pub struct ClientMessage;
+
+impl Decoder for ClientMessage {
+    type Item = Message;
+    type Error = MessageError;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        let Some(message) = RawMessageDecoder {}.decode(src).unwrap() else {
+            return Ok(None);
+        };
+        Ok(Some(Message::from_raw_client_message(message)?))
+    }
+}
 
 // impl From<Version> for Message {
 //     fn from(value: Version) -> Self {
