@@ -84,7 +84,6 @@ impl Circuit {
 
         let (requests_tx, requests_rx) = mpsc::channel(8);
         // Now we have a connected circuit, ready for lifecycle!
-        debug!("Circuit Ready.");
         let cancel = CancellationToken::new();
 
         // Make the internal object
@@ -100,6 +99,8 @@ impl Circuit {
             .circuit_lifecycle()
             .await;
         });
+
+        debug!("Circuit Ready.");
 
         Ok(Circuit {
             address: *address,
