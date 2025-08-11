@@ -37,7 +37,7 @@ fn get_default_broadcast_ips() -> Vec<IpAddr> {
 }
 
 enum CircuitRequest {
-    GetChannel(String, oneshot::Sender<Result<Channel, ClientError>>),
+    GetChannel(String, oneshot::Sender<Result<ChannelInfo, ClientError>>),
     /// Read a single value from the server
     Read {
         channel: u32,
@@ -135,7 +135,7 @@ impl Circuit {
     //     self.
     // }
 
-    async fn get_channel(&self, name: String) -> Result<Channel, ClientError> {
+    async fn get_channel(&self, name: String) -> Result<ChannelInfo, ClientError> {
         let (tx, rx) = oneshot::channel();
         self.requests_tx
             .send(CircuitRequest::GetChannel(name, tx))
@@ -170,13 +170,38 @@ enum ChannelState {
     Ready,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// Summary of channel information
+#[derive(Debug, Clone, Copy)]
+struct ChannelInfo {
+    state: ChannelState,
+    native_type: DbrBasicType,
+    native_count: u32,
+    cid: u32,
+    permissions: Access,
+}
+
+impl From<&Channel> for ChannelInfo {
+    fn from(c: &Channel) -> Self {
+        Self {
+            state: c.state,
+            native_type: c.native_type.unwrap(),
+            native_count: c.native_count,
+            cid: c.cid,
+            permissions: c.permissions,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
 struct Channel {
+    name: String,
     state: ChannelState,
     native_type: Option<DbrBasicType>,
     native_count: u32,
     cid: u32,
     permissions: Access,
+    /// Watchers waiting for this channel to be open
+    pending_open: Vec<oneshot::Sender<Result<ChannelInfo, ClientError>>>,
 }
 
 // Inner circuit state, used to hold async management data
@@ -192,7 +217,7 @@ struct CircuitInternal {
     channels: HashMap<u32, Channel>,
     channel_lookup: HashMap<String, u32>,
     /// List of waiters for a channel to be opened
-    pending_channels: HashMap<u32, Vec<oneshot::Sender<Result<Channel, ClientError>>>>,
+    pending_channels: HashMap<u32, Vec<oneshot::Sender<Result<ChannelInfo, ClientError>>>>,
 }
 impl CircuitInternal {
     async fn circuit_lifecycle(&mut self, tcp: TcpStream) {
@@ -237,6 +262,7 @@ impl CircuitInternal {
             state: ChannelState::SentCreate, // Or, about to, anyway
             ..Default::default()
         };
+        let _span = debug_span!("create_channel", cid = cid).entered();
         debug!("Creating channel '{name}' cid: {cid}");
         self.channel_lookup.insert(name.clone(), cid);
         self.channels.insert(cid, channel);
@@ -266,7 +292,7 @@ impl CircuitInternal {
                         }
                         ChannelState::Ready => {
                             // Already ready, just send it out
-                            let _ = sender.send(Ok(*channel));
+                            let _ = sender.send(Ok(channel.into()));
                         }
                     }
                     Vec::new()
@@ -313,7 +339,7 @@ impl CircuitInternal {
                     && !pending.is_empty()
                 {
                     for sender in pending {
-                        let _ = sender.send(Ok(*channel));
+                        let _ = sender.send(Ok((&*channel).into()));
                     }
                 }
             }
