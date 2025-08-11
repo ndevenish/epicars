@@ -179,18 +179,6 @@ struct ChannelInfo {
     permissions: Access,
 }
 
-impl From<&Channel> for ChannelInfo {
-    fn from(c: &Channel) -> Self {
-        Self {
-            state: c.state,
-            native_type: c.native_type.unwrap(),
-            native_count: c.native_count,
-            cid: c.cid,
-            permissions: c.permissions,
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 struct Channel {
     name: String,
@@ -203,6 +191,17 @@ struct Channel {
     pending_open: Vec<oneshot::Sender<Result<ChannelInfo, ClientError>>>,
 }
 
+impl Channel {
+    fn info(&self) -> ChannelInfo {
+        ChannelInfo {
+            state: self.state,
+            native_type: self.native_type.unwrap(),
+            native_count: self.native_count,
+            cid: self.cid,
+            permissions: self.permissions,
+        }
+    }
+}
 // Inner circuit state, used to hold async management data
 struct CircuitInternal {
     /// A copy of the address we are connected to
@@ -287,7 +286,7 @@ impl CircuitInternal {
                         ChannelState::SentCreate => channel.pending_open.push(sender),
                         ChannelState::Ready => {
                             // Already ready, just send it out
-                            let _ = sender.send(Ok((&*channel).into()));
+                            let _ = sender.send(Ok(channel.info()));
                         }
                     }
                     Vec::new()
@@ -329,10 +328,10 @@ impl CircuitInternal {
                 channel.native_count = msg.data_count;
                 channel.native_type = Some(msg.data_type);
                 channel.state = ChannelState::Ready;
-                let channel_info = ChannelInfo::from(&*channel);
+                let info = channel.info();
 
                 for sender in channel.pending_open.drain(..) {
-                    let _ = sender.send(Ok(channel_info));
+                    let _ = sender.send(Ok(info));
                 }
             }
             msg => println!("Ignoring unhandled message from server: {msg:?}"),
