@@ -312,7 +312,9 @@ impl CircuitInternal {
                 if let Some(pending) = self.pending_channels.remove(&channel.cid)
                     && !pending.is_empty()
                 {
-                    let _ = pending.into_iter().map(|s| s.send(Ok(*channel)));
+                    for sender in pending {
+                        let _ = sender.send(Ok(*channel));
+                    }
                 }
             }
             msg => println!("Ignoring unhandled message from server: {msg:?}"),
