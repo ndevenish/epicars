@@ -20,7 +20,7 @@ use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
     client::{Searcher, searcher::CouldNotFindError},
-    dbr::{Dbr, DbrBasicType, DbrCategory, DbrValue},
+    dbr::{Dbr, DbrBasicType, DbrCategory, DbrType, DbrValue},
     messages::{self, Access, CAMessage, ClientMessage, Message, RsrvIsUp},
     utils::new_reusable_udp_socket,
 };
@@ -186,9 +186,12 @@ struct Channel {
     native_type: Option<DbrBasicType>,
     native_count: u32,
     cid: u32,
+    sid: u32,
     permissions: Access,
     /// Watchers waiting for this channel to be open
     pending_open: Vec<oneshot::Sender<Result<ChannelInfo, ClientError>>>,
+    /// Watchers waiting for reads specifically
+    pending_read: Vec<oneshot::Sender<Result<Dbr, ClientError>>>,
 }
 
 impl Channel {
@@ -298,13 +301,32 @@ impl CircuitInternal {
                 }
             }
             CircuitRequest::Read {
-                channel,
+                channel: cid,
                 length,
                 category,
                 reply,
             } => {
                 // let channel = self.get_channel(&name);
-                todo!();
+                let Some(channel) = self.channels.get_mut(&cid) else {
+                    let _ = reply.send(Err(ClientError::ChannelClosed));
+                    return Vec::new();
+                };
+                // Send the read request
+                channel.pending_read.push(reply);
+                debug!("Sending read request for: {cid}");
+                vec![
+                    messages::ReadNotify {
+                        data_type: DbrType {
+                            basic_type: channel.native_type.unwrap(),
+                            category,
+                        },
+                        data_count: length as u32,
+                        server_id: channel.sid,
+                        client_ioid: channel.cid,
+                    }
+                    .into(),
+                ]
+                // todo!();
             }
         }
     }
@@ -328,6 +350,7 @@ impl CircuitInternal {
                 channel.native_count = msg.data_count;
                 channel.native_type = Some(msg.data_type);
                 channel.state = ChannelState::Ready;
+                channel.sid = msg.server_id;
                 let info = channel.info();
 
                 for sender in channel.pending_open.drain(..) {
@@ -372,6 +395,8 @@ pub enum ClientError {
     ServerVersionMismatch(u16),
     #[error("The Client is closing or has closed")]
     ClientClosed,
+    #[error("The channel does not exist or is already closed")]
+    ChannelClosed,
 }
 
 impl Client {
