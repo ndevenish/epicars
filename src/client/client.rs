@@ -6,7 +6,7 @@ use std::{
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tokio::{
     io::{self, AsyncReadExt},
@@ -95,6 +95,7 @@ impl Circuit {
                 last_sent_at: Instant::now(),
                 requests_rx,
                 cancel: inner_cancel,
+                tcp,
             }
             .circuit_lifecycle()
             .await;
@@ -135,13 +136,22 @@ struct CircuitInternal {
     last_sent_at: Instant,
     requests_rx: mpsc::Receiver<CircuitRequest>,
     cancel: CancellationToken,
+    tcp: TcpStream,
 }
 impl CircuitInternal {
     async fn circuit_lifecycle(&mut self) {
         debug!("Started circuit to {}", self.address);
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            select! {
+                request = self.requests_rx.recv() => match request {
+                    None => break,
+                    Some(req) => self.handle_request(req).await
+                },
+            }
         }
+    }
+    async fn handle_request(&mut self, _request: CircuitRequest) {
+        todo!();
     }
 }
 
