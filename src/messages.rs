@@ -14,6 +14,7 @@
 //! - `CA_PROTO_NOT_FOUND` over unclear rules as to when it is sent.
 //!
 use std::{
+    fmt::Display,
     io::{self, Cursor},
     net::Ipv4Addr,
     ops::Shl,
@@ -447,6 +448,7 @@ impl Message {
             15 => Self::ReadNotifyResponse(message.try_into()?),
             18 => Self::CreateChannelResponse(message.try_into()?),
             19 => Self::WriteNotifyResponse(message.try_into()?),
+            22 => Self::AccessRights(message.try_into()?),
             23 => Self::Echo,
             21 => Self::CreateChannelFailure(message.try_into()?),
             27 => Self::ServerDisconnect(message.try_into()?),
@@ -950,7 +952,7 @@ pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, MessageError> {
 /// Requests creation of channel.
 ///
 /// Server will allocate required resources and return initialized SID. Sent over TCP.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CreateChannel {
     pub client_id: u32,
     pub protocol_version: u32,
@@ -1055,12 +1057,24 @@ impl CAMessage for CreateChannelFailure {
 }
 
 /// Enumerate access rights for [`AccessRights`] message
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub enum Access {
+    #[default]
     None = 0,
     Read = 1,
     Write = 2,
     ReadWrite = 3,
+}
+
+impl Display for Access {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Access::None => "None",
+            Access::Read => "Read",
+            Access::Write => "Write",
+            Access::ReadWrite => "ReadWrite",
+        })
+    }
 }
 
 impl TryFrom<u32> for Access {

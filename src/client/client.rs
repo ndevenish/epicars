@@ -16,12 +16,12 @@ use tokio::{
 };
 use tokio_stream::StreamExt;
 use tokio_util::{codec::FramedRead, sync::CancellationToken};
-use tracing::{debug, error, warn};
+use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
     client::{Searcher, searcher::CouldNotFindError},
-    dbr::{Dbr, DbrCategory, DbrValue},
-    messages::{self, CAMessage, ClientMessage, Message, RsrvIsUp},
+    dbr::{Dbr, DbrBasicType, DbrCategory, DbrValue},
+    messages::{self, Access, CAMessage, ClientMessage, Message, RsrvIsUp},
     utils::new_reusable_udp_socket,
 };
 
@@ -37,9 +37,10 @@ fn get_default_broadcast_ips() -> Vec<IpAddr> {
 }
 
 enum CircuitRequest {
+    GetChannel(String, oneshot::Sender<Result<Channel, ClientError>>),
     /// Read a single value from the server
     Read {
-        name: String,
+        channel: u32,
         length: usize,
         category: DbrCategory,
         reply: oneshot::Sender<Result<Dbr, ClientError>>,
@@ -96,6 +97,10 @@ impl Circuit {
                 last_sent_at: Instant::now(),
                 requests_rx,
                 cancel: inner_cancel,
+                next_cid: 0,
+                channel_lookup: Default::default(),
+                channels: Default::default(),
+                pending_channels: Default::default(),
             }
             .circuit_lifecycle(tcp)
             .await;
@@ -126,12 +131,27 @@ impl Circuit {
             Ok(())
         }
     }
+    // async fn get_channel(&mut self, name : &str) -> Result<u32, ClientError> {
+    //     self.
+    // }
+
+    async fn get_channel(&self, name: String) -> Result<Channel, ClientError> {
+        let (tx, rx) = oneshot::channel();
+        self.requests_tx
+            .send(CircuitRequest::GetChannel(name, tx))
+            .await
+            .map_err(|_| ClientError::ClientClosed)?;
+        rx.await.map_err(|_| ClientError::ClientClosed)?
+    }
+
     /// Request a PV from the circuit
     async fn read_pv(&self, name: &str) -> Result<Dbr, ClientError> {
+        let channel = self.get_channel(name.to_owned()).await?;
+        println!("Circuit read_pv got channel: {channel:?}");
         let (tx, rx) = oneshot::channel();
         self.requests_tx
             .send(CircuitRequest::Read {
-                name: name.to_string(),
+                channel: channel.cid,
                 length: 0usize,
                 category: DbrCategory::Time,
                 reply: tx,
@@ -142,19 +162,37 @@ impl Circuit {
     }
 }
 
+#[derive(Debug, Default, Copy, Clone)]
 enum ChannelState {
+    #[default]
     Closed,
     SentCreate,
     Ready,
 }
+
+#[derive(Debug, Default, Clone, Copy)]
+struct Channel {
+    state: ChannelState,
+    native_type: Option<DbrBasicType>,
+    native_count: u32,
+    cid: u32,
+    permissions: Access,
+}
+
 // Inner circuit state, used to hold async management data
 struct CircuitInternal {
     /// A copy of the address we are connected to
     address: SocketAddr,
     /// When the last message was sent. Used to calculate Echo timing.
     last_sent_at: Instant,
+    // requests_tx: mpsc::Sender<CircuitRequest>,
     requests_rx: mpsc::Receiver<CircuitRequest>,
     cancel: CancellationToken,
+    next_cid: u32,
+    channels: HashMap<u32, Channel>,
+    channel_lookup: HashMap<String, u32>,
+    /// List of waiters for a channel to be opened
+    pending_channels: HashMap<u32, Vec<oneshot::Sender<Result<Channel, ClientError>>>>,
 }
 impl CircuitInternal {
     async fn circuit_lifecycle(&mut self, tcp: TcpStream) {
@@ -165,7 +203,7 @@ impl CircuitInternal {
             let messages_out = select! {
                 _ = self.cancel.cancelled() => break,
                 Some(message) = framed.next() => match message {
-                    Ok(message) => self.handle_message(message).await,
+                    Ok(message) => {self.handle_message(message); None},
                     Err(e) => {
                         error!("Got error processing server message: {e}");
                         continue;
@@ -173,28 +211,112 @@ impl CircuitInternal {
                 },
                 request = self.requests_rx.recv() => match request {
                     None => break,
-                    Some(req) => self.handle_request(req).await
+                    Some(req) => Some(self.handle_request(req).await)
                 },
             };
             // Send any messages out
-            if Message::write_all_messages(&messages_out, &mut tcp_tx)
-                .await
-                .is_err()
-            {
-                error!("Failed to write messages to io stream, aborting");
+            if let Some(messages) = messages_out {
+                if Message::write_all_messages(&messages, &mut tcp_tx)
+                    .await
+                    .is_err()
+                {
+                    error!("Failed to write messages to io stream, aborting");
+                }
             }
         }
         self.cancel.cancel();
         let _ = tcp_tx.shutdown().await;
     }
 
-    async fn handle_request(&mut self, _request: CircuitRequest) -> Vec<Message> {
-        todo!();
-        Vec::new()
+    fn create_channel(&mut self, name: String) -> (u32, Vec<Message>) {
+        // We need to open a new channel
+        let cid = self.next_cid;
+        self.next_cid = self.next_cid.wrapping_add(1);
+        let channel = Channel {
+            cid,
+            state: ChannelState::SentCreate, // Or, about to, anyway
+            ..Default::default()
+        };
+        debug!("Creating channel '{name}' cid: {cid}");
+        self.channel_lookup.insert(name.clone(), cid);
+        self.channels.insert(cid, channel);
+        (
+            cid,
+            vec![
+                messages::CreateChannel {
+                    client_id: cid,
+                    channel_name: name,
+                    ..Default::default()
+                }
+                .into(),
+            ],
+        )
     }
-    async fn handle_message(&mut self, message: Message) -> Vec<Message> {
-        println!("Handling message from server: {message:?}");
-        Vec::new()
+
+    async fn handle_request(&mut self, request: CircuitRequest) -> Vec<Message> {
+        match request {
+            CircuitRequest::GetChannel(name, sender) => {
+                if let Some(id) = self.channel_lookup.get(&name) {
+                    // We already have this channel.. let's check if it is open
+                    let channel = &self.channels[id];
+                    match channel.state {
+                        ChannelState::Closed => panic!("We should never see a closed channel?"),
+                        ChannelState::SentCreate => {
+                            self.pending_channels.get_mut(id).unwrap().push(sender)
+                        }
+                        ChannelState::Ready => {
+                            // Already ready, just send it out
+                            let _ = sender.send(Ok(*channel));
+                        }
+                    }
+                    Vec::new()
+                } else {
+                    let (cid, messages) = self.create_channel(name);
+                    self.pending_channels.insert(cid, vec![sender]);
+                    // Pass the channel create messages back
+                    messages
+                }
+            }
+            CircuitRequest::Read {
+                channel,
+                length,
+                category,
+                reply,
+            } => {
+                // let channel = self.get_channel(&name);
+                todo!();
+            }
+        }
+    }
+    fn handle_message(&mut self, message: Message) {
+        match message {
+            Message::AccessRights(msg) => {
+                let _span = debug_span!("handle_message", cid = &msg.client_id).entered();
+                let Some(channel) = self.channels.get_mut(&msg.client_id) else {
+                    debug!("Got message for closed/uncreated channel");
+                    return;
+                };
+                debug!("Got AccessRights update: {}", msg.access_rights);
+                channel.permissions = msg.access_rights;
+            }
+            Message::CreateChannelResponse(msg) => {
+                let _span = debug_span!("handle_message", cid = &msg.client_id).entered();
+                let Some(channel) = self.channels.get_mut(&msg.client_id) else {
+                    debug!("Got message for closed/uncreated channel: {msg:?}");
+                    return;
+                };
+                channel.native_count = msg.data_count;
+                channel.native_type = Some(msg.data_type);
+                channel.state = ChannelState::Ready;
+                // If we had anyone waiting on this channel...
+                if let Some(pending) = self.pending_channels.remove(&channel.cid)
+                    && !pending.is_empty()
+                {
+                    let _ = pending.into_iter().map(|s| s.send(Ok(*channel)));
+                }
+            }
+            msg => println!("Ignoring unhandled message from server: {msg:?}"),
+        }
     }
 }
 
@@ -269,6 +391,7 @@ impl Client {
         // First, find the server that holds this name
         let ioc = self.searcher.search_for(name).await?;
         let circuit = self.get_or_create_circuit(ioc).await?;
+        // let channel = circuit
         circuit.read_pv(name).await.map(|d| d.take_value())
     }
 
@@ -288,7 +411,7 @@ impl Client {
                     r = broadcast_socket.recv_from(&mut buf) => match r {
                     Ok((size, addr)) => {
                         if let Ok((_, beacon)) = RsrvIsUp::parse(&buf[..size]) {
-                            debug!("Observed beacon: {beacon:?}");
+                            trace!("Observed beacon: {beacon:?}");
                             let send_ip =
                                 beacon.server_ip.map(IpAddr::V4).unwrap_or(addr.ip());
                             let mut beacons = beacon_map.lock().unwrap();
