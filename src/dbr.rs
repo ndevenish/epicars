@@ -545,6 +545,19 @@ pub enum Dbr {
 }
 
 impl Dbr {
+    pub fn take_value(self) -> DbrValue {
+        match self {
+            Dbr::Basic(value) => value,
+            Dbr::Status { status: _, value } => value,
+            Dbr::Time {
+                status: _,
+                timestamp: _,
+                value,
+            } => value,
+            Dbr::Graphics => todo!(),
+            Dbr::Control => todo!(),
+        }
+    }
     /// Retrieve the [`DbrValue`] contained by this DBR
     pub fn value(&self) -> &DbrValue {
         match self {

@@ -20,7 +20,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     client::{Searcher, searcher::CouldNotFindError},
-    dbr::{Dbr, DbrType, DbrValue},
+    dbr::{Dbr, DbrCategory, DbrValue},
     messages::{self, CAMessage, ClientMessage, Message, RsrvIsUp},
     utils::new_reusable_udp_socket,
 };
@@ -41,8 +41,8 @@ enum CircuitRequest {
     Read {
         name: String,
         length: usize,
-        kind: DbrType,
-        reply: oneshot::Sender<Dbr>,
+        category: DbrCategory,
+        reply: oneshot::Sender<Result<Dbr, ClientError>>,
     },
 }
 
@@ -126,8 +126,27 @@ impl Circuit {
             Ok(())
         }
     }
+    /// Request a PV from the circuit
+    async fn read_pv(&self, name: &str) -> Result<Dbr, ClientError> {
+        let (tx, rx) = oneshot::channel();
+        self.requests_tx
+            .send(CircuitRequest::Read {
+                name: name.to_string(),
+                length: 0usize,
+                category: DbrCategory::Time,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| ClientError::ClientClosed)?;
+        rx.await.map_err(|_| ClientError::ClientClosed)?
+    }
 }
 
+enum ChannelState {
+    Closed,
+    SentCreate,
+    Ready,
+}
 // Inner circuit state, used to hold async management data
 struct CircuitInternal {
     /// A copy of the address we are connected to
@@ -210,6 +229,8 @@ pub enum ClientError {
     ServerSentInvalidMessage,
     #[error("The server version ({0}) was incompatible")]
     ServerVersionMismatch(u16),
+    #[error("The Client is closing or has closed")]
+    ClientClosed,
 }
 
 impl Client {
@@ -234,19 +255,21 @@ impl Client {
         Ok(())
     }
 
+    async fn get_or_create_circuit(&mut self, addr: SocketAddr) -> Result<&Circuit, ClientError> {
+        Ok(match self.circuits.entry(addr) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let circuit = Circuit::connect(&addr, None, None).await?;
+                entry.insert(circuit)
+            }
+        })
+    }
+
     pub async fn read_pv(&mut self, name: &str) -> Result<DbrValue, ClientError> {
         // First, find the server that holds this name
         let ioc = self.searcher.search_for(name).await?;
-        // Get or create the circuit to this IOC
-        let _circuit = match self.circuits.entry(ioc) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                let circuit = Circuit::connect(&ioc, None, None).await?;
-                entry.insert(circuit)
-            }
-        };
-
-        panic!();
+        let circuit = self.get_or_create_circuit(ioc).await?;
+        circuit.read_pv(name).await.map(|d| d.take_value())
     }
 
     /// Watch for broadcast beacons, and record their ID and timestamp into the client map
