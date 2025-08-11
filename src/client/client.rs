@@ -137,7 +137,7 @@ struct CircuitInternal {
 }
 impl CircuitInternal {
     async fn circuit_lifecycle(&mut self) {
-        println!("Started circuit to {}", self.address);
+        debug!("Started circuit to {}", self.address);
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -169,7 +169,7 @@ pub struct Client {
 pub enum ClientError {
     #[error("{0}")]
     IO(#[from] io::Error),
-    #[error("Could not find PV: {0:?}")]
+    #[error("{0}")]
     PVNotFoundError(#[from] CouldNotFindError),
     #[error("Failed to parse message ƒrom server")]
     ServerSentInvalidMessage,
@@ -202,6 +202,7 @@ impl Client {
     pub async fn read_pv(&mut self, name: &str) -> Result<DbrValue, ClientError> {
         // First, find the server that holds this name
         let ioc = self.searcher.search_for(name).await?;
+        // Get or create the circuit to this IOC
         let _circuit = match self.circuits.entry(ioc) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
@@ -212,6 +213,7 @@ impl Client {
 
         panic!();
     }
+
     /// Watch for broadcast beacons, and record their ID and timestamp into the client map
     async fn watch_broadcasts(&self, stop: CancellationToken) -> Result<(), io::Error> {
         let port = self.beacon_port;

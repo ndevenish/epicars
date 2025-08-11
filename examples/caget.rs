@@ -34,7 +34,7 @@ async fn main() {
     let mut client = Client::new().await.unwrap();
     for name in opts.names {
         println!("Fetching {name}");
-        let res = client.read_pv("SOMETHING").await;
+        let res = client.read_pv(&name).await;
         println!("    Result: {res:?}");
     }
 }
