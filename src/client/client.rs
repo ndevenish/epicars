@@ -96,9 +96,8 @@ impl Circuit {
                 last_sent_at: Instant::now(),
                 requests_rx,
                 cancel: inner_cancel,
-                tcp,
             }
-            .circuit_lifecycle()
+            .circuit_lifecycle(tcp)
             .await;
         });
 
@@ -137,12 +136,11 @@ struct CircuitInternal {
     last_sent_at: Instant,
     requests_rx: mpsc::Receiver<CircuitRequest>,
     cancel: CancellationToken,
-    tcp: TcpStream,
 }
 impl CircuitInternal {
-    async fn circuit_lifecycle(&mut self) {
+    async fn circuit_lifecycle(&mut self, mut tcp: TcpStream) {
         debug!("Started circuit to {}", self.address);
-        let mut framed = FramedRead::with_capacity(&mut self.tcp, ClientMessage {}, 16384usize);
+        let mut framed = FramedRead::with_capacity(&mut tcp, ClientMessage {}, 16384usize);
         loop {
             select! {
                 Some(message) = framed.next() => match message {
