@@ -2,11 +2,10 @@
 
 use core::str;
 use pnet::datalink;
-use socket2::{Domain, Protocol, Type};
 use std::{
     collections::HashMap,
     io::{self, Cursor},
-    net::{IpAddr, Ipv4Addr, ToSocketAddrs},
+    net::{IpAddr, Ipv4Addr},
     num::NonZeroUsize,
     time::{Duration, Instant},
 };
@@ -26,17 +25,8 @@ use crate::{
         ReadNotifyResponse, Write, parse_search_packet,
     },
     providers::Provider,
+    utils::new_reusable_udp_socket,
 };
-
-#[doc(hidden)]
-pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<std::net::UdpSocket> {
-    let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_port(true)?;
-    socket.set_nonblocking(true)?;
-    let addr = address.to_socket_addrs()?.next().unwrap();
-    socket.bind(&addr.into())?;
-    Ok(socket.into())
-}
 
 /// Serve data to CA clients by managing the Circuit/Channel lifecycles and interfacing with [`Provider`].
 pub struct Server<L: Provider> {
@@ -139,10 +129,7 @@ impl<L: Provider> Server<L> {
         let library_provider = self.library_provider.clone();
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
-            let listener = UdpSocket::from_std(
-                new_reusable_udp_socket(format!("0.0.0.0:{search_port}")).unwrap(),
-            )
-            .unwrap();
+            let listener = new_reusable_udp_socket(format!("0.0.0.0:{search_port}")).unwrap();
 
             info!(
                 "Listening for searches on {:?}",

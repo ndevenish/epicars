@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::{
     io::{self, AsyncReadExt},
-    net::{TcpStream, UdpSocket},
+    net::TcpStream,
     select,
     sync::{mpsc, oneshot},
 };
@@ -21,6 +21,7 @@ use crate::{
     client::{Searcher, searcher::CouldNotFindError},
     dbr::{Dbr, DbrType, DbrValue},
     messages::{self, CAMessage, Message, RsrvIsUp},
+    utils::new_reusable_udp_socket,
 };
 
 fn get_default_broadcast_ips() -> Vec<IpAddr> {
@@ -214,7 +215,8 @@ impl Client {
         let port = self.beacon_port;
         let beacon_map = self.observed_beacons.clone();
         // Bind the socket first, so that we know early if it fails
-        let broadcast_socket = UdpSocket::bind(SocketAddr::new([0, 0, 0, 0].into(), port)).await?;
+        let broadcast_socket = new_reusable_udp_socket(SocketAddr::new([0, 0, 0, 0].into(), port))?;
+
         tokio::spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
 
