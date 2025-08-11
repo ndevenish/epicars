@@ -193,7 +193,9 @@ impl Client {
     }
 
     async fn start(&mut self) -> Result<(), io::Error> {
-        self.watch_broadcasts(self.cancellation.clone()).await?;
+        if let Err(err) = self.watch_broadcasts(self.cancellation.clone()).await {
+            warn!("Failed to create broadcast watcher, will run without: {err:?}");
+        }
         Ok(())
     }
 
