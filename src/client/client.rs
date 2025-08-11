@@ -100,7 +100,6 @@ impl Circuit {
                 next_cid: 0,
                 channel_lookup: Default::default(),
                 channels: Default::default(),
-                pending_channels: Default::default(),
             }
             .circuit_lifecycle(tcp)
             .await;
@@ -216,8 +215,6 @@ struct CircuitInternal {
     next_cid: u32,
     channels: HashMap<u32, Channel>,
     channel_lookup: HashMap<String, u32>,
-    /// List of waiters for a channel to be opened
-    pending_channels: HashMap<u32, Vec<oneshot::Sender<Result<ChannelInfo, ClientError>>>>,
 }
 impl CircuitInternal {
     async fn circuit_lifecycle(&mut self, tcp: TcpStream) {
@@ -253,7 +250,7 @@ impl CircuitInternal {
         let _ = tcp_tx.shutdown().await;
     }
 
-    fn create_channel(&mut self, name: String) -> (u32, Vec<Message>) {
+    fn create_channel(&mut self, name: String) -> (&mut Channel, Vec<Message>) {
         // We need to open a new channel
         let cid = self.next_cid;
         self.next_cid = self.next_cid.wrapping_add(1);
@@ -267,7 +264,7 @@ impl CircuitInternal {
         self.channel_lookup.insert(name.clone(), cid);
         self.channels.insert(cid, channel);
         (
-            cid,
+            self.channels.get_mut(&cid).unwrap(),
             vec![
                 messages::CreateChannel {
                     client_id: cid,
@@ -284,21 +281,19 @@ impl CircuitInternal {
             CircuitRequest::GetChannel(name, sender) => {
                 if let Some(id) = self.channel_lookup.get(&name) {
                     // We already have this channel.. let's check if it is open
-                    let channel = &self.channels[id];
+                    let channel = self.channels.get_mut(id).unwrap();
                     match channel.state {
                         ChannelState::Closed => panic!("We should never see a closed channel?"),
-                        ChannelState::SentCreate => {
-                            self.pending_channels.get_mut(id).unwrap().push(sender)
-                        }
+                        ChannelState::SentCreate => channel.pending_open.push(sender),
                         ChannelState::Ready => {
                             // Already ready, just send it out
-                            let _ = sender.send(Ok(channel.into()));
+                            let _ = sender.send(Ok((&*channel).into()));
                         }
                     }
                     Vec::new()
                 } else {
-                    let (cid, messages) = self.create_channel(name);
-                    self.pending_channels.insert(cid, vec![sender]);
+                    let (channel, messages) = self.create_channel(name);
+                    channel.pending_open.push(sender);
                     // Pass the channel create messages back
                     messages
                 }
@@ -334,13 +329,10 @@ impl CircuitInternal {
                 channel.native_count = msg.data_count;
                 channel.native_type = Some(msg.data_type);
                 channel.state = ChannelState::Ready;
-                // If we had anyone waiting on this channel...
-                if let Some(pending) = self.pending_channels.remove(&channel.cid)
-                    && !pending.is_empty()
-                {
-                    for sender in pending {
-                        let _ = sender.send(Ok((&*channel).into()));
-                    }
+                let channel_info = ChannelInfo::from(&*channel);
+
+                for sender in channel.pending_open.drain(..) {
+                    let _ = sender.send(Ok(channel_info));
                 }
             }
             msg => println!("Ignoring unhandled message from server: {msg:?}"),
