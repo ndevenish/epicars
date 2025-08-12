@@ -516,11 +516,11 @@ impl Message {
 
 /// Macro to help define all the From<X> implementations
 macro_rules! impl_from_for {
-    ($($ty:ident),* $(,)?) => {
+    ($parent:ident: $($ty:ident),* $(,)?) => {
         $(
-            impl From<$ty> for Message {
+            impl From<$ty> for $parent {
                 fn from(value: $ty) -> Self {
-                    Message::$ty(value)
+                    $parent::$ty(value)
                 }
             }
         )*
@@ -528,6 +528,7 @@ macro_rules! impl_from_for {
 }
 
 impl_from_for!(
+    Message:
     AccessRights,
     ClearChannel,
     ClientName,
@@ -552,17 +553,85 @@ impl_from_for!(
 );
 
 /// Handle messages that can only be sent to a client
-pub struct ClientMessage;
+#[derive(Default, Debug)]
+pub enum ClientMessage {
+    AccessRights(AccessRights),
+    CreateChannelFailure(CreateChannelFailure),
+    CreateChannelResponse(CreateChannelResponse),
+    ECAError(ECAError),
+    #[default]
+    Echo,
+    EventAddResponse(EventAddResponse),
+    ReadNotifyResponse(ReadNotifyResponse),
+    SearchResponse(SearchResponse),
+    ServerDisconnect(ServerDisconnect),
+    Version(Version),
+    WriteNotifyResponse(WriteNotifyResponse),
+}
+
+impl_from_for!(
+    ClientMessage:
+    Version,
+    EventAddResponse,
+    SearchResponse,
+    ECAError,
+    ReadNotifyResponse,
+    CreateChannelResponse,
+    WriteNotifyResponse,
+    AccessRights,
+    CreateChannelFailure,
+    ServerDisconnect
+);
+
+impl ClientMessage {
+    /// Parse message sent to the client, directly from a stream.
+    ///
+    /// Handles any message that could be sent to the client, not messages that could be
+    /// sent to a server. This is because some response messages have the same command
+    /// ID but different fields, so it is impossible to tell which is which purely from
+    /// the contents of the message.
+    pub async fn read_message<T: AsyncRead + Unpin>(source: &mut T) -> Result<Self, MessageError> {
+        let message = RawMessage::read(source).await?;
+        message.try_into()
+    }
+
+    pub fn parse_many(buffer: &[u8]) -> Result<Vec<Self>, MessageError> {
+        let messages = RawMessage::parse_all(buffer)?;
+        let result: Result<Vec<Self>, MessageError> =
+            messages.into_iter().map(|m| m.try_into()).collect();
+        result
+    }
+}
+
+impl TryFrom<RawMessage> for ClientMessage {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        Ok(match value.command {
+            0 => Self::Version(value.try_into()?),
+            1 => Self::EventAddResponse(value.try_into()?),
+            6 => Self::SearchResponse(value.try_into()?),
+            11 => Self::ECAError(value.try_into()?),
+            15 => Self::ReadNotifyResponse(value.try_into()?),
+            18 => Self::CreateChannelResponse(value.try_into()?),
+            19 => Self::WriteNotifyResponse(value.try_into()?),
+            22 => Self::AccessRights(value.try_into()?),
+            23 => Self::Echo,
+            21 => Self::CreateChannelFailure(value.try_into()?),
+            27 => Self::ServerDisconnect(value.try_into()?),
+            unknown => Err(MessageError::UnknownCommandId(unknown))?,
+        })
+    }
+}
 
 impl Decoder for ClientMessage {
-    type Item = Message;
+    type Item = ClientMessage;
     type Error = MessageError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let Some(message) = RawMessageDecoder {}.decode(src).unwrap() else {
             return Ok(None);
         };
-        Ok(Some(Message::from_raw_client_message(message)?))
+        Ok(Some(message.try_into()?))
     }
 }
 

@@ -224,7 +224,7 @@ impl CircuitInternal {
     async fn circuit_lifecycle(&mut self, tcp: TcpStream) {
         debug!("Started circuit to {}", self.address);
         let (tcp_rx, mut tcp_tx) = split(tcp);
-        let mut framed = FramedRead::with_capacity(tcp_rx, ClientMessage {}, 16384usize);
+        let mut framed = FramedRead::with_capacity(tcp_rx, ClientMessage::default(), 16384usize);
         loop {
             let messages_out = select! {
                 _ = self.cancel.cancelled() => break,
@@ -335,9 +335,9 @@ impl CircuitInternal {
             }
         }
     }
-    fn handle_message(&mut self, message: Message) {
+    fn handle_message(&mut self, message: ClientMessage) {
         match message {
-            Message::AccessRights(msg) => {
+            ClientMessage::AccessRights(msg) => {
                 let _span = debug_span!("handle_message", cid = &msg.client_id).entered();
                 let Some(channel) = self.channels.get_mut(&msg.client_id) else {
                     debug!("Got message for closed/uncreated channel");
@@ -346,7 +346,7 @@ impl CircuitInternal {
                 debug!("Got AccessRights update: {}", msg.access_rights);
                 channel.permissions = msg.access_rights;
             }
-            Message::CreateChannelResponse(msg) => {
+            ClientMessage::CreateChannelResponse(msg) => {
                 let _span = debug_span!("handle_message", cid = &msg.client_id).entered();
                 let Some(channel) = self.channels.get_mut(&msg.client_id) else {
                     debug!("Got message for closed/uncreated channel: {msg:?}");
@@ -362,7 +362,7 @@ impl CircuitInternal {
                     let _ = sender.send(Ok(info));
                 }
             }
-            Message::CreateChannelFailure(msg) => {
+            ClientMessage::CreateChannelFailure(msg) => {
                 let Some(mut channel) = self.channels.remove(&msg.client_id) else {
                     warn!(
                         "Got channel failure message for a nonexistent channel {}",
@@ -374,7 +374,7 @@ impl CircuitInternal {
                     let _ = sender.send(Err(ClientError::ChannelCreateFailed));
                 }
             }
-            Message::ReadNotifyResponse(msg) => {
+            ClientMessage::ReadNotifyResponse(msg) => {
                 let Some((_, reply_tx)) = self.pending_reads.remove(&msg.client_ioid) else {
                     warn!("Got ReadNotifyResponse for apparently unknown read request?! {msg:?}");
                     return;
