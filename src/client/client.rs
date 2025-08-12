@@ -3,6 +3,7 @@
 use pnet::datalink;
 use std::{
     collections::{HashMap, hash_map::Entry},
+    hash::Hash,
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
@@ -12,7 +13,7 @@ use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, split},
     net::TcpStream,
     select,
-    sync::{mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot},
 };
 use tokio_stream::StreamExt;
 use tokio_util::{codec::FramedRead, sync::CancellationToken};
@@ -21,7 +22,7 @@ use tracing::{debug, debug_span, error, trace, warn};
 use crate::{
     client::{Searcher, searcher::CouldNotFindError},
     dbr::{Dbr, DbrBasicType, DbrCategory, DbrType, DbrValue},
-    messages::{self, Access, CAMessage, ClientMessage, Message, RsrvIsUp},
+    messages::{self, Access, CAMessage, ClientMessage, Message, MonitorMask, RsrvIsUp},
     utils::{new_reusable_udp_socket, wrapping_inplace_add},
 };
 
@@ -44,6 +45,13 @@ enum CircuitRequest {
         length: usize,
         category: DbrCategory,
         reply: oneshot::Sender<Result<Dbr, ClientError>>,
+    },
+    /// Start a subscription to a PV on the server
+    Subscribe {
+        channel: u32,
+        length: usize,
+        dbr_type: DbrType,
+        reply: oneshot::Sender<Result<broadcast::Receiver<Dbr>, ClientError>>,
     },
 }
 
@@ -94,13 +102,16 @@ impl Circuit {
         tokio::spawn(async move {
             CircuitInternal {
                 address: inner_address,
-                last_sent_at: Instant::now(),
                 requests_rx,
                 cancel: inner_cancel,
                 next_cid: 0,
                 channel_lookup: Default::default(),
                 channels: Default::default(),
                 pending_reads: Default::default(),
+                last_received_message_at: Instant::now(),
+                pending_broadcasts: Default::default(),
+                broadcast_receivers: Default::default(),
+                broadcast_channels: Default::default(),
             }
             .circuit_lifecycle(tcp)
             .await;
@@ -160,6 +171,25 @@ impl Circuit {
             .map_err(|_| ClientError::ClientClosed)?;
         rx.await.map_err(|_| ClientError::ClientClosed)?
     }
+
+    async fn subscribe(&self, name: &str) -> Result<broadcast::Receiver<Dbr>, ClientError> {
+        let channel = self.get_channel(name.to_string()).await?;
+        debug!("Circuit subscribe got channel: {channel:?}");
+        let (tx, rx) = oneshot::channel();
+        self.requests_tx
+            .send(CircuitRequest::Subscribe {
+                channel: channel.cid,
+                length: 0,
+                dbr_type: DbrType {
+                    basic_type: channel.native_type,
+                    category: DbrCategory::Time,
+                },
+                reply: tx,
+            })
+            .await
+            .map_err(|_| ClientError::ClientClosed)?;
+        rx.await.unwrap()
+    }
 }
 
 #[derive(Debug, Default, Copy, Clone)]
@@ -192,6 +222,7 @@ struct Channel {
     /// Watchers waiting for this channel to be open
     pending_open: Vec<oneshot::Sender<Result<ChannelInfo, ClientError>>>,
     next_ioid: u32,
+    broadcast_receivers: Vec<u32>,
 }
 
 impl Channel {
@@ -205,12 +236,13 @@ impl Channel {
         }
     }
 }
+
 // Inner circuit state, used to hold async management data
 struct CircuitInternal {
     /// A copy of the address we are connected to
     address: SocketAddr,
-    /// When the last message was sent. Used to calculate Echo timing.
-    last_sent_at: Instant,
+    /// When the last message was received. Used to calculate Echo timing.
+    last_received_message_at: Instant,
     // requests_tx: mpsc::Sender<CircuitRequest>,
     requests_rx: mpsc::Receiver<CircuitRequest>,
     cancel: CancellationToken,
@@ -219,7 +251,22 @@ struct CircuitInternal {
     channel_lookup: HashMap<String, u32>,
     /// Watchers waiting for specific reads
     pending_reads: HashMap<u32, (Instant, oneshot::Sender<Result<Dbr, ClientError>>)>,
+    /// Broadcast subscriptions we have not had confirmed yet
+    pending_broadcasts: HashMap<
+        u32,
+        (
+            Instant,
+            (
+                usize,
+                DbrType,
+                oneshot::Sender<Result<broadcast::Receiver<Dbr>, ClientError>>,
+            ),
+        ),
+    >,
+    broadcast_receivers: HashMap<u32, (usize, DbrType, broadcast::Sender<Dbr>)>,
+    broadcast_channels: HashMap<u32, u32>,
 }
+
 impl CircuitInternal {
     async fn circuit_lifecycle(&mut self, tcp: TcpStream) {
         debug!("Started circuit to {}", self.address);
@@ -229,7 +276,7 @@ impl CircuitInternal {
             let messages_out = select! {
                 _ = self.cancel.cancelled() => break,
                 Some(message) = framed.next() => match message {
-                    Ok(message) => {self.handle_message(message); None},
+                    Ok(message) => Some(self.handle_message(message)),
                     Err(e) => {
                         error!("Got error processing server message: {e}");
                         continue;
@@ -242,6 +289,9 @@ impl CircuitInternal {
             };
             // Send any messages out
             if let Some(messages) = messages_out {
+                for message in &messages {
+                    debug!("Sending {message:?}");
+                }
                 if Message::write_all_messages(&messages, &mut tcp_tx)
                     .await
                     .is_err()
@@ -261,6 +311,7 @@ impl CircuitInternal {
         let channel = Channel {
             cid,
             state: ChannelState::SentCreate, // Or, about to, anyway
+            next_ioid: 4242,
             ..Default::default()
         };
         let _span = debug_span!("create_channel", cid = cid).entered();
@@ -281,6 +332,7 @@ impl CircuitInternal {
     }
 
     async fn handle_request(&mut self, request: CircuitRequest) -> Vec<Message> {
+        self.last_received_message_at = Instant::now();
         match request {
             CircuitRequest::GetChannel(name, sender) => {
                 if let Some(id) = self.channel_lookup.get(&name) {
@@ -333,24 +385,52 @@ impl CircuitInternal {
                     .into(),
                 ]
             }
+            CircuitRequest::Subscribe {
+                channel: cid,
+                length,
+                dbr_type,
+                reply,
+            } => {
+                let Some(channel) = self.channels.get_mut(&cid) else {
+                    let _ = reply.send(Err(ClientError::ChannelClosed));
+                    return Vec::new();
+                };
+                let _span = debug_span!("handle_request", cid = cid).entered();
+                let ioid = wrapping_inplace_add(&mut channel.next_ioid);
+                self.pending_broadcasts
+                    .insert(ioid, (Instant::now(), (length, dbr_type, reply)));
+                self.broadcast_channels.insert(ioid, channel.cid);
+                channel.broadcast_receivers.push(ioid);
+                vec![
+                    messages::EventAdd {
+                        data_type: dbr_type,
+                        data_count: length as u32,
+                        server_id: channel.sid,
+                        subscription_id: ioid,
+                        mask: MonitorMask::default(),
+                    }
+                    .into(),
+                ]
+            }
         }
     }
-    fn handle_message(&mut self, message: ClientMessage) {
+    fn handle_message(&mut self, message: ClientMessage) -> Vec<Message> {
         match message {
             ClientMessage::AccessRights(msg) => {
                 let _span = debug_span!("handle_message", cid = &msg.client_id).entered();
                 let Some(channel) = self.channels.get_mut(&msg.client_id) else {
                     debug!("Got message for closed/uncreated channel");
-                    return;
+                    return Vec::new();
                 };
                 debug!("Got AccessRights update: {}", msg.access_rights);
                 channel.permissions = msg.access_rights;
+                Vec::new()
             }
             ClientMessage::CreateChannelResponse(msg) => {
                 let _span = debug_span!("handle_message", cid = &msg.client_id).entered();
                 let Some(channel) = self.channels.get_mut(&msg.client_id) else {
                     debug!("Got message for closed/uncreated channel: {msg:?}");
-                    return;
+                    return Vec::new();
                 };
                 channel.native_count = msg.data_count;
                 channel.native_type = Some(msg.data_type);
@@ -361,6 +441,7 @@ impl CircuitInternal {
                 for sender in channel.pending_open.drain(..) {
                     let _ = sender.send(Ok(info));
                 }
+                Vec::new()
             }
             ClientMessage::CreateChannelFailure(msg) => {
                 let Some(mut channel) = self.channels.remove(&msg.client_id) else {
@@ -368,16 +449,17 @@ impl CircuitInternal {
                         "Got channel failure message for a nonexistent channel {}",
                         msg.client_id
                     );
-                    return;
+                    return Vec::new();
                 };
                 for sender in channel.pending_open.drain(..) {
                     let _ = sender.send(Err(ClientError::ChannelCreateFailed));
                 }
+                Vec::new()
             }
             ClientMessage::ReadNotifyResponse(msg) => {
                 let Some((_, reply_tx)) = self.pending_reads.remove(&msg.client_ioid) else {
                     warn!("Got ReadNotifyResponse for apparently unknown read request?! {msg:?}");
-                    return;
+                    return Vec::new();
                 };
                 debug!("Processing message {msg:?}");
                 match Dbr::from_bytes(msg.data_type, msg.data_count as usize, &msg.data) {
@@ -387,9 +469,84 @@ impl CircuitInternal {
                     Err(_) => {
                         let _ = reply_tx.send(Err(ClientError::ServerSentInvalidMessage));
                     }
-                }
+                };
+                Vec::new()
             }
-            msg => println!("Ignoring unhandled message from server: {msg:?}"),
+            ClientMessage::Echo => Vec::new(), // Echo just bumps our last_received message counter
+            ClientMessage::Version(_msg) => {
+                warn!("Got unexpected VERSION message in normal circuit lifecycle.");
+                Vec::new()
+            }
+            ClientMessage::EventAddResponse(msg) => {
+                debug!("Got {msg:?}");
+                if msg.data.is_empty() {
+                    debug!(
+                        "Got empty EventAddResponse: Purging subscription {}",
+                        msg.subscription_id
+                    );
+                    // This is a special case: The server is requesting termination
+                    // of the subscription (possibly because we asked it to). Shut down
+                    // the channel monitors.
+                    if let Some(cid) = self.broadcast_channels.get(&msg.subscription_id) {
+                        self.channels
+                            .get_mut(cid)
+                            .unwrap()
+                            .broadcast_receivers
+                            .retain(|s| *s != msg.subscription_id);
+                    }
+                    self.broadcast_channels.remove(&msg.subscription_id);
+                    self.broadcast_receivers.remove(&msg.subscription_id);
+                    self.pending_broadcasts.remove(&msg.subscription_id);
+                    return Vec::new();
+                }
+                let Ok(dbr) = Dbr::from_bytes(msg.data_type, msg.data_count as usize, &msg.data)
+                else {
+                    error!("Got invalid subscription response from server: {msg:?}");
+                    return Vec::new();
+                };
+                // Check - this might be the first
+                if let Some((_, (length, dbrtype, reply))) =
+                    self.pending_broadcasts.remove(&msg.subscription_id)
+                {
+                    debug!(
+                        "Got first EventAdd response for subscription {}",
+                        msg.subscription_id
+                    );
+                    // TODO: Make this capacity configurable.
+                    let (tx, rx) = broadcast::channel(32);
+                    self.broadcast_receivers
+                        .insert(msg.subscription_id, (length, dbrtype, tx));
+                    // Send the receiver to the waiting client
+                    let _ = reply.send(Ok(rx));
+                }
+                let transmitter = &self
+                    .broadcast_receivers
+                    .get(&msg.subscription_id)
+                    .expect("Should have just created this")
+                    .2;
+                debug!(
+                    "Sending transmitter: {} receivers",
+                    transmitter.receiver_count()
+                );
+                match transmitter.send(dbr) {
+                    Ok(0) | Err(_) => {
+                        // We have no receivers left; cancel this subscription
+                        debug!("No more receivers for {}: Cancelling", msg.subscription_id);
+                        let channel_id = self.broadcast_channels.get(&msg.subscription_id).unwrap();
+                        let sid = self.channels.get(channel_id).unwrap().sid;
+                        return vec![msg.cancel(sid).into()];
+                    }
+                    Ok(_) => (),
+                };
+                Vec::new()
+            }
+            msg => {
+                debug!("Got unhandled message from server: {msg:?}");
+                Vec::new()
+            } // ClientMessage::SearchResponse(msg) => todo!(),
+              // ClientMessage::ServerDisconnect(msg) => todo!(),
+              // ClientMessage::WriteNotifyResponse(msg) => todo!(),
+              // ClientMessage::ECAError(msg) => todo!(),
         }
     }
 }
@@ -471,6 +628,11 @@ impl Client {
         let circuit = self.get_or_create_circuit(ioc).await?;
         // let channel = circuit
         circuit.read_pv(name).await.map(|d| d.take_value())
+    }
+    pub async fn subscribe(&mut self, name: &str) -> Result<broadcast::Receiver<Dbr>, ClientError> {
+        let ioc = self.searcher.search_for(name).await?;
+        let circuit = self.get_or_create_circuit(ioc).await?;
+        circuit.subscribe(name).await
     }
 
     /// Watch for broadcast beacons, and record their ID and timestamp into the client map

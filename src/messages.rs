@@ -552,7 +552,7 @@ impl_from_for!(
     Version
 );
 
-/// Handle messages that can only be sent to a client
+/// Handle only messages that can be sent to the client
 #[derive(Default, Debug)]
 pub enum ClientMessage {
     AccessRights(AccessRights),
@@ -571,7 +571,6 @@ pub enum ClientMessage {
 
 impl_from_for!(
     ClientMessage:
-    Version,
     EventAddResponse,
     SearchResponse,
     ECAError,
@@ -1401,7 +1400,16 @@ pub struct MonitorMask {
     pub alarm: bool,
     pub property: bool,
 }
-
+impl Default for MonitorMask {
+    fn default() -> Self {
+        Self {
+            value: true,
+            log: false,
+            alarm: false,
+            property: false,
+        }
+    }
+}
 /// Creates a subscription on a channel, allowing the client to be notified of changes in value.
 ///
 /// A request will produce at least one response. Sent over TCP.
@@ -1483,13 +1491,14 @@ pub struct EventAddResponse {
 impl TryFrom<RawMessage> for EventAddResponse {
     type Error = MessageError;
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        // println!("{value:?}");
         value.expect_id(1)?;
         Ok(EventAddResponse {
             data_type: DbrType::try_from(value.field_1_data_type)
                 .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
             data_count: value.field_2_data_count,
-            subscription_id: value.field_3_parameter_1,
-            status_code: ErrorCondition::try_from(value.field_4_parameter_2).unwrap(),
+            subscription_id: value.field_4_parameter_2,
+            status_code: ErrorCondition::try_from(value.field_3_parameter_1).unwrap(),
             data: value.payload,
         })
     }
@@ -1506,6 +1515,17 @@ impl CAMessage for EventAddResponse {
             payload: self.data.clone(),
         }
         .write(writer)
+    }
+}
+
+impl EventAddResponse {
+    pub fn cancel(&self, server_sid: u32) -> EventCancel {
+        EventCancel {
+            data_type: self.data_type,
+            data_count: self.data_count,
+            server_id: server_sid,
+            subscription_id: self.subscription_id,
+        }
     }
 }
 
