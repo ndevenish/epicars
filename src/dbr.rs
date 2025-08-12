@@ -339,6 +339,7 @@ impl DbrValue {
                         let strlen = d.iter().position(|&c| c == 0x00).unwrap();
                         str::from_utf8(&d[0..strlen]).unwrap()
                     })
+                    .take(item_count)
                     .map(|s| s.to_string())
                     .collect(),
             )),
