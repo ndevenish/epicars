@@ -147,7 +147,7 @@ impl Circuit {
     /// Request a PV from the circuit
     async fn read_pv(&self, name: &str) -> Result<Dbr, ClientError> {
         let channel = self.get_channel(name.to_owned()).await?;
-        println!("Circuit read_pv got channel: {channel:?}");
+        debug!("Circuit read_pv got channel: {channel:?}");
         let (tx, rx) = oneshot::channel();
         self.requests_tx
             .send(CircuitRequest::Read {
@@ -312,9 +312,13 @@ impl CircuitInternal {
                     let _ = reply.send(Err(ClientError::ChannelClosed));
                     return Vec::new();
                 };
+                let _span = debug_span!("handle_request", cid = cid).entered();
                 // Send the read request
                 let ioid = wrapping_inplace_add(&mut channel.next_ioid);
-                debug!("Sending read request {ioid} for channel {cid}");
+                debug!(
+                    "Sending read request {ioid} for channel {cid} ({})",
+                    channel.name
+                );
                 self.pending_reads.insert(ioid, (Instant::now(), reply));
                 vec![
                     messages::ReadNotify {
