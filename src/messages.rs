@@ -1539,11 +1539,11 @@ impl CAMessage for ReadNotify {
 /// Response to [`ReadNotify`].
 #[derive(Debug)]
 pub struct ReadNotifyResponse {
-    data_type: DbrType,
-    data_count: u32,
-    status_id: u32,
-    client_ioid: u32,
-    data: Vec<u8>,
+    pub data_type: DbrType,
+    pub data_count: u32,
+    pub status_id: u32,
+    pub client_ioid: u32,
+    pub data: Vec<u8>,
 }
 
 impl From<&ReadNotifyResponse> for RawMessage {

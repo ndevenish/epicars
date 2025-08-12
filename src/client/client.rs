@@ -22,7 +22,7 @@ use crate::{
     client::{Searcher, searcher::CouldNotFindError},
     dbr::{Dbr, DbrBasicType, DbrCategory, DbrType, DbrValue},
     messages::{self, Access, CAMessage, ClientMessage, Message, RsrvIsUp},
-    utils::new_reusable_udp_socket,
+    utils::{new_reusable_udp_socket, wrapping_inplace_add},
 };
 
 fn get_default_broadcast_ips() -> Vec<IpAddr> {
@@ -100,6 +100,7 @@ impl Circuit {
                 next_cid: 0,
                 channel_lookup: Default::default(),
                 channels: Default::default(),
+                pending_reads: Default::default(),
             }
             .circuit_lifecycle(tcp)
             .await;
@@ -190,8 +191,7 @@ struct Channel {
     permissions: Access,
     /// Watchers waiting for this channel to be open
     pending_open: Vec<oneshot::Sender<Result<ChannelInfo, ClientError>>>,
-    /// Watchers waiting for reads specifically
-    pending_read: Vec<oneshot::Sender<Result<Dbr, ClientError>>>,
+    next_ioid: u32,
 }
 
 impl Channel {
@@ -217,6 +217,8 @@ struct CircuitInternal {
     next_cid: u32,
     channels: HashMap<u32, Channel>,
     channel_lookup: HashMap<String, u32>,
+    /// Watchers waiting for specific reads
+    pending_reads: HashMap<u32, (Instant, oneshot::Sender<Result<Dbr, ClientError>>)>,
 }
 impl CircuitInternal {
     async fn circuit_lifecycle(&mut self, tcp: TcpStream) {
@@ -306,14 +308,14 @@ impl CircuitInternal {
                 category,
                 reply,
             } => {
-                // let channel = self.get_channel(&name);
                 let Some(channel) = self.channels.get_mut(&cid) else {
                     let _ = reply.send(Err(ClientError::ChannelClosed));
                     return Vec::new();
                 };
                 // Send the read request
-                channel.pending_read.push(reply);
-                debug!("Sending read request for: {cid}");
+                let ioid = wrapping_inplace_add(&mut channel.next_ioid);
+                debug!("Sending read request {ioid} for channel {cid}");
+                self.pending_reads.insert(ioid, (Instant::now(), reply));
                 vec![
                     messages::ReadNotify {
                         data_type: DbrType {
@@ -322,11 +324,10 @@ impl CircuitInternal {
                         },
                         data_count: length as u32,
                         server_id: channel.sid,
-                        client_ioid: channel.cid,
+                        client_ioid: ioid,
                     }
                     .into(),
                 ]
-                // todo!();
             }
         }
     }
@@ -355,6 +356,21 @@ impl CircuitInternal {
 
                 for sender in channel.pending_open.drain(..) {
                     let _ = sender.send(Ok(info));
+                }
+            }
+            Message::ReadNotifyResponse(msg) => {
+                let Some((_, reply_tx)) = self.pending_reads.remove(&msg.client_ioid) else {
+                    warn!("Got ReadNotifyResponse for apparently unknown read request?! {msg:?}");
+                    return;
+                };
+                debug!("Processing message {msg:?}");
+                match Dbr::from_bytes(msg.data_type, msg.data_count as usize, &msg.data) {
+                    Ok(dbr) => {
+                        let _ = reply_tx.send(Ok(dbr));
+                    }
+                    Err(_) => {
+                        let _ = reply_tx.send(Err(ClientError::ServerSentInvalidMessage));
+                    }
                 }
             }
             msg => println!("Ignoring unhandled message from server: {msg:?}"),
