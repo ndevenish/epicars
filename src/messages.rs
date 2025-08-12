@@ -952,11 +952,21 @@ pub fn parse_search_packet(input: &[u8]) -> Result<Vec<Search>, MessageError> {
 /// Requests creation of channel.
 ///
 /// Server will allocate required resources and return initialized SID. Sent over TCP.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CreateChannel {
     pub client_id: u32,
     pub protocol_version: u32,
     pub channel_name: String,
+}
+
+impl Default for CreateChannel {
+    fn default() -> Self {
+        CreateChannel {
+            client_id: 0,
+            protocol_version: EPICS_VERSION as u32,
+            channel_name: String::default(),
+        }
+    }
 }
 
 impl CreateChannel {
