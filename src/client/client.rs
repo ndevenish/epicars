@@ -362,6 +362,18 @@ impl CircuitInternal {
                     let _ = sender.send(Ok(info));
                 }
             }
+            Message::CreateChannelFailure(msg) => {
+                let Some(mut channel) = self.channels.remove(&msg.client_id) else {
+                    warn!(
+                        "Got channel failure message for a nonexistent channel {}",
+                        msg.client_id
+                    );
+                    return;
+                };
+                for sender in channel.pending_open.drain(..) {
+                    let _ = sender.send(Err(ClientError::ChannelCreateFailed));
+                }
+            }
             Message::ReadNotifyResponse(msg) => {
                 let Some((_, reply_tx)) = self.pending_reads.remove(&msg.client_ioid) else {
                     warn!("Got ReadNotifyResponse for apparently unknown read request?! {msg:?}");
@@ -417,6 +429,8 @@ pub enum ClientError {
     ClientClosed,
     #[error("The channel does not exist or is already closed")]
     ChannelClosed,
+    #[error("Channel creation failed")]
+    ChannelCreateFailed,
 }
 
 impl Client {

@@ -1043,7 +1043,7 @@ impl CAMessage for CreateChannelResponse {
 /// This response is sent to when channel creation in [`CreateChannel`] fails.
 #[derive(Debug)]
 pub struct CreateChannelFailure {
-    client_id: u32,
+    pub client_id: u32,
 }
 
 impl TryFrom<RawMessage> for CreateChannelFailure {
