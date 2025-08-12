@@ -17,7 +17,7 @@ use std::{
     fmt::Display,
     io::{self, Cursor},
     net::Ipv4Addr,
-    ops::Shl,
+    ops::{Shl, Shr},
 };
 
 use nom::{
@@ -1727,6 +1727,7 @@ enum ErrorSeverity {
     Error = 2,
     Info = 3,
     Severe = 4,
+    Fatal = 5,
 }
 
 /// Possible error codes for [`ECAError`] messages.
@@ -1766,6 +1767,34 @@ pub enum ErrorCondition {
     Array16kClient = 58,
     ConnSeqTmo = 59,
     UnrespTmo = 60,
+    // Defunct
+    MaxIOC = 1,
+    UknHost = 2,
+    UknServ = 3,
+    Sock = 4,
+    Conn = 5,
+    UknChan = 7,
+    UknField = 8,
+    NoSupport = 11,
+    StrToBig = 12,
+    DisconnChid = 13,
+    ChIdNotFnd = 15,
+    ChIDRetry = 16,
+    AddFail = 21,
+    DblChnl = 25,
+    BuildGet = 27,
+    NeedSFP = 28,
+    OvEVFail = 29,
+    NewAddr = 31,
+    NewConn = 32,
+    NoCACtx = 33,
+    Defunct = 34,
+    EmptyStr = 35,
+    NoRepeater = 36,
+    NoChanMsg = 37,
+    Dlckrest = 38,
+    ServBehind = 39,
+    Nocast = 40,
 }
 
 impl ErrorCondition {
@@ -1805,6 +1834,33 @@ impl ErrorCondition {
             Self::Array16kClient => ErrorSeverity::Warning,
             Self::ConnSeqTmo => ErrorSeverity::Warning,
             Self::UnrespTmo => ErrorSeverity::Warning,
+            Self::MaxIOC => ErrorSeverity::Error,
+            Self::UknHost => ErrorSeverity::Error,
+            Self::UknServ => ErrorSeverity::Error,
+            Self::Sock => ErrorSeverity::Error,
+            Self::Conn => ErrorSeverity::Warning,
+            Self::UknChan => ErrorSeverity::Warning,
+            Self::UknField => ErrorSeverity::Warning,
+            Self::NoSupport => ErrorSeverity::Warning,
+            Self::StrToBig => ErrorSeverity::Warning,
+            Self::DisconnChid => ErrorSeverity::Error,
+            Self::ChIdNotFnd => ErrorSeverity::Info,
+            Self::ChIDRetry => ErrorSeverity::Info,
+            Self::AddFail => ErrorSeverity::Warning,
+            Self::DblChnl => ErrorSeverity::Warning,
+            Self::BuildGet => ErrorSeverity::Warning,
+            Self::NeedSFP => ErrorSeverity::Warning,
+            Self::OvEVFail => ErrorSeverity::Warning,
+            Self::NewAddr => ErrorSeverity::Warning,
+            Self::NewConn => ErrorSeverity::Info,
+            Self::NoCACtx => ErrorSeverity::Warning,
+            Self::Defunct => ErrorSeverity::Fatal,
+            Self::EmptyStr => ErrorSeverity::Warning,
+            Self::NoRepeater => ErrorSeverity::Warning,
+            Self::NoChanMsg => ErrorSeverity::Warning,
+            Self::Dlckrest => ErrorSeverity::Warning,
+            Self::ServBehind => ErrorSeverity::Warning,
+            Self::Nocast => ErrorSeverity::Warning,
         }
     }
     fn eca_code(&self) -> u32 {
@@ -1856,6 +1912,39 @@ impl std::fmt::Display for ErrorCondition {
                     "The requested data transfer is greater than available memory or EPICS_CA_MAX_ARRAY_BYTES",
                 Self::UnavailInServ => "Not supported by attached service",
                 Self::UnrespTmo => "Virtual circuit unresponsive",
+                Self::MaxIOC => "Maximum simultaneous IOC connections exceeded",
+                Self::UknHost => "Unknown internet host",
+                Self::UknServ => "Unknown internet service",
+                Self::Sock => "Unable to allocate a new socket",
+                Self::Conn => "Unable to connect to internet host or service",
+                Self::UknChan => "Unknown IO channel",
+                Self::UknField => "Record field specified inappropriate for channel specified",
+                Self::NoSupport => "Sorry, that feature is planned but not supported at this time",
+                Self::StrToBig => "The supplied string is unusually large",
+                Self::DisconnChid =>
+                    "The request was ignored because the specified channel is disconnected",
+                Self::ChIdNotFnd => "Remote Channel not found",
+                Self::ChIDRetry => "Unable to locate all user specified channels",
+                Self::AddFail => "Channel subscription request failed",
+                Self::DblChnl => "Identical process variable name on multiple servers",
+                Self::BuildGet =>
+                    "Database value get for that channel failed during channel search",
+                Self::NeedSFP =>
+                    "Unable to initialize without the vxWorks VX_FP_TASK task option set",
+                Self::OvEVFail =>
+                    "Event queue overflow has prevented first pass event after event add",
+                Self::NewAddr => "Remote channel has new network address",
+                Self::NewConn => "New or resumed network connection",
+                Self::NoCACtx => "Specified task isn’t a member of a CA context",
+                Self::Defunct => "Attempt to use defunct CA feature failed",
+                Self::EmptyStr => "The supplied string is empty",
+                Self::NoRepeater =>
+                    "Unable to spawn the CA repeater thread- auto reconnect will fail",
+                Self::NoChanMsg => "No channel id match for search reply- search reply ignored",
+                Self::Dlckrest => "Resetting dead connection- will try to reconnect",
+                Self::ServBehind =>
+                    "Server (IOC) has fallen behind or is not responding- still waiting",
+                Self::Nocast => "No internet interface with broadcast available",
             }
         )
     }
@@ -1864,7 +1953,7 @@ impl std::fmt::Display for ErrorCondition {
 impl TryFrom<u32> for ErrorCondition {
     type Error = MessageError;
     fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
+        match value.shr(3) {
             x if x == Self::Normal as u32 => Ok(Self::Normal),
             x if x == Self::AllocMem as u32 => Ok(Self::AllocMem),
             x if x == Self::TooLarge as u32 => Ok(Self::TooLarge),
@@ -1899,6 +1988,33 @@ impl TryFrom<u32> for ErrorCondition {
             x if x == Self::Array16kClient as u32 => Ok(Self::Array16kClient),
             x if x == Self::ConnSeqTmo as u32 => Ok(Self::ConnSeqTmo),
             x if x == Self::UnrespTmo as u32 => Ok(Self::UnrespTmo),
+            x if x == Self::MaxIOC as u32 => Ok(Self::MaxIOC),
+            x if x == Self::UknHost as u32 => Ok(Self::UknHost),
+            x if x == Self::UknServ as u32 => Ok(Self::UknServ),
+            x if x == Self::Sock as u32 => Ok(Self::Sock),
+            x if x == Self::Conn as u32 => Ok(Self::Conn),
+            x if x == Self::UknChan as u32 => Ok(Self::UknChan),
+            x if x == Self::UknField as u32 => Ok(Self::UknField),
+            x if x == Self::NoSupport as u32 => Ok(Self::NoSupport),
+            x if x == Self::StrToBig as u32 => Ok(Self::StrToBig),
+            x if x == Self::DisconnChid as u32 => Ok(Self::DisconnChid),
+            x if x == Self::ChIdNotFnd as u32 => Ok(Self::ChIdNotFnd),
+            x if x == Self::ChIDRetry as u32 => Ok(Self::ChIDRetry),
+            x if x == Self::AddFail as u32 => Ok(Self::AddFail),
+            x if x == Self::DblChnl as u32 => Ok(Self::DblChnl),
+            x if x == Self::BuildGet as u32 => Ok(Self::BuildGet),
+            x if x == Self::NeedSFP as u32 => Ok(Self::NeedSFP),
+            x if x == Self::OvEVFail as u32 => Ok(Self::OvEVFail),
+            x if x == Self::NewAddr as u32 => Ok(Self::NewAddr),
+            x if x == Self::NewConn as u32 => Ok(Self::NewConn),
+            x if x == Self::NoCACtx as u32 => Ok(Self::NoCACtx),
+            x if x == Self::Defunct as u32 => Ok(Self::Defunct),
+            x if x == Self::EmptyStr as u32 => Ok(Self::EmptyStr),
+            x if x == Self::NoRepeater as u32 => Ok(Self::NoRepeater),
+            x if x == Self::NoChanMsg as u32 => Ok(Self::NoChanMsg),
+            x if x == Self::Dlckrest as u32 => Ok(Self::Dlckrest),
+            x if x == Self::ServBehind as u32 => Ok(Self::ServBehind),
+            x if x == Self::Nocast as u32 => Ok(Self::Nocast),
             _ => Err(MessageError::InvalidField(format!(
                 "ErrorCondition {value} unrecognised"
             ))),
@@ -1953,8 +2069,16 @@ impl TryFrom<&RawMessage> for ECAError {
 impl TryFrom<RawMessage> for ECAError {
     type Error = MessageError;
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
-        let m: Self = value.try_into()?;
-        Ok(m)
+        value.expect_id(11)?;
+
+        let (i, header) = MessageHeader::parse(value.payload.as_slice())?;
+
+        Ok(ECAError {
+            client_id: value.field_3_parameter_1,
+            condition: ErrorCondition::try_from(value.field_4_parameter_2)?,
+            original_request: header,
+            error_message: padded_string(i.len())(i)?.1,
+        })
     }
 }
 
