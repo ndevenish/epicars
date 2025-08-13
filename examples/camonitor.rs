@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use clap::Parser;
-use epicars::client::Client;
+use epicars::{client::Client, dbr::DbrValue};
 
 use tracing::{info, level_filters::LevelFilter};
 
@@ -35,15 +35,38 @@ async fn main() {
 
     let mut client = Client::new().await.unwrap();
     let mut monitor = client.subscribe(&opts.name).await.unwrap();
-    let mut count = 0;
     while let Ok(reply) = monitor.recv().await {
-        info!("Got Monitor reply: {reply:?}");
-        count += 1;
-        if count > 5 {
-            break;
-        }
+        let display = match reply.value() {
+            DbrValue::String(s) => s.join(" "),
+            DbrValue::Int(v) => v
+                .iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<String>>()
+                .join(" "),
+            DbrValue::Char(v) => v
+                .iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<String>>()
+                .join(" "),
+            DbrValue::Long(v) => v
+                .iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<String>>()
+                .join(" "),
+            DbrValue::Double(v) => v
+                .iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<String>>()
+                .join(" "),
+            DbrValue::Float(v) => v
+                .iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<String>>()
+                .join(" "),
+            DbrValue::Enum(x) => format!("{x}"),
+        };
+        println!("{} {}", opts.name, display);
     }
-    info!("Dropping and sleeping");
     drop(monitor);
     tokio::time::sleep(Duration::from_secs(5)).await;
     info!("Disconnected.");

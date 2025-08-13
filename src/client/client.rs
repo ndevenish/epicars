@@ -301,10 +301,11 @@ impl CircuitInternal {
                     }
                 },
             };
+
             // Send any messages out
             if let Some(messages) = messages_out {
                 for message in &messages {
-                    debug!("Sending {message:?}");
+                    trace!("Sending {message:?}");
                 }
                 if Message::write_all_messages(&messages, &mut tcp_tx)
                     .await
@@ -493,7 +494,14 @@ impl CircuitInternal {
                 Vec::new()
             }
             ClientMessage::EventAddResponse(msg) => {
-                debug!("Got {msg:?}");
+                let Some(channel_id) = self.broadcast_channels.get(&msg.subscription_id) else {
+                    warn!(
+                        "Got subscription message without associated channel: {}",
+                        msg.subscription_id
+                    );
+                    return Vec::new();
+                };
+                let _span = debug_span!("handle_message", cid = channel_id).entered();
                 if msg.data.is_empty() {
                     debug!(
                         "Got empty EventAddResponse: Purging subscription {}",
@@ -519,14 +527,15 @@ impl CircuitInternal {
                     error!("Got invalid subscription response from server: {msg:?}");
                     return Vec::new();
                 };
+                debug!(
+                    "Got subscription {} response: {:?}",
+                    msg.subscription_id, dbr
+                );
                 // Check - this might be the first
                 if let Some((_, (length, dbrtype, reply))) =
                     self.pending_broadcasts.remove(&msg.subscription_id)
                 {
-                    debug!(
-                        "Got first EventAdd response for subscription {}",
-                        msg.subscription_id
-                    );
+                    // This is the first EventAdd response, tell waiting clients that opening was successful
                     // TODO: Make this capacity configurable.
                     let (tx, rx) = broadcast::channel(32);
                     self.broadcast_receivers
@@ -539,15 +548,11 @@ impl CircuitInternal {
                     .get(&msg.subscription_id)
                     .expect("Should have just created this")
                     .2;
-                debug!(
-                    "Sending transmitter: {} receivers",
-                    transmitter.receiver_count()
-                );
                 match transmitter.send(dbr) {
                     Ok(0) | Err(_) => {
                         // We have no receivers left; cancel this subscription
                         debug!("No more receivers for {}: Cancelling", msg.subscription_id);
-                        let channel_id = self.broadcast_channels.get(&msg.subscription_id).unwrap();
+
                         let sid = self.channels.get(channel_id).unwrap().sid;
                         return vec![msg.cancel(sid).into()];
                     }
@@ -622,7 +627,10 @@ impl Client {
 
     async fn start(&mut self) -> Result<(), io::Error> {
         if let Err(err) = self.watch_broadcasts(self.cancellation.clone()).await {
-            warn!("Failed to create broadcast watcher, will run without: {err:?}");
+            warn!(
+                "Failed to create broadcast watcher on port {}, will run without: {err:?}",
+                self.beacon_port
+            );
         }
         Ok(())
     }
