@@ -2,12 +2,12 @@
 
 use pnet::datalink;
 use std::{
+    cmp::max,
     collections::{HashMap, hash_map::Entry},
-    hash::Hash,
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, split},
@@ -108,6 +108,7 @@ impl Circuit {
                 channel_lookup: Default::default(),
                 channels: Default::default(),
                 pending_reads: Default::default(),
+                last_echo_sent_at: Instant::now(),
                 last_received_message_at: Instant::now(),
                 pending_broadcasts: Default::default(),
                 broadcast_receivers: Default::default(),
@@ -243,6 +244,7 @@ struct CircuitInternal {
     address: SocketAddr,
     /// When the last message was received. Used to calculate Echo timing.
     last_received_message_at: Instant,
+    last_echo_sent_at: Instant,
     // requests_tx: mpsc::Sender<CircuitRequest>,
     requests_rx: mpsc::Receiver<CircuitRequest>,
     cancel: CancellationToken,
@@ -273,6 +275,8 @@ impl CircuitInternal {
         let (tcp_rx, mut tcp_tx) = split(tcp);
         let mut framed = FramedRead::with_capacity(tcp_rx, ClientMessage::default(), 16384usize);
         loop {
+            let next_timing_stop = max(self.last_echo_sent_at, self.last_received_message_at)
+                + Duration::from_secs(15);
             let messages_out = select! {
                 _ = self.cancel.cancelled() => break,
                 Some(message) = framed.next() => match message {
@@ -285,6 +289,16 @@ impl CircuitInternal {
                 request = self.requests_rx.recv() => match request {
                     None => break,
                     Some(req) => Some(self.handle_request(req).await)
+                },
+                _ = tokio::time::sleep_until(next_timing_stop.into()) => {
+                    if self.last_echo_sent_at < self.last_received_message_at {
+                        self.last_echo_sent_at = Instant::now();
+                        Some(vec![Message::Echo])
+                    } else {
+                        // We sent an echo already, this is the termination time
+                        error!("Received no reply from server, assuming connection dead");
+                        None
+                    }
                 },
             };
             // Send any messages out
@@ -332,7 +346,6 @@ impl CircuitInternal {
     }
 
     async fn handle_request(&mut self, request: CircuitRequest) -> Vec<Message> {
-        self.last_received_message_at = Instant::now();
         match request {
             CircuitRequest::GetChannel(name, sender) => {
                 if let Some(id) = self.channel_lookup.get(&name) {
@@ -415,6 +428,8 @@ impl CircuitInternal {
         }
     }
     fn handle_message(&mut self, message: ClientMessage) -> Vec<Message> {
+        self.last_received_message_at = Instant::now();
+        trace!("Received message: {message:?}");
         match message {
             ClientMessage::AccessRights(msg) => {
                 let _span = debug_span!("handle_message", cid = &msg.client_id).entered();
