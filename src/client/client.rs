@@ -297,7 +297,7 @@ impl CircuitInternal {
                     } else {
                         // We sent an echo already, this is the termination time
                         error!("Received no reply from server, assuming connection dead");
-                        None
+                        break
                     }
                 },
             };
