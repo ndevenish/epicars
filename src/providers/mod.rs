@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Provides PV values for a CAServer
-pub trait Provider: Sync + Send + Clone + 'static {
+pub trait Provider: Sync + Send + Clone + Default + 'static {
     /// Does this provider control the given PV name?
     fn provides(&self, pv_name: &str) -> bool;
 

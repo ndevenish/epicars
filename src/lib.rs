@@ -28,7 +28,31 @@
 //!     across thread boundaries, and retain access to the same data (internally stored
 //!     in an `Arc<Mutex<dbr::DbrValue>>`).
 //!
-//! ## Example
+//! ## Example Client
+//!
+//! Here is an example of reading a single PV once, and subscribing to a different one:
+//!
+//! ```
+//! use epicars::Client;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let mut client = Client::new().await.unwrap();
+//!
+//!     // Read once-off, directly
+//!     let number = client.read_pv("NUMERIC_VALUE").await.unwrap();
+//!     println!("Read NUMERIC_VALUE: {number:?}");
+//!
+//!     // Or get a subscriber to receieve all updates
+//!     let mut reader = client.subscribe("NUMERIC_VALUE").await.unwrap();
+//!     while let Ok(value) = reader.recv().await {
+//!         println!("Got update: {:?}", value.value());
+//! #       break
+//!     }
+//! }
+//! ```
+//!
+//! ## Example Server
 //!
 //! Here is an example of exposing a basic single [i32] via the
 //! [providers::IntercomProvider]. You can run this and then `caget NUMERIC_VALUE` or
@@ -59,6 +83,7 @@
 //!     https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types
 
 pub mod client;
+pub use crate::client::Client;
 
 pub mod dbr;
 pub mod messages;
