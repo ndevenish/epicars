@@ -9,8 +9,8 @@ struct Options {
     #[clap(required = true, id = "PV_NAME")]
     names: Vec<String>,
     /// Show debug output
-    #[clap(short)]
-    verbose: bool,
+    #[clap(short, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
@@ -24,10 +24,10 @@ async fn main() {
     let opts = Options::parse();
 
     tracing_subscriber::fmt()
-        .with_max_level(if opts.verbose {
-            LevelFilter::DEBUG
-        } else {
-            LevelFilter::INFO
+        .with_max_level(match opts.verbose {
+            0 => LevelFilter::INFO,
+            1 => LevelFilter::DEBUG,
+            2.. => LevelFilter::TRACE,
         })
         .init();
 
