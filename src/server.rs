@@ -7,15 +7,18 @@ use std::{
     io::{self, Cursor},
     net::{IpAddr, Ipv4Addr},
     num::NonZeroUsize,
+    pin::Pin,
     time::{Duration, Instant},
 };
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream, UdpSocket},
+    select,
     sync::{broadcast, mpsc},
+    task::JoinSet,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     dbr::{DBR_BASIC_STRING, Dbr, DbrType},
@@ -29,6 +32,7 @@ use crate::{
 };
 
 /// Serve data to CA clients by managing the Circuit/Channel lifecycles and interfacing with [`Provider`].
+#[derive(Default)]
 pub struct Server<L: Provider> {
     /// Broadcast port to sent beacons
     beacon_port: u16,
@@ -36,14 +40,37 @@ pub struct Server<L: Provider> {
     search_port: u16,
     /// Port to receive connections on, if specified
     connection_port: Option<u16>,
-    /// Time that last beacon was sent
-    last_beacon: Instant,
     /// The beacon ID of the last beacon broadcast
     beacon_id: u32,
     next_circuit_id: u64,
     circuits: Vec<Circuit<L>>,
     shutdown: CancellationToken,
     library_provider: L,
+    tasks: JoinSet<Result<(), io::Error>>,
+}
+
+pub struct ServerHandle {
+    cancel: CancellationToken,
+    // handle: JoinHandle<()>,
+    handle: Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>>,
+}
+
+impl ServerHandle {
+    pub async fn stop(self) -> Result<(), io::Error> {
+        self.cancel.cancel();
+        self.handle.await
+    }
+}
+
+impl Future for ServerHandle {
+    type Output = Result<(), io::Error>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.handle.as_mut().poll(cx)
+    }
 }
 
 fn get_broadcast_ips() -> Vec<Ipv4Addr> {
@@ -75,7 +102,7 @@ async fn try_bind_ports(
 }
 
 impl<L: Provider> Server<L> {
-    async fn listen(&mut self) -> Result<(), std::io::Error> {
+    async fn listen(mut self) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port;
         let connection_socket = try_bind_ports(request_port).await?;
@@ -87,13 +114,26 @@ impl<L: Provider> Server<L> {
         self.handle_tcp_connections(connection_socket);
         self.broadcast_beacons(listen_port).await?;
 
-        Ok(())
+        // Join all tasks, and take the first io::Error as the error to return
+        let results: Vec<_> = self
+            .tasks
+            .join_all()
+            .await
+            .into_iter()
+            .filter_map(Result::err)
+            .collect();
+        if let Some(e) = results.into_iter().next() {
+            Err(e)
+        } else {
+            Ok(())
+        }
     }
 
-    async fn broadcast_beacons(&self, connection_port: u16) -> io::Result<()> {
+    async fn broadcast_beacons(&mut self, connection_port: u16) -> io::Result<()> {
         let beacon_port = self.beacon_port;
         let broadcast = UdpSocket::bind("0.0.0.0:0").await?;
-        tokio::spawn(async move {
+        let cancel = self.shutdown.clone();
+        self.tasks.spawn(async move {
             broadcast.set_broadcast(true).unwrap();
             let mut message = messages::RsrvIsUp {
                 server_port: connection_port,
@@ -118,16 +158,22 @@ impl<L: Provider> Server<L> {
                     broadcast_ips,
                 );
                 message.beacon_id = message.beacon_id.wrapping_add(1);
-                tokio::time::sleep(Duration::from_secs(15)).await;
+                select! {
+                    _ = tokio::time::sleep(Duration::from_secs(15)) => (),
+                    _ = cancel.cancelled() => break,
+                };
             }
+            Ok(())
         });
         Ok(())
     }
 
-    fn listen_for_searches(&self, connection_port: u16) {
+    fn listen_for_searches(&mut self, connection_port: u16) {
         let search_port = self.search_port;
         let library_provider = self.library_provider.clone();
-        tokio::spawn(async move {
+        let cancel = self.shutdown.clone();
+
+        self.tasks.spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
             let listener = new_reusable_udp_socket(format!("0.0.0.0:{search_port}")).unwrap();
 
@@ -140,7 +186,12 @@ impl<L: Provider> Server<L> {
             let mut recent_searches: Vec<(Instant, u16, Vec<messages::Search>)> = Vec::new();
 
             loop {
-                let (size, origin) = listener.recv_from(&mut buf).await.unwrap();
+                // Receieve a message, or cancel
+                let (size, origin) = select! {
+                    r = listener.recv_from(&mut buf) => r,
+                    _ = cancel.cancelled() => break,
+                }
+                .unwrap();
                 let msg_buf = &buf[..size];
                 if let Ok(searches) = parse_search_packet(msg_buf) {
                     // Handle rejection window:
@@ -186,26 +237,40 @@ impl<L: Provider> Server<L> {
                     error!("Got unparseable search message from {origin}");
                 }
             }
+            Ok(())
         });
     }
 
     fn handle_tcp_connections(&mut self, listener: TcpListener) {
         let library = self.library_provider.clone();
-        tokio::spawn(async move {
+        let cancel_inner = self.shutdown.clone();
+        self.tasks.spawn(async move {
             let mut id = 0;
+            let mut tasks = JoinSet::new();
             loop {
                 info!(
                     "Waiting to accept TCP connections on {}",
                     listener.local_addr().unwrap()
                 );
-                let (connection, client) = listener.accept().await.unwrap();
+                let (connection, client) = match select! {
+                    _ = cancel_inner.cancelled() => break,
+                    x = listener.accept() => x,
+                } {
+                    Ok(x) => x,
+                    Err(e) => {
+                        warn!("Failed to accept incoming connection: {e}");
+                        continue;
+                    }
+                };
                 debug!("  Got new stream from {client}");
                 let circuit_library = library.clone();
-                tokio::spawn(async move {
+                tasks.spawn(async move {
                     Circuit::start(id, connection, circuit_library).await;
                 });
                 id += 1;
             }
+            tasks.join_all().await;
+            Ok(())
         });
     }
 }
@@ -332,6 +397,7 @@ impl<L: Provider> Circuit<L> {
                     match circuit.handle_message(message).await {
                         Ok(messages) => {
                             for msg in messages {
+                                trace!("Writing response message: {msg:?}");
                                 stream.write_all(&msg.as_bytes()).await.unwrap()
                             }
                         }
@@ -551,6 +617,7 @@ pub struct ServerBuilder<L: Provider> {
     search_port: u16,
     connection_port: Option<u16>,
     provider: L,
+    cancellation_token: CancellationToken,
 }
 
 impl<L: Provider> ServerBuilder<L> {
@@ -560,6 +627,7 @@ impl<L: Provider> ServerBuilder<L> {
             search_port: 5064,
             connection_port: None,
             provider,
+            cancellation_token: CancellationToken::new(),
         }
     }
     pub fn beacon_port(mut self, port: u16) -> ServerBuilder<L> {
@@ -574,19 +642,26 @@ impl<L: Provider> ServerBuilder<L> {
         self.connection_port = Some(port);
         self
     }
-    pub async fn start(self) -> io::Result<Server<L>> {
-        let mut server = Server {
+    pub fn cancellation_token(mut self, cancel: CancellationToken) -> ServerBuilder<L> {
+        self.cancellation_token = cancel;
+        self
+    }
+
+    pub async fn start(self) -> ServerHandle {
+        let shutdown = self.cancellation_token.clone();
+        let server = Server {
             beacon_port: self.beacon_port,
             search_port: self.search_port,
             connection_port: self.connection_port,
             library_provider: self.provider,
-            last_beacon: Instant::now(),
-            beacon_id: 0,
-            next_circuit_id: 0,
-            circuits: Vec::new(),
-            shutdown: CancellationToken::new(),
+            shutdown,
+            ..Default::default()
         };
-        server.listen().await?;
-        Ok(server)
+
+        ServerHandle {
+            cancel: self.cancellation_token,
+            handle: Box::pin(tokio::spawn(async move { server.listen() }).await.unwrap())
+                .into_future(),
+        }
     }
 }
