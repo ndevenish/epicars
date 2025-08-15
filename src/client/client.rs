@@ -699,3 +699,9 @@ impl Client {
         Ok(())
     }
 }
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
