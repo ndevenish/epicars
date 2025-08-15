@@ -279,12 +279,15 @@ impl CircuitInternal {
                 + Duration::from_secs(15);
             let messages_out = select! {
                 _ = self.cancel.cancelled() => break,
-                Some(message) = framed.next() => match message {
-                    Ok(message) => Some(self.handle_message(message)),
-                    Err(e) => {
-                        error!("Got error processing server message: {e}");
-                        continue;
-                    }
+                incoming = framed.next() => match incoming {
+                    Some(message) => match message {
+                        Ok(message) => Some(self.handle_message(message)),
+                        Err(e) => {
+                            error!("Got error processing server message: {e}");
+                            continue;
+                        }
+                    },
+                    None => break,
                 },
                 request = self.requests_rx.recv() => match request {
                     None => break,
