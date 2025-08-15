@@ -255,8 +255,9 @@ impl<L: Provider> Server<L> {
                 };
                 debug!("  Got new stream from {client}");
                 let circuit_library = library.clone();
+                let cancel = cancel_inner.clone();
                 tasks.spawn(async move {
-                    Circuit::start(id, connection, circuit_library).await;
+                    Circuit::start(id, connection, circuit_library, cancel).await;
                 });
                 id += 1;
             }
@@ -311,7 +312,7 @@ impl<L: Provider> Circuit<L> {
             }
         })
     }
-    async fn start(id: u64, mut stream: TcpStream, library: L) {
+    async fn start(id: u64, mut stream: TcpStream, library: L, cancel: CancellationToken) {
         info!("{id}: Starting circuit with {:?}", stream.peer_addr());
         let client_version = Circuit::<L>::do_version_exchange(&mut stream)
             .await
@@ -335,6 +336,7 @@ impl<L: Provider> Circuit<L> {
         // Now, everything else is based on responding to events
         loop {
             tokio::select! {
+                _ = cancel.cancelled() => break,
                 pv_name = monitor_updates.recv() => match pv_name {
                     Some(pv_name) => match circuit.handle_monitor_update(&pv_name).await {
                         Ok(messages) => {
