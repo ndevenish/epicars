@@ -17,6 +17,7 @@ use std::{
     fmt::Display,
     io::{self, Cursor},
     net::Ipv4Addr,
+    num::NonZeroUsize,
     ops::{Shl, Shr},
 };
 
@@ -35,7 +36,7 @@ use tokio_util::{
     codec::Decoder,
 };
 
-use crate::dbr::{DbrBasicType, DbrType};
+use crate::dbr::{Dbr, DbrBasicType, DbrType};
 
 const EPICS_VERSION: u16 = 13;
 
@@ -1470,6 +1471,21 @@ impl CAMessage for EventAdd {
             payload,
         }
         .write(writer)
+    }
+}
+
+impl EventAdd {
+    pub fn respond(&self, value: &Dbr) -> Result<EventAddResponse, ErrorCondition> {
+        let (data_count, data) = value
+            .convert_to(self.data_type)?
+            .to_bytes(NonZeroUsize::new(self.data_count as usize));
+        Ok(EventAddResponse {
+            data_type: self.data_type,
+            data_count: data_count as u32,
+            subscription_id: self.subscription_id,
+            status_code: ErrorCondition::Normal,
+            data,
+        })
     }
 }
 

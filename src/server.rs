@@ -471,7 +471,15 @@ impl<L: Provider> Circuit<L> {
                     subscription_id: msg.subscription_id,
                     receiver,
                 });
-                Ok(Vec::new())
+
+                // Send back an initial value\
+                let name = channel.name.clone();
+                let value = self.do_read_dbr(&name, msg.data_type);
+                Ok(vec![
+                    msg.respond(&value)
+                        .map_err(MessageError::ErrorResponse)?
+                        .into(),
+                ])
             }
             Message::EventCancel(_) => todo!(),
             Message::ClientName(name) if self.client_user_name.is_none() => {
@@ -534,12 +542,13 @@ impl<L: Provider> Circuit<L> {
         }
     }
 
+    fn do_read_dbr(&self, name: &str, data_type: DbrType) -> Dbr {
+        self.library.read_value(name, Some(data_type)).unwrap()
+    }
+
     fn do_read(&self, request: &ReadNotify) -> Result<ReadNotifyResponse, ErrorCondition> {
         let channel = &self.channels[&request.server_id];
-        let pv = self
-            .library
-            .read_value(&channel.name, Some(request.data_type))
-            .unwrap();
+        let pv = self.do_read_dbr(&channel.name, request.data_type);
 
         // Read the data into a Vec<u8>
         let (data_count, data) = pv
