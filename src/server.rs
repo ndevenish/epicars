@@ -64,6 +64,12 @@ impl ServerHandle {
     }
 }
 
+impl Drop for ServerHandle {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 fn get_broadcast_ips() -> Vec<Ipv4Addr> {
     datalink::interfaces()
         .into_iter()
