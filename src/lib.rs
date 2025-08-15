@@ -35,8 +35,14 @@
 //! ```
 //! use epicars::Client;
 //!
+//! # use epicars::{ServerBuilder, providers::IntercomProvider};
+//! #
 //! #[tokio::main]
 //! async fn main() {
+//! #   let mut provider = IntercomProvider::new();
+//! #   provider.add_pv("NUMERIC_VALUE", 42i32).unwrap();
+//! #   let _server = ServerBuilder::new(provider).start();
+//! #
 //!     let mut client = Client::new().await.unwrap();
 //!
 //!     // Read once-off, directly
@@ -45,9 +51,10 @@
 //!
 //!     // Or get a subscriber to receieve all updates
 //!     let mut reader = client.subscribe("NUMERIC_VALUE").await.unwrap();
+//!
 //!     while let Ok(value) = reader.recv().await {
 //!         println!("Got update: {:?}", value.value());
-//! #       break
+//! #       break;
 //!     }
 //! }
 //! ```
@@ -66,7 +73,7 @@
 //! async fn main() {
 //!     let mut provider = IntercomProvider::new();
 //!     let mut value = provider.add_pv("NUMERIC_VALUE", 42i32).unwrap();
-//!     let _server = ServerBuilder::new(provider).start().await.unwrap();
+//!     let _server = ServerBuilder::new(provider).start();
 //!     loop {
 //!         value.store(&(value.load() + 1));
 //!         println!("Value is now: {}", value.load());
