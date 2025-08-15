@@ -7,7 +7,6 @@ use std::{
     io::{self, Cursor},
     net::{IpAddr, Ipv4Addr},
     num::NonZeroUsize,
-    pin::Pin,
     time::{Duration, Instant},
 };
 use tokio::{
@@ -15,7 +14,7 @@ use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
     select,
     sync::{broadcast, mpsc},
-    task::JoinSet,
+    task::{JoinHandle, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
@@ -51,25 +50,17 @@ pub struct Server<L: Provider> {
 
 pub struct ServerHandle {
     cancel: CancellationToken,
-    // handle: JoinHandle<()>,
-    handle: Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>>,
+    handle: JoinHandle<Result<(), io::Error>>,
 }
 
 impl ServerHandle {
-    pub async fn stop(self) -> Result<(), io::Error> {
-        self.cancel.cancel();
-        self.handle.await
+    pub async fn join(&mut self) -> Result<(), io::Error> {
+        (&mut self.handle).await.unwrap()
     }
-}
 
-impl Future for ServerHandle {
-    type Output = Result<(), io::Error>;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        self.handle.as_mut().poll(cx)
+    pub async fn stop(mut self) -> Result<(), io::Error> {
+        self.cancel.cancel();
+        self.join().await
     }
 }
 
@@ -647,7 +638,7 @@ impl<L: Provider> ServerBuilder<L> {
         self
     }
 
-    pub async fn start(self) -> ServerHandle {
+    pub fn start(self) -> ServerHandle {
         let shutdown = self.cancellation_token.clone();
         let server = Server {
             beacon_port: self.beacon_port,
@@ -660,8 +651,7 @@ impl<L: Provider> ServerBuilder<L> {
 
         ServerHandle {
             cancel: self.cancellation_token,
-            handle: Box::pin(tokio::spawn(async move { server.listen() }).await.unwrap())
-                .into_future(),
+            handle: tokio::spawn(async move { server.listen().await }),
         }
     }
 }

@@ -38,15 +38,11 @@ async fn main() {
         .add_string_pv("FILENAME", "c:\\some_file.cif", Some(32))
         .unwrap();
 
-    let _server = ServerBuilder::new(provider)
-        .beacon_port(5065)
-        .start()
-        .await
-        .unwrap();
+    let mut server = ServerBuilder::new(provider).beacon_port(5065).start();
 
-    info!("Entering main() infinite loop");
     loop {
         select! {
+            _ = server.join() => break,
             _ = tokio::time::sleep(Duration::from_secs(3)) => (),
             _ = tokio::signal::ctrl_c() => {
                 println!("Ctrl-C: Shutting down");
@@ -58,4 +54,9 @@ async fn main() {
         info!("Updating value to {v2}");
         value.store(&v2);
     }
+    // Wait for shutdown, unless another ctrl-c
+    select! {
+        _ = server.stop() => (),
+        _ = tokio::signal::ctrl_c() => println!("Terminating"),
+    };
 }
