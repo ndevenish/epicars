@@ -35,6 +35,7 @@ use tokio_util::{
     bytes::{Buf, BytesMut},
     codec::Decoder,
 };
+use tracing::trace;
 
 use crate::dbr::{Dbr, DbrBasicType, DbrType};
 
@@ -510,7 +511,13 @@ impl Message {
         messages: &[Message],
         to: &mut T,
     ) -> io::Result<()> {
-        let buffer: Vec<u8> = messages.iter().flat_map(|m| m.as_bytes()).collect();
+        let buffer: Vec<u8> = messages
+            .iter()
+            .flat_map(|m| {
+                trace!("Writing: {m:?}");
+                m.as_bytes()
+            })
+            .collect();
         to.write_all(&buffer).await
     }
 }
@@ -1238,6 +1245,13 @@ pub struct ClientName {
     pub name: String,
 }
 
+impl ClientName {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+}
 impl TryFrom<RawMessage> for ClientName {
     type Error = MessageError;
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
@@ -1266,6 +1280,15 @@ impl CAMessage for ClientName {
 pub struct HostName {
     pub name: String,
 }
+
+impl HostName {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+}
+
 impl TryFrom<RawMessage> for HostName {
     type Error = MessageError;
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
