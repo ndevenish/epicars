@@ -27,7 +27,7 @@ use crate::{
         ReadNotifyResponse, Write, parse_search_packet,
     },
     providers::Provider,
-    utils::new_reusable_udp_socket,
+    utils::{get_default_beacon_port, get_default_server_port, new_reusable_udp_socket},
 };
 
 /// Serve data to CA clients by managing the Circuit/Channel lifecycles and interfacing with [`Provider`].
@@ -88,8 +88,10 @@ async fn try_bind_ports(
 ) -> Result<tokio::net::TcpListener, std::io::Error> {
     match request_port {
         None => {
-            // Try binding TCP 5064
-            if let Ok(socket) = tokio::net::TcpListener::bind("0.0.0.0:5064").await {
+            // Try binding the default port on TCP (usually 5064)
+            if let Ok(socket) =
+                tokio::net::TcpListener::bind(("0.0.0.0", get_default_server_port())).await
+            {
                 return Ok(socket);
             }
             tokio::net::TcpListener::bind("0.0.0.0:0").await
@@ -631,8 +633,8 @@ pub struct ServerBuilder<L: Provider> {
 impl<L: Provider> ServerBuilder<L> {
     pub fn new(provider: L) -> ServerBuilder<L> {
         ServerBuilder {
-            beacon_port: 5065,
-            search_port: 5064,
+            beacon_port: get_default_beacon_port(),
+            search_port: get_default_server_port(),
             connection_port: None,
             provider,
             cancellation_token: CancellationToken::new(),

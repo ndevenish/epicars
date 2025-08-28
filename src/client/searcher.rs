@@ -1,11 +1,10 @@
 use num::{FromPrimitive, traits::WrappingAdd};
-use pnet::datalink;
 use std::{
     cmp::min,
     collections::HashMap,
     fmt::Display,
     future,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     pin::Pin,
     time::{Duration, Instant},
 };
@@ -18,18 +17,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
-use crate::messages::{self, AsBytes, Message};
-
-fn get_default_broadcast_ips() -> Vec<IpAddr> {
-    let interfaces = datalink::interfaces();
-    interfaces
-        .into_iter()
-        .filter(|i| !i.is_loopback())
-        .flat_map(|i| i.ips.into_iter())
-        .filter(|i| i.is_ipv4())
-        .map(|f| f.broadcast())
-        .collect()
-}
+use crate::{
+    messages::{self, AsBytes, Message},
+    utils::{get_default_server_port, get_target_broadcast_ips},
+};
 
 /// Increments a mutable reference in place, and returns the original value
 fn wrapping_add<T: WrappingAdd + FromPrimitive + Copy>(value: &mut T) -> T {
@@ -41,7 +32,7 @@ fn wrapping_add<T: WrappingAdd + FromPrimitive + Copy>(value: &mut T) -> T {
 pub struct SearcherBuilder {
     search_port: u16,
     stop_token: CancellationToken,
-    broadcast_addresses: Option<Vec<IpAddr>>,
+    broadcast_addresses: Option<Vec<SocketAddr>>,
     timeout: Option<Duration>,
     /// The socket that is UDP bound to receive replies
     bind_address: SocketAddr,
@@ -50,7 +41,7 @@ pub struct SearcherBuilder {
 impl Default for SearcherBuilder {
     fn default() -> Self {
         SearcherBuilder {
-            search_port: 5064,
+            search_port: get_default_server_port(),
             stop_token: CancellationToken::new(),
             broadcast_addresses: None,
             timeout: Some(Duration::from_secs(1)),
@@ -67,11 +58,10 @@ impl SearcherBuilder {
         let mut searcher = Searcher {
             timeout: self.timeout,
             pending_requests: send,
-            search_port: self.search_port,
             stop_token: CancellationToken::new(),
             broadcast_addresses: self
                 .broadcast_addresses
-                .unwrap_or_else(get_default_broadcast_ips),
+                .unwrap_or_else(|| get_target_broadcast_ips(get_default_server_port())),
             bind_address: self.bind_address,
         };
         searcher
@@ -91,7 +81,7 @@ impl SearcherBuilder {
         self.timeout = timeout;
         self
     }
-    pub fn broadcast_to(mut self, addresses: Vec<IpAddr>) -> Self {
+    pub fn broadcast_to(mut self, addresses: Vec<SocketAddr>) -> Self {
         self.broadcast_addresses = Some(addresses);
         self
     }
@@ -105,10 +95,8 @@ pub struct Searcher {
         String,
         oneshot::Sender<broadcast::Receiver<Option<SocketAddr>>>,
     )>,
-    /// The port to send request broadcasts to
-    search_port: u16,
     /// Interfaces to broadcast onto
-    broadcast_addresses: Vec<IpAddr>,
+    broadcast_addresses: Vec<SocketAddr>,
     stop_token: CancellationToken,
     bind_address: SocketAddr,
 }
@@ -132,7 +120,6 @@ impl Searcher {
         send_socket.set_broadcast(true).unwrap();
 
         let mut state = SearcherInternal {
-            search_port: self.search_port,
             broadcast_addresses: self.broadcast_addresses.clone(),
             stop_token: self.stop_token.clone(),
             timeout: self.timeout,
@@ -157,11 +144,10 @@ impl Searcher {
                         },
                     },
                     _ = state.next_attempt() => if let Some(buf) = state.handle_retries_and_timeouts() {
-                        for ip in &state.broadcast_addresses {
-                            let target_addr = (*ip, state.search_port).into();
-                            debug!("Sending retry to: {target_addr}");
+                        for addr in &state.broadcast_addresses {
+                            debug!("Sending retry to: {addr}");
                             send_socket
-                                .send_to::<SocketAddr>(&buf, target_addr)
+                                .send_to::<SocketAddr>(&buf, *addr)
                                 .await
                                 .expect("Socket sending failed");
                         }
@@ -255,10 +241,8 @@ impl Default for SearchAttempt {
 /// Handle searcher internal state, inside a single Async context
 #[derive(Default)]
 struct SearcherInternal {
-    /// The port to send request broadcasts to
-    search_port: u16,
     /// Interfaces to broadcast onto
-    broadcast_addresses: Vec<IpAddr>,
+    broadcast_addresses: Vec<SocketAddr>,
     /// Search IDs of outstanding requests to the PV name
     in_flight: HashMap<u32, String>,
     /// Data about all the PVs we are searching for
@@ -326,11 +310,10 @@ impl SearcherInternal {
         // Build a single search packet for all of these
         let buffer: Vec<_> = messages.into_iter().flat_map(|m| m.as_bytes()).collect();
         // Send it to all of our broadcast IPs
-        for ip in &self.broadcast_addresses {
-            let target_addr = (*ip, self.search_port).into();
-            debug!("Sending to: {target_addr}");
+        for addr in &self.broadcast_addresses {
+            debug!("Sending search packet to: {addr}");
             socket
-                .send_to::<SocketAddr>(&buffer, target_addr)
+                .send_to::<SocketAddr>(&buffer, *addr)
                 .await
                 .expect("Socket sending failed");
         }

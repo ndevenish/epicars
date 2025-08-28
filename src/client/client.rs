@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use pnet::datalink;
 use std::{
     cmp::max,
     collections::{HashMap, hash_map::Entry},
@@ -20,22 +19,14 @@ use tokio_util::{codec::FramedRead, sync::CancellationToken};
 use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
-    client::{Searcher, searcher::CouldNotFindError},
+    client::{Searcher, SearcherBuilder, searcher::CouldNotFindError},
     dbr::{Dbr, DbrBasicType, DbrCategory, DbrType, DbrValue},
     messages::{self, Access, CAMessage, ClientMessage, Message, MonitorMask, RsrvIsUp},
-    utils::{new_reusable_udp_socket, wrapping_inplace_add},
+    utils::{
+        get_default_beacon_port, get_default_server_port, new_reusable_udp_socket,
+        wrapping_inplace_add,
+    },
 };
-
-fn get_default_broadcast_ips() -> Vec<IpAddr> {
-    let interfaces = datalink::interfaces();
-    interfaces
-        .into_iter()
-        .filter(|i| !i.is_loopback())
-        .flat_map(|i| i.ips.into_iter())
-        .filter(|i| i.is_ipv4())
-        .map(|f| f.broadcast())
-        .collect()
-}
 
 enum CircuitRequest {
     GetChannel(String, oneshot::Sender<Result<ChannelInfo, ClientError>>),
@@ -579,8 +570,6 @@ pub struct Client {
     beacon_port: u16,
     /// Multicast port on which to send searches
     search_port: u16,
-    /// Interfaces to broadcast onto
-    broadcast_addresses: Vec<IpAddr>,
     /// Servers we have seen broadcasting.
     /// This can be used to trigger e.g. re-searching on the appearance
     /// of a new beacon server or the case of one restarting (at which
@@ -615,14 +604,21 @@ pub enum ClientError {
 
 impl Client {
     pub async fn new() -> Result<Client, io::Error> {
+        let search_port = get_default_server_port();
+        let beacon_port = get_default_beacon_port();
+        let cancel = CancellationToken::new();
         let mut client = Client {
-            beacon_port: 5065,
-            search_port: 5064,
-            broadcast_addresses: get_default_broadcast_ips(),
+            beacon_port,
+            search_port,
             observed_beacons: Default::default(),
             circuits: Default::default(),
             cancellation: CancellationToken::new(),
-            searcher: Searcher::start().await.unwrap(),
+            searcher: SearcherBuilder::new()
+                .search_port(search_port)
+                .stop_token(cancel.clone())
+                .start()
+                .await
+                .unwrap(),
         };
         client.start().await?;
         Ok(client)

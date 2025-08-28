@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use epicars::{
-    Client,
     client::SearcherBuilder,
     dbr::{DBR_BASIC_STRING, DbrBasicType, DbrType},
     messages::{

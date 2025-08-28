@@ -38,7 +38,7 @@ async fn main() {
         .add_string_pv("FILENAME", "c:\\some_file.cif", Some(32))
         .unwrap();
 
-    let mut server = ServerBuilder::new(provider).beacon_port(5065).start();
+    let mut server = ServerBuilder::new(provider).start();
 
     loop {
         select! {
