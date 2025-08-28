@@ -15,7 +15,7 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     messages::{self, AsBytes, Message},
@@ -335,7 +335,7 @@ impl SearcherInternal {
             };
             // What was this a response to?
             let Some(pv_name) = self.in_flight.remove(&response.search_id) else {
-                info!("Received unrequested or duplicate search response");
+                debug!("Received unrequested or duplicate search response");
                 continue;
             };
             // Now we know we have a response to an actual request - clear out any past
