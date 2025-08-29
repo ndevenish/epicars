@@ -408,7 +408,7 @@ impl SearcherInternal {
 
 #[cfg(test)]
 mod test {
-    use std::net::IpAddr;
+    use std::net::ToSocketAddrs;
 
     use tokio::net::UdpSocket;
 
@@ -433,7 +433,7 @@ mod test {
         let subtask = tokio::spawn(async move {
             let s = SearcherBuilder::new()
                 .search_port(port)
-                .broadcast_to(vec![IpAddr::V4([127, 0, 0, 1].into())])
+                .broadcast_to(("127.0.0.1", port).to_socket_addrs().unwrap().collect())
                 .start()
                 .await
                 .unwrap();
