@@ -27,7 +27,10 @@ use crate::{
         ReadNotifyResponse, Write, parse_search_packet,
     },
     providers::Provider,
-    utils::{get_default_beacon_port, get_default_server_port, new_reusable_udp_socket},
+    utils::{
+        get_default_beacon_period, get_default_beacon_port, get_default_server_port,
+        new_reusable_udp_socket,
+    },
 };
 
 /// Serve data to CA clients by managing the Circuit/Channel lifecycles and interfacing with [`Provider`].
@@ -132,6 +135,7 @@ impl<L: Provider> Server<L> {
         let beacon_port = self.beacon_port;
         let broadcast = UdpSocket::bind("0.0.0.0:0").await?;
         let cancel = self.shutdown.clone();
+        let beacon_period = Duration::from_secs_f32(get_default_beacon_period());
         self.tasks.spawn(async move {
             broadcast.set_broadcast(true).unwrap();
             let mut message = messages::RsrvIsUp {
@@ -158,7 +162,7 @@ impl<L: Provider> Server<L> {
                 );
                 message.beacon_id = message.beacon_id.wrapping_add(1);
                 select! {
-                    _ = tokio::time::sleep(Duration::from_secs(15)) => (),
+                    _ = tokio::time::sleep(beacon_period) => (),
                     _ = cancel.cancelled() => break,
                 };
             }

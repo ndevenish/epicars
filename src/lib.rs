@@ -103,4 +103,4 @@ pub use crate::server::ServerBuilder;
 
 pub mod providers;
 
-pub(crate) mod utils;
+pub mod utils;

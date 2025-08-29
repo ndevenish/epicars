@@ -23,8 +23,8 @@ use crate::{
     dbr::{Dbr, DbrBasicType, DbrCategory, DbrType, DbrValue},
     messages::{self, Access, CAMessage, ClientMessage, Message, MonitorMask, RsrvIsUp},
     utils::{
-        get_default_beacon_port, get_default_server_port, new_reusable_udp_socket,
-        wrapping_inplace_add,
+        get_default_beacon_port, get_default_connection_timeout, get_default_server_port,
+        new_reusable_udp_socket, wrapping_inplace_add,
     },
 };
 
@@ -265,9 +265,10 @@ impl CircuitInternal {
         debug!("Started circuit to {}", self.address);
         let (tcp_rx, mut tcp_tx) = split(tcp);
         let mut framed = FramedRead::with_capacity(tcp_rx, ClientMessage::default(), 16384usize);
+        let activity_period = Duration::from_secs_f32(get_default_connection_timeout() / 2.0);
         loop {
-            let next_timing_stop = max(self.last_echo_sent_at, self.last_received_message_at)
-                + Duration::from_secs(15);
+            let next_timing_stop =
+                max(self.last_echo_sent_at, self.last_received_message_at) + activity_period;
             let messages_out = select! {
                 _ = self.cancel.cancelled() => break,
                 incoming = framed.next() => match incoming {

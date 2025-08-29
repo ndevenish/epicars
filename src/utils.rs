@@ -9,7 +9,7 @@ use std::{
 use tokio::net::UdpSocket;
 use tracing::{debug, warn};
 
-pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<UdpSocket> {
+pub(crate) fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<UdpSocket> {
     let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_port(true)?;
     socket.set_nonblocking(true)?;
@@ -19,7 +19,7 @@ pub fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<UdpSo
 }
 
 /// Increments a mutable reference in place, and returns the original value
-pub fn wrapping_inplace_add<T: WrappingAdd + FromPrimitive + Copy>(value: &mut T) -> T {
+pub(crate) fn wrapping_inplace_add<T: WrappingAdd + FromPrimitive + Copy>(value: &mut T) -> T {
     let id = *value;
     *value = value.wrapping_add(&T::from_u8(1).unwrap());
     id
@@ -31,6 +31,7 @@ pub fn get_default_server_port() -> u16 {
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(5064u16)
+        .max(5000u16)
 }
 
 /// Get the beacon broadcast port, either from environment or default 5065
@@ -39,9 +40,12 @@ pub fn get_default_beacon_port() -> u16 {
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(5065u16)
+        .max(5000u16)
 }
 
 /// Get the target list of broadcast IPs, by reading the environment and interfaces
+///
+/// Hostnames are resolved if in the environment setting, so this will re-resolve
 pub fn get_target_broadcast_ips(default_search_port: u16) -> Vec<SocketAddr> {
     // let interfaces = ;
     let mut ips = Vec::new();
@@ -89,4 +93,28 @@ pub fn get_target_broadcast_ips(default_search_port: u16) -> Vec<SocketAddr> {
     }
     // The user might have explicitly requested some
     ips
+}
+
+pub fn get_default_connection_timeout() -> f32 {
+    env::var("EPICS_CA_CONN_TMO")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30.0f32)
+        .max(0.1f32)
+}
+
+pub fn get_default_beacon_period() -> f32 {
+    env::var("EPICS_CA_BEACON_PERIOD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15.0f32)
+        .max(0.1f32)
+}
+
+pub fn get_default_max_search_interval() -> f32 {
+    env::var("EPICS_CA_MAX_SEARCH_PERIOD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300.0f32)
+        .max(60f32)
 }
