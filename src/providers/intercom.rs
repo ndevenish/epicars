@@ -369,14 +369,22 @@ impl Provider for IntercomProvider {
 
     fn get_access_right(
         &self,
-        _pv_name: &str,
+        pv_name: &str,
         _client_user_name: Option<&str>,
         _client_host_name: Option<&str>,
     ) -> messages::Access {
-        messages::Access::ReadWrite
+        if self.rbv && pv_name.ends_with("_RBV") {
+            messages::Access::Read
+        } else {
+            messages::Access::ReadWrite
+        }
     }
 
     fn write_value(&mut self, pv_name: &str, value: Dbr) -> Result<(), ErrorCondition> {
+        // Don't allow writing of the implicit RBV
+        if self.rbv && pv_name.ends_with("_RBV") {
+            return Err(ErrorCondition::NoWtAccess);
+        }
         let mut pvmap = self.pvs.lock().unwrap();
         let mut pv = pvmap
             .get_mut(self.normalize_pv_name(pv_name))
