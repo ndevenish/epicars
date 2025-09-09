@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    dbr::{DBR_BASIC_STRING, Dbr, DbrType},
+    dbr::{Dbr, DbrType},
     messages::{
         self, AccessRights, AsBytes, CAMessage, CreateChannel, CreateChannelResponse, ECAError,
         ErrorCondition, EventAddResponse, Message, MessageError, MonitorMask, ReadNotify,
@@ -569,7 +569,6 @@ impl<L: Provider> Circuit<L> {
     }
 
     fn do_write(&mut self, request: &Write) -> bool {
-        assert!(request.data_type == DBR_BASIC_STRING);
         let channel = self.channels.get(&request.server_id).unwrap();
 
         let Ok(dbr) = Dbr::from_bytes(
