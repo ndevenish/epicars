@@ -246,6 +246,8 @@ pub struct IntercomProvider {
     pvs: Arc<Mutex<HashMap<String, Arc<Mutex<PV>>>>>,
     /// A Prefix that is inserted in front of any PV name
     pub prefix: String,
+    /// Automatically map PV alternative names with a "_RBV" suffix
+    pub rbv: bool,
 }
 
 impl IntercomProvider {
@@ -253,6 +255,7 @@ impl IntercomProvider {
         IntercomProvider {
             pvs: Arc::new(Mutex::new(HashMap::new())),
             prefix: String::new(),
+            rbv: false,
         }
     }
 
@@ -323,6 +326,18 @@ impl IntercomProvider {
         self.register_pv(pv.clone())?;
         Ok(StringIntercom::new(pv))
     }
+
+    /// Normalize a PV name by stripping prefix/suffix
+    fn normalize_pv_name<'a>(&self, pv_name: &'a str) -> &'a str {
+        let mut name = pv_name;
+        if pv_name.starts_with(&self.prefix) {
+            name = &name[self.prefix.len()..];
+        }
+        if self.rbv && name.ends_with("_RBV") {
+            name = &name[..name.len() - 4]
+        }
+        name
+    }
 }
 
 impl Provider for IntercomProvider {
@@ -333,7 +348,7 @@ impl Provider for IntercomProvider {
         self.pvs
             .lock()
             .unwrap()
-            .contains_key(&pv_name[self.prefix.len()..])
+            .contains_key(self.normalize_pv_name(pv_name))
     }
 
     fn read_value(
@@ -344,7 +359,7 @@ impl Provider for IntercomProvider {
         let pv = {
             let pvmap = self.pvs.lock().unwrap();
             pvmap
-                .get(&pv_name[self.prefix.len()..])
+                .get(self.normalize_pv_name(pv_name))
                 .ok_or(ErrorCondition::UnavailInServ)?
                 .clone()
         };
@@ -364,7 +379,7 @@ impl Provider for IntercomProvider {
     fn write_value(&mut self, pv_name: &str, value: Dbr) -> Result<(), ErrorCondition> {
         let mut pvmap = self.pvs.lock().unwrap();
         let mut pv = pvmap
-            .get_mut(&pv_name[self.prefix.len()..])
+            .get_mut(self.normalize_pv_name(pv_name))
             .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
@@ -387,7 +402,7 @@ impl Provider for IntercomProvider {
     ) -> Result<broadcast::Receiver<Dbr>, ErrorCondition> {
         let mut pvmap = self.pvs.lock().unwrap();
         let mut pv = pvmap
-            .get_mut(&pv_name[self.prefix.len()..])
+            .get_mut(self.normalize_pv_name(pv_name))
             .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
