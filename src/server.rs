@@ -178,7 +178,12 @@ impl<L: Provider> Server<L> {
 
         self.tasks.spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
-            let listener = new_reusable_udp_socket(format!("0.0.0.0:{search_port}")).unwrap();
+            let listener = match new_reusable_udp_socket(format!("0.0.0.0:{search_port}")) {
+                Ok(x) => x,
+                Err(e) => {
+                    panic!("Failed to create reusable UDP socket 0.0.0.0:{search_port}: {e}");
+                }
+            };
 
             info!(
                 "Listening for searches on {:?}",
