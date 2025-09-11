@@ -1721,7 +1721,7 @@ impl CAMessage for ReadNotifyResponse {
 /// Writes new channel value.
 ///
 /// Sent over TCP.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Write {
     pub data_type: DbrType,
     pub data_count: u32,
@@ -1812,6 +1812,17 @@ impl TryFrom<RawMessage> for WriteNotify {
     }
 }
 
+impl From<Write> for WriteNotify {
+    fn from(value: Write) -> Self {
+        Self {
+            data_type: value.data_type,
+            data_count: value.data_count,
+            server_id: value.server_id,
+            client_ioid: value.client_ioid,
+            data: value.data,
+        }
+    }
+}
 impl CAMessage for WriteNotify {
     fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         RawMessage::from(self).write(writer)
