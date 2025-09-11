@@ -449,7 +449,7 @@ mod tests {
         let si = StringIntercom::new(pv.clone());
         assert_eq!(si.load(), "Test String");
         assert_eq!(
-            pv.lock().unwrap().load_for_ca().data_type().basic_type,
+            pv.lock().unwrap().load_for_ca(None).data_type().basic_type,
             DbrBasicType::Char
         );
     }
