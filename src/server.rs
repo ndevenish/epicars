@@ -430,11 +430,13 @@ impl<L: Provider> Circuit<L> {
     }
 
     async fn handle_monitor_update(&mut self, pv_name: &str) -> Result<Vec<Message>, MessageError> {
-        let c = self
-            .channels
-            .values_mut()
-            .find(|v| v.name == pv_name)
-            .unwrap();
+        let Some(c) = self.channels.values_mut().find(|v| v.name == pv_name) else {
+            error!(
+                "Could not find pv named {pv_name} in channels: {:?}",
+                self.channels
+            );
+            return Err(MessageError::ErrorResponse(ErrorCondition::Internal));
+        };
         debug!(
             "{}: {}: Got update notification for PV {}",
             self.id, c.server_id, c.name
