@@ -20,11 +20,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    dbr::{Dbr, DbrType},
+    dbr::{Dbr, DbrType, Status},
     messages::{
         self, AccessRights, AsBytes, CAMessage, CreateChannel, CreateChannelResponse, ECAError,
         ErrorCondition, EventAddResponse, Message, MessageError, MonitorMask, ReadNotify,
-        ReadNotifyResponse, Write, parse_search_packet,
+        ReadNotifyResponse, Write, WriteNotify, parse_search_packet,
     },
     providers::Provider,
     utils::{
@@ -551,6 +551,20 @@ impl<L: Provider> Circuit<L> {
                     Ok(Vec::default())
                 }
             }
+            Message::WriteNotify(msg) => {
+                debug!("{id}:{}: Write request: {:?}", msg.server_id, msg);
+                if !self.do_writenotify(&msg) {
+                    Ok(vec![
+                        msg.respond(0).into(),
+                        // Message::ECAError(ECAError::new(
+                        // ErrorCondition::PutFail,
+                        // msg.client_ioid,
+                        // Message::Write(msg),
+                    ])
+                } else {
+                    Ok(vec![msg.respond(1).into()])
+                }
+            }
             msg => Err(MessageError::UnexpectedMessage(msg)),
         }
     }
@@ -571,6 +585,20 @@ impl<L: Provider> Circuit<L> {
     }
 
     fn do_write(&mut self, request: &Write) -> bool {
+        let channel = self.channels.get(&request.server_id).unwrap();
+
+        let Ok(dbr) = Dbr::from_bytes(
+            request.data_type,
+            request.data_count as usize,
+            &request.data,
+        ) else {
+            return false;
+        };
+        debug!("Got write request: {dbr:?}");
+        self.library.write_value(&channel.name, dbr).is_ok()
+    }
+    // TODO: Tidy this up
+    fn do_writenotify(&mut self, request: &WriteNotify) -> bool {
         let channel = self.channels.get(&request.server_id).unwrap();
 
         let Ok(dbr) = Dbr::from_bytes(
