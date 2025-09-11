@@ -168,6 +168,7 @@ dependencies = [
  "clap",
  "nom",
  "num",
+ "num-traits",
  "pnet",
  "socket2 0.5.10",
  "thiserror",

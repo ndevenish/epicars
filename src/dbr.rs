@@ -61,7 +61,7 @@ use nom::{
     multi::count,
     number::complete::{be_f32, be_f64, be_i8, be_i16, be_i32, be_u16, be_u32},
 };
-use num::{NumCast, cast::AsPrimitive, traits::ToBytes};
+use num::{Bounded, NumCast, cast::AsPrimitive, traits::ToBytes};
 use std::{
     cmp,
     convert::TryFrom,
@@ -72,6 +72,11 @@ use std::{
 };
 
 use crate::messages::ErrorCondition;
+
+// Constants from EPICS
+const MAX_UNITS_SIZE: usize = 8;
+const MAX_ENUM_STRING_SIZE: usize = 26;
+const MAX_ENUM_STATES: usize = 16;
 
 /// Encode a String to a fixed-maximum-length byte array
 ///
@@ -408,6 +413,176 @@ impl_dbrvalue_conversions_between!(Float, f32);
 impl_dbrvalue_conversions_between!(Double, f64);
 impl_dbrvalue_conversions_between!(String, String);
 
+#[derive(Clone, Debug)]
+pub struct Limits<T: num_traits::Bounded + ToBytes> {
+    display_limits: (T, T),
+    alarm_limits: (T, T),
+    warning_limits: (T, T),
+}
+impl<T: Bounded + ToBytes> Limits<T> {
+    fn to_be_bytes(&self) -> Vec<u8> {
+        let (d_l, d_u) = &self.display_limits;
+        let (a_l, a_u) = &self.alarm_limits;
+        let (w_l, w_u) = &self.warning_limits;
+
+        let values = [d_u, d_l, a_u, w_u, w_l, a_l];
+        values
+            .iter()
+            .flat_map(|v| v.to_be_bytes().as_ref().to_vec())
+            .collect()
+    }
+}
+impl<T: Bounded + ToBytes> Default for Limits<T> {
+    fn default() -> Self {
+        Self {
+            display_limits: (T::min_value(), T::max_value()),
+            alarm_limits: (T::min_value(), T::max_value()),
+            warning_limits: (T::min_value(), T::max_value()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum DbrGraphics {
+    Enum,
+    String,
+    Char {
+        units: String,
+        limits: Limits<i8>,
+    },
+    Int {
+        units: String,
+        limits: Limits<i16>,
+    },
+    Long {
+        units: String,
+        limits: Limits<i32>,
+    },
+    Float {
+        units: String,
+        limits: Limits<f32>,
+        precision: i16,
+    },
+    Double {
+        units: String,
+        limits: Limits<f64>,
+        precision: i16,
+    },
+}
+
+impl DbrGraphics {
+    fn default_for(kind: DbrBasicType) -> Self {
+        match kind {
+            DbrBasicType::String => todo!(),
+            DbrBasicType::Enum => todo!(),
+            DbrBasicType::Int => DbrGraphics::Int {
+                units: String::new(),
+                limits: Limits::default(),
+            },
+            DbrBasicType::Char => DbrGraphics::Char {
+                units: String::new(),
+                limits: Limits::default(),
+            },
+            DbrBasicType::Long => DbrGraphics::Long {
+                units: String::new(),
+                limits: Limits::default(),
+            },
+            DbrBasicType::Float => DbrGraphics::Float {
+                units: String::new(),
+                limits: Limits::default(),
+                precision: 0,
+            },
+            DbrBasicType::Double => DbrGraphics::Double {
+                units: String::new(),
+                limits: Limits::default(),
+                precision: 0,
+            },
+        }
+    }
+    fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            DbrGraphics::Enum => todo!(),
+            DbrGraphics::String => todo!(),
+            DbrGraphics::Char { units, limits } => {
+                let mut units = string_to_fixed_length_bytes(units, 7);
+                units.resize(MAX_UNITS_SIZE, 0u8);
+                units.append(&mut limits.to_be_bytes());
+                units
+            }
+            DbrGraphics::Int { units, limits } => {
+                let mut units = string_to_fixed_length_bytes(units, 7);
+                units.resize(MAX_UNITS_SIZE, 0u8);
+                units.append(&mut limits.to_be_bytes());
+                units
+            }
+            DbrGraphics::Long { units, limits } => {
+                let mut units = string_to_fixed_length_bytes(units, 7);
+                units.resize(MAX_UNITS_SIZE, 0u8);
+                units.append(&mut limits.to_be_bytes());
+                units
+            }
+            DbrGraphics::Float {
+                units,
+                limits,
+                precision,
+            } => {
+                let mut units = string_to_fixed_length_bytes(units, 7);
+                units.resize(MAX_UNITS_SIZE, 0u8);
+                units.append(&mut limits.to_be_bytes());
+                let mut out = precision.to_be_bytes().to_vec();
+                out.append(&mut units);
+                out
+            }
+            DbrGraphics::Double {
+                units,
+                limits,
+                precision,
+            } => {
+                let mut units = string_to_fixed_length_bytes(units, 7);
+                units.resize(MAX_UNITS_SIZE, 0u8);
+                units.append(&mut limits.to_be_bytes());
+                let mut out = precision.to_be_bytes().to_vec();
+                out.append(&mut units);
+                out
+            }
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub enum DbrControl {
+    Enum,
+    String,
+    Char(i8, i8),
+    Int(i16, i16),
+    Long(i32, i32),
+    Float(f32, f32),
+    Double(f64, f64),
+}
+
+impl DbrControl {
+    fn default_for(kind: DbrBasicType) -> Self {
+        match kind {
+            DbrBasicType::String => todo!(),
+            DbrBasicType::Enum => todo!(),
+            DbrBasicType::Int => DbrControl::Int(i16::MIN, i16::MAX),
+            DbrBasicType::Float => DbrControl::Float(f32::MIN, f32::MAX),
+            DbrBasicType::Char => DbrControl::Char(i8::MIN, i8::MAX),
+            DbrBasicType::Long => DbrControl::Long(i32::MIN, i32::MAX),
+            DbrBasicType::Double => DbrControl::Double(f64::MIN, f64::MAX),
+        }
+    }
+    fn to_be_bytes(&self) -> Vec<u8> {
+        match self {
+            DbrControl::Enum => todo!(),
+            DbrControl::String => todo!(),
+            DbrControl::Char(l, u) => [l, u].iter().flat_map(|v| v.to_be_bytes()).collect(),
+            DbrControl::Int(l, u) => [l, u].iter().flat_map(|v| v.to_be_bytes()).collect(),
+            DbrControl::Long(l, u) => [l, u].iter().flat_map(|v| v.to_be_bytes()).collect(),
+            DbrControl::Float(l, u) => [l, u].iter().flat_map(|v| v.to_be_bytes()).collect(),
+            DbrControl::Double(l, u) => [l, u].iter().flat_map(|v| v.to_be_bytes()).collect(),
+        }
+    }
+}
 /// Basic DBR Data types, independent of category
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DbrBasicType {
@@ -573,8 +748,17 @@ pub enum Dbr {
         timestamp: SystemTime,
         value: DbrValue,
     },
-    Graphics,
-    Control,
+    Graphics {
+        status: Status,
+        graphics: DbrGraphics,
+        value: DbrValue,
+    },
+    Control {
+        status: Status,
+        graphics: DbrGraphics,
+        control: DbrControl,
+        value: DbrValue,
+    },
     ClassName(DbrValue),
 }
 
@@ -582,14 +766,10 @@ impl Dbr {
     pub fn take_value(self) -> DbrValue {
         match self {
             Dbr::Basic(value) => value,
-            Dbr::Status { status: _, value } => value,
-            Dbr::Time {
-                status: _,
-                timestamp: _,
-                value,
-            } => value,
-            Dbr::Graphics => todo!(),
-            Dbr::Control => todo!(),
+            Dbr::Status { value, .. } => value,
+            Dbr::Time { value, .. } => value,
+            Dbr::Graphics { value, .. } => value,
+            Dbr::Control { value, .. } => value,
             Dbr::ClassName(value) => value,
         }
     }
@@ -603,8 +783,8 @@ impl Dbr {
                 timestamp: _,
                 value,
             } => value,
-            Dbr::Graphics => todo!(),
-            Dbr::Control => todo!(),
+            Dbr::Graphics { value, .. } => value,
+            Dbr::Control { value, .. } => value,
             Dbr::ClassName(value) => value,
         }
     }
@@ -614,8 +794,8 @@ impl Dbr {
             Dbr::Basic(_) => None,
             Dbr::Status { status, .. } => Some(*status),
             Dbr::Time { status, .. } => Some(*status),
-            Dbr::Graphics => todo!(),
-            Dbr::Control => todo!(),
+            Dbr::Graphics { status, .. } => Some(*status),
+            Dbr::Control { status, .. } => Some(*status),
             Dbr::ClassName(_) => None,
         }
     }
@@ -637,8 +817,14 @@ impl Dbr {
                 basic_type: value.get_type(),
                 category: DbrCategory::Time,
             },
-            Dbr::Graphics => todo!(),
-            Dbr::Control => todo!(),
+            Dbr::Graphics { value, .. } => DbrType {
+                basic_type: value.get_type(),
+                category: DbrCategory::Graphics,
+            },
+            Dbr::Control { value, .. } => DbrType {
+                basic_type: value.get_type(),
+                category: DbrCategory::Control,
+            },
             Dbr::ClassName(_) => DBR_CLASS_NAME,
         }
     }
@@ -725,8 +911,15 @@ impl Dbr {
                 writer.write_all(&time_s.to_be_bytes())?;
                 writer.write_all(&time_ns.to_be_bytes())?;
             }
-            Dbr::Graphics => todo!(),
-            Dbr::Control => todo!(),
+            Dbr::Graphics { graphics, .. } => {
+                writer.write_all(&graphics.to_bytes())?;
+            }
+            Dbr::Control {
+                graphics, control, ..
+            } => {
+                writer.write_all(&graphics.to_bytes())?;
+                writer.write_all(&control.to_be_bytes())?;
+            }
             _ => (),
         }
 
@@ -750,6 +943,17 @@ impl Dbr {
                     timestamp: SystemTime::now(),
                     value,
                 },
+                DbrCategory::Graphics => Dbr::Graphics {
+                    status: Status::default(),
+                    graphics: DbrGraphics::default_for(value.get_type()),
+                    value,
+                },
+                DbrCategory::Control => Dbr::Control {
+                    status: Status::default(),
+                    graphics: DbrGraphics::default_for(value.get_type()),
+                    control: DbrControl::default_for(value.get_type()),
+                    value,
+                },
                 _ => return Err(ErrorCondition::NoConvert),
             },
             Dbr::Status { status, .. } => match dbr_type.category {
@@ -761,6 +965,17 @@ impl Dbr {
                 DbrCategory::Time => Dbr::Time {
                     status: *status,
                     timestamp: SystemTime::now(),
+                    value,
+                },
+                DbrCategory::Graphics => Dbr::Graphics {
+                    status: *status,
+                    graphics: DbrGraphics::default_for(value.get_type()),
+                    value,
+                },
+                DbrCategory::Control => Dbr::Control {
+                    status: *status,
+                    graphics: DbrGraphics::default_for(value.get_type()),
+                    control: DbrControl::default_for(value.get_type()),
                     value,
                 },
                 _ => return Err(ErrorCondition::NoConvert),
@@ -780,10 +995,23 @@ impl Dbr {
                     timestamp: *ts,
                     value,
                 },
+                DbrCategory::Graphics => Dbr::Graphics {
+                    status: *status,
+                    graphics: DbrGraphics::default_for(value.get_type()),
+                    value,
+                },
+                DbrCategory::Control => Dbr::Control {
+                    status: *status,
+                    graphics: DbrGraphics::default_for(value.get_type()),
+                    control: DbrControl::default_for(value.get_type()),
+                    value,
+                },
                 _ => return Err(ErrorCondition::NoConvert),
             },
-            Dbr::Graphics => todo!(),
-            Dbr::Control => todo!(),
+            Dbr::Graphics { .. } => {
+                todo!("Implemented Graphics but don't need to convert from, yet")
+            }
+            Dbr::Control { .. } => todo!("Implemented Control but don't need to convert from, yet"),
             // ClassName cannot be converted as it isn't a normal form of data
             Dbr::ClassName(_) => match dbr_type.category {
                 DbrCategory::ClassName => Dbr::ClassName(value),

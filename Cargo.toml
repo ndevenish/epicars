@@ -9,6 +9,7 @@ description = "Standalone, pure rust implementation of EPICS CA protocol"
 [dependencies]
 nom = "8.0.0"
 num = "0.4.3"
+num-traits = "0.2.19"
 pnet = { version = "0.35.0", default-features = false, features = [
     "pnet_datalink",
     "std",
