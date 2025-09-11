@@ -13,7 +13,7 @@ use tracing::{error, info};
 
 use crate::{
     Provider,
-    dbr::{Dbr, DbrBasicType, DbrType, DbrValue, IntoDbrBasicType, Status},
+    dbr::{DBR_CLASS_NAME, Dbr, DbrBasicType, DbrType, DbrValue, IntoDbrBasicType, Status},
     messages::{self, ErrorCondition, MonitorMask},
 };
 
@@ -35,6 +35,8 @@ struct PV {
     sender: broadcast::Sender<Dbr>,
     /// Trigger channel, to notify the server there is a new broadcast available
     triggers: Vec<mpsc::Sender<String>>,
+    /// The EPICS record type, for CLASS_NAME responses
+    epics_record_type: Option<String>,
 }
 
 impl PV {
@@ -47,8 +49,15 @@ impl PV {
     ///
     /// This includes adjustments for minimum size, and encoding (e.g.
     /// sending a string as a Char array instead of restricting to 40-chars)
-    pub fn load_for_ca(&self) -> Dbr {
+    pub fn load_for_ca(&self, requested_type: Option<DbrType>) -> Dbr {
         let mut value = self.value.lock().unwrap().clone();
+        if requested_type == Some(DBR_CLASS_NAME) {
+            return Dbr::ClassName(DbrValue::String(vec![
+                self.epics_record_type
+                    .clone()
+                    .unwrap_or_else(|| value.get_default_record_type()),
+            ]));
+        }
         if let Some(to_type) = self.force_dbr_type
             && value.get_type() != to_type
         {
@@ -99,7 +108,7 @@ impl PV {
         }
         self.timestamp = SystemTime::now();
         // Now send off the new value to any listeners
-        let _ = self.sender.send(self.load_for_ca());
+        let _ = self.sender.send(self.load_for_ca(None));
         // Send the "please look at" triggers, filtering out any that are dead
         self.triggers = self
             .triggers
@@ -124,6 +133,7 @@ impl Default for PV {
             timestamp: SystemTime::now(),
             sender: broadcast::Sender::new(16),
             triggers: Vec::new(),
+            epics_record_type: None,
         }
     }
 }
@@ -354,7 +364,7 @@ impl Provider for IntercomProvider {
     fn read_value(
         &self,
         pv_name: &str,
-        _requested_type: Option<DbrType>,
+        requested_type: Option<DbrType>,
     ) -> Result<Dbr, ErrorCondition> {
         let pv = {
             let pvmap = self.pvs.lock().unwrap();
@@ -364,7 +374,7 @@ impl Provider for IntercomProvider {
                 .clone()
         };
         let pv = pv.lock().unwrap();
-        Ok(pv.load_for_ca())
+        Ok(pv.load_for_ca(requested_type))
     }
 
     fn get_access_right(

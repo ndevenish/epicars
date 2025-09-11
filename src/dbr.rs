@@ -43,6 +43,12 @@
 //! - [`Dbr::Control`] - This can be used to fetch enum values, but further uses are
 //!   unclear. **This is currently unimplemented**.
 //!
+//! In addition, there are four not-generically typed DBR Kinds:
+//! - `Dbr::PutAckT` - Alert related, unimplemented
+//! - `Dbr::PutAckS` - Alert related, unimplemented
+//! - `Dbr::STSack_String` - Status related, unimplemented
+//! - [`Dbr::ClassName`] - Returns the EPICS record type for the PV.
+//!
 //! Both [`DbrCategory`] and [`DbrBasicType`] are combined in the [`DbrType`] struct,
 //! which provides interfaces to convert to/from the integer representation of types
 //! used by the CA protocol.
@@ -110,6 +116,17 @@ pub enum DbrParseError {
 }
 
 impl DbrValue {
+    pub fn get_default_record_type(&self) -> String {
+        match self {
+            DbrValue::Enum(_) => "mbbo".to_string(),
+            DbrValue::String(_) => "waveform".to_string(),
+            DbrValue::Char(_) => "longout".to_string(),
+            DbrValue::Int(_) => "longout".to_string(),
+            DbrValue::Long(_) => "longout".to_string(),
+            DbrValue::Float(_) => "aao".to_string(),
+            DbrValue::Double(_) => "aao".to_string(),
+        }
+    }
     pub fn get_count(&self) -> usize {
         match self {
             DbrValue::Enum(_) => 1,
@@ -450,6 +467,8 @@ pub enum DbrCategory {
     Time = 2,
     Graphics = 3,
     Control = 4,
+    /// The special single-valued DBR_CLASS_NAME
+    ClassName = 8,
 }
 impl TryFrom<u16> for DbrCategory {
     type Error = ();
@@ -460,6 +479,7 @@ impl TryFrom<u16> for DbrCategory {
             x if x == Self::Time as u16 => Ok(Self::Time),
             x if x == Self::Graphics as u16 => Ok(Self::Graphics),
             x if x == Self::Control as u16 => Ok(Self::Control),
+            38 => Ok(Self::ClassName),
             _ => Err(()),
         }
     }
@@ -477,19 +497,31 @@ pub const DBR_BASIC_STRING: DbrType = DbrType {
     category: DbrCategory::Basic,
 };
 
+pub const DBR_CLASS_NAME: DbrType = DbrType {
+    basic_type: DbrBasicType::String,
+    category: DbrCategory::ClassName,
+};
+
 impl TryFrom<u16> for DbrType {
     type Error = ();
     fn try_from(value: u16) -> Result<Self, Self::Error> {
-        Ok(Self {
-            basic_type: (value % 7).try_into()?,
-            category: (value / 7).try_into()?,
-        })
+        match value {
+            38 => Ok(DBR_CLASS_NAME),
+            value if value < 38 => Ok(Self {
+                basic_type: (value % 7).try_into()?,
+                category: (value / 7).try_into()?,
+            }),
+            _ => Err(()),
+        }
     }
 }
 
 impl From<DbrType> for u16 {
     fn from(value: DbrType) -> Self {
-        value.category as u16 * 7 + value.basic_type as u16
+        match value {
+            DBR_CLASS_NAME => 38,
+            value => value.category as u16 * 7 + value.basic_type as u16,
+        }
     }
 }
 
@@ -543,6 +575,7 @@ pub enum Dbr {
     },
     Graphics,
     Control,
+    ClassName(DbrValue),
 }
 
 impl Dbr {
@@ -557,6 +590,7 @@ impl Dbr {
             } => value,
             Dbr::Graphics => todo!(),
             Dbr::Control => todo!(),
+            Dbr::ClassName(value) => value,
         }
     }
     /// Retrieve the [`DbrValue`] contained by this DBR
@@ -571,6 +605,7 @@ impl Dbr {
             } => value,
             Dbr::Graphics => todo!(),
             Dbr::Control => todo!(),
+            Dbr::ClassName(value) => value,
         }
     }
     /// If a DBR type encoding alarm status, fetch that
@@ -581,6 +616,7 @@ impl Dbr {
             Dbr::Time { status, .. } => Some(*status),
             Dbr::Graphics => todo!(),
             Dbr::Control => todo!(),
+            Dbr::ClassName(_) => None,
         }
     }
     pub fn data_type(&self) -> DbrType {
@@ -603,6 +639,7 @@ impl Dbr {
             },
             Dbr::Graphics => todo!(),
             Dbr::Control => todo!(),
+            Dbr::ClassName(_) => DBR_CLASS_NAME,
         }
     }
 
@@ -656,6 +693,7 @@ impl Dbr {
             },
             DbrCategory::Graphics => todo!(),
             DbrCategory::Control => todo!(),
+            DbrCategory::ClassName => Dbr::ClassName(value),
         })
     }
 
@@ -746,6 +784,11 @@ impl Dbr {
             },
             Dbr::Graphics => todo!(),
             Dbr::Control => todo!(),
+            // ClassName cannot be converted as it isn't a normal form of data
+            Dbr::ClassName(_) => match dbr_type.category {
+                DbrCategory::ClassName => Dbr::ClassName(value),
+                _ => return Err(ErrorCondition::NoConvert),
+            },
         })
     }
 }
