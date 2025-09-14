@@ -82,6 +82,7 @@ impl ServerHandle {
         self.cancel.cancel();
         self.join().await
     }
+
     /// Get a subscriber to server events
     pub fn listen_to_events(&self) -> broadcast::Receiver<ServerEvent> {
         self.events.resubscribe()

@@ -139,7 +139,7 @@ impl Default for PV {
 }
 
 /// Typed interface to reading single values to/from a PV
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Intercom<T>
 where
     T: IntoDbrBasicType,
