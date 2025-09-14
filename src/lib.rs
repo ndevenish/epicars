@@ -101,6 +101,7 @@ mod server;
 pub use crate::server::Server;
 pub use crate::server::ServerBuilder;
 pub use crate::server::ServerEvent;
+pub use crate::server::ServerHandle;
 
 pub mod providers;
 

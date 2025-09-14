@@ -219,7 +219,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StringIntercom {
     pv: Arc<Mutex<PV>>,
 }
