@@ -63,7 +63,7 @@ impl<L: Provider> Default for Server<L> {
             shutdown: Default::default(),
             library_provider: Default::default(),
             tasks: Default::default(),
-            lifecycle_events: broadcast::Sender::new(2),
+            lifecycle_events: broadcast::Sender::new(1024),
         }
     }
 }
