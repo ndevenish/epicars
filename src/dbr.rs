@@ -68,6 +68,7 @@ use std::{
     fmt::Debug,
     io::{self, Cursor},
     num::NonZeroUsize,
+    os::linux::raw::stat,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -644,6 +645,8 @@ pub enum DbrCategory {
     Control = 4,
     /// The special single-valued DBR_CLASS_NAME
     ClassName = 8,
+    /// Special category that can be converted to anything else
+    All,
 }
 impl TryFrom<u16> for DbrCategory {
     type Error = ();
@@ -760,6 +763,14 @@ pub enum Dbr {
         value: DbrValue,
     },
     ClassName(DbrValue),
+    All {
+        value: DbrValue,
+        status: Status,
+        timestamp: SystemTime,
+        graphics: DbrGraphics,
+        control: DbrControl,
+        class_name: String,
+    },
 }
 
 impl Dbr {
@@ -771,6 +782,7 @@ impl Dbr {
             Dbr::Graphics { value, .. } => value,
             Dbr::Control { value, .. } => value,
             Dbr::ClassName(value) => value,
+            Dbr::All { value, .. } => value,
         }
     }
     /// Retrieve the [`DbrValue`] contained by this DBR
@@ -786,6 +798,7 @@ impl Dbr {
             Dbr::Graphics { value, .. } => value,
             Dbr::Control { value, .. } => value,
             Dbr::ClassName(value) => value,
+            Dbr::All { value, .. } => value,
         }
     }
     /// If a DBR type encoding alarm status, fetch that
@@ -797,6 +810,7 @@ impl Dbr {
             Dbr::Graphics { status, .. } => Some(*status),
             Dbr::Control { status, .. } => Some(*status),
             Dbr::ClassName(_) => None,
+            Dbr::All { status, .. } => Some(*status),
         }
     }
     pub fn data_type(&self) -> DbrType {
@@ -826,6 +840,10 @@ impl Dbr {
                 category: DbrCategory::Control,
             },
             Dbr::ClassName(_) => DBR_CLASS_NAME,
+            Dbr::All { value, .. } => DbrType {
+                basic_type: value.get_type(),
+                category: DbrCategory::All,
+            },
         }
     }
 
@@ -839,6 +857,11 @@ impl Dbr {
         }
         if data_type.category == DbrCategory::Graphics {
             todo!("Don't understand GR structure usage well enough to parse yet");
+        }
+        if data_type.category == DbrCategory::All {
+            panic!(
+                "DBR Category Any is a special internal category and should never be serialized"
+            );
         }
 
         let (data, status) = if data_type.category != DbrCategory::Basic {
@@ -880,6 +903,7 @@ impl Dbr {
             DbrCategory::Graphics => todo!(),
             DbrCategory::Control => todo!(),
             DbrCategory::ClassName => Dbr::ClassName(value),
+            DbrCategory::All => panic!(),
         })
     }
 
@@ -1017,6 +1041,47 @@ impl Dbr {
                 DbrCategory::ClassName => Dbr::ClassName(value),
                 _ => return Err(ErrorCondition::NoConvert),
             },
+            Dbr::All {
+                status,
+                timestamp,
+                graphics,
+                control,
+                class_name,
+                ..
+            } => match dbr_type.category {
+                DbrCategory::Basic => Dbr::Basic(value),
+                DbrCategory::Status => Dbr::Status {
+                    status: *status,
+                    value: value,
+                },
+                DbrCategory::Time => Dbr::Time {
+                    status: *status,
+                    timestamp: *timestamp,
+                    value: value,
+                },
+                DbrCategory::Graphics => Dbr::Graphics {
+                    status: *status,
+                    graphics: graphics.clone(),
+                    value: value,
+                },
+                DbrCategory::Control => Dbr::Control {
+                    status: *status,
+                    graphics: graphics.clone(),
+                    value: value,
+                    control: control.clone(),
+                },
+                DbrCategory::ClassName => {
+                    Dbr::ClassName(DbrValue::String(vec![class_name.clone()]))
+                }
+                DbrCategory::All => Dbr::All {
+                    value,
+                    status: *status,
+                    timestamp: *timestamp,
+                    graphics: graphics.clone(),
+                    control: control.clone(),
+                    class_name: class_name.clone(),
+                },
+            },
         })
     }
 }
@@ -1100,5 +1165,28 @@ mod tests {
         let re_s = as_char.convert_to(DbrBasicType::String).unwrap();
 
         assert_eq!(s, re_s);
+    }
+
+    #[test]
+    fn test_convert_all() {
+        let value = DbrValue::Int([42].to_vec());
+        let d = Dbr::All {
+            value: DbrValue::Int([42].to_vec()),
+            status: Status::default(),
+            timestamp: SystemTime::now(),
+            graphics: DbrGraphics::Int {
+                units: "millipercent".to_string(),
+                limits: Limits::default(),
+            },
+            control: DbrControl::Int(0i16, 1000i16),
+            class_name: "testobj".to_string(),
+        };
+        assert_eq!(
+            d.convert_to(DbrType {
+                basic_type: DbrBasicType::Int,
+                category: DbrCategory::Basic
+            }),
+            Dbr::Basic(value.clone()),
+        );
     }
 }
