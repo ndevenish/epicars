@@ -32,4 +32,6 @@ whoami = { version = "1.6.0", default-features = false }
 
 [dev-dependencies]
 clap = { version = "4.5.43", features = ["derive"] }
-tracing-subscriber = "0.3.20"
+colored = "3.0.0"
+time = { version = "0.3.43", features = ["formatting", "macros"] }
+tracing-subscriber = { version = "=0.3.19", features=["local-time"] }

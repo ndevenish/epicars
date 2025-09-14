@@ -63,13 +63,14 @@ impl<L: Provider> Default for Server<L> {
             shutdown: Default::default(),
             library_provider: Default::default(),
             tasks: Default::default(),
-            lifecycle_events: broadcast::Sender::new(16),
+            lifecycle_events: broadcast::Sender::new(2),
         }
     }
 }
 pub struct ServerHandle {
     cancel: CancellationToken,
     handle: JoinHandle<Result<(), io::Error>>,
+    events: broadcast::Receiver<ServerEvent>,
 }
 
 impl ServerHandle {
@@ -80,6 +81,10 @@ impl ServerHandle {
     pub async fn stop(mut self) -> Result<(), io::Error> {
         self.cancel.cancel();
         self.join().await
+    }
+    /// Get a subscriber to server events
+    pub fn listen_to_events(&self) -> broadcast::Receiver<ServerEvent> {
+        self.events.resubscribe()
     }
 }
 
@@ -704,7 +709,6 @@ impl<L: Provider> Circuit<L> {
 
     fn do_write(&mut self, request: &WriteNotify) -> bool {
         let channel = self.channels.get(&request.server_id).unwrap();
-
         let Ok(dbr) = Dbr::from_bytes(
             request.data_type,
             request.data_count as usize,
@@ -718,11 +722,6 @@ impl<L: Provider> Circuit<L> {
             return false;
         };
         debug!("Got write request: {dbr:?}");
-        let _ = self.lifecycle_events.send(ServerEvent::Write {
-            circuit_id: self.id,
-            channel_id: request.server_id,
-            success: false,
-        });
         let success = self.library.write_value(&channel.name, dbr).is_ok();
         let _ = self.lifecycle_events.send(ServerEvent::Write {
             circuit_id: self.id,
@@ -828,6 +827,7 @@ impl<L: Provider> ServerBuilder<L> {
 
         ServerHandle {
             cancel: self.cancellation_token,
+            events: server.lifecycle_events.subscribe(),
             handle: tokio::spawn(async move { server.listen().await }),
         }
     }
