@@ -245,6 +245,7 @@ struct CircuitInternal {
     /// Watchers waiting for specific reads
     pending_reads: HashMap<u32, (Instant, oneshot::Sender<Result<Dbr, ClientError>>)>,
     /// Broadcast subscriptions we have not had confirmed yet
+    #[allow(clippy::type_complexity)] // TODO: Actually follow Clippy's advice here
     pending_broadcasts: HashMap<
         u32,
         (
