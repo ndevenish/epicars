@@ -5,7 +5,7 @@ use pnet::datalink;
 use std::{
     collections::HashMap,
     io::{self, Cursor},
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     num::NonZeroUsize,
     time::{Duration, Instant},
 };
@@ -17,7 +17,7 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     dbr::{Dbr, DbrType},
@@ -34,7 +34,6 @@ use crate::{
 };
 
 /// Serve data to CA clients by managing the Circuit/Channel lifecycles and interfacing with [`Provider`].
-#[derive(Default)]
 pub struct Server<L: Provider> {
     /// Broadcast port to sent beacons
     beacon_port: u16,
@@ -49,8 +48,25 @@ pub struct Server<L: Provider> {
     shutdown: CancellationToken,
     library_provider: L,
     tasks: JoinSet<Result<(), io::Error>>,
+    lifecycle_events: broadcast::Sender<ServerEvent>,
 }
 
+impl<L: Provider> Default for Server<L> {
+    fn default() -> Self {
+        Self {
+            beacon_port: Default::default(),
+            search_port: Default::default(),
+            connection_port: Default::default(),
+            beacon_id: Default::default(),
+            next_circuit_id: Default::default(),
+            circuits: Default::default(),
+            shutdown: Default::default(),
+            library_provider: Default::default(),
+            tasks: Default::default(),
+            lifecycle_events: broadcast::Sender::new(16),
+        }
+    }
+}
 pub struct ServerHandle {
     cancel: CancellationToken,
     handle: JoinHandle<Result<(), io::Error>>,
@@ -71,6 +87,53 @@ impl Drop for ServerHandle {
     fn drop(&mut self) {
         self.cancel.cancel();
     }
+}
+
+// Lifecycle events for things that happen on the server
+#[derive(Clone)]
+pub enum ServerEvent {
+    /// A client has connected
+    CircuitOpened {
+        id: u64,
+        peer: SocketAddr,
+    },
+    /// A client has disconnected, or been disconnected
+    CircuitClose {
+        id: u64,
+    },
+    /// The client has fully identified themselves
+    ClientIdentified {
+        circuit_id: u64,
+        client_hostname: String,
+        client_username: String,
+    },
+    /// Client has opened a channel to a specific PV
+    CreateChannel {
+        circuit_id: u64,
+        channel_id: u32,
+        channel_name: String,
+    },
+    ClearChannel {
+        circuit_id: u64,
+        channel_id: u32,
+    },
+    /// A Client has attempted to read a PV
+    Read {
+        circuit_id: u64,
+        channel_id: u32,
+        success: bool,
+    },
+    /// A client has attempted to write to a PV
+    Write {
+        circuit_id: u64,
+        channel_id: u32,
+        success: bool,
+    },
+    /// A client has subscribed to events
+    Subscribe {
+        circuit_id: u64,
+        channel_id: u32,
+    },
 }
 
 fn get_broadcast_ips() -> Vec<Ipv4Addr> {
@@ -185,7 +248,7 @@ impl<L: Provider> Server<L> {
                 }
             };
 
-            info!(
+            debug!(
                 "Listening for searches on {:?}",
                 listener.local_addr().unwrap()
             );
@@ -252,11 +315,12 @@ impl<L: Provider> Server<L> {
     fn handle_tcp_connections(&mut self, listener: TcpListener) {
         let library = self.library_provider.clone();
         let cancel_inner = self.shutdown.clone();
+        let lifecycle = self.lifecycle_events.clone();
         self.tasks.spawn(async move {
             let mut id = 0;
             let mut tasks = JoinSet::new();
             loop {
-                info!(
+                debug!(
                     "Waiting to accept TCP connections on {}",
                     listener.local_addr().unwrap()
                 );
@@ -273,8 +337,9 @@ impl<L: Provider> Server<L> {
                 debug!("  Got new stream from {client}");
                 let circuit_library = library.clone();
                 let cancel = cancel_inner.clone();
+                let inner_lifecycle = lifecycle.clone();
                 tasks.spawn(async move {
-                    Circuit::start(id, connection, circuit_library, cancel).await;
+                    Circuit::start(id, connection, circuit_library, cancel, inner_lifecycle).await;
                 });
                 id += 1;
             }
@@ -291,10 +356,13 @@ struct Circuit<L: Provider> {
     client_host_name: Option<String>,
     client_user_name: Option<String>,
     client_events_on: bool,
+    client_addr: SocketAddr,
     library: L,
     channels: HashMap<u32, Channel>,
     next_channel_id: u32,
     monitor_value_available: mpsc::Sender<String>,
+    /// For broadcasting lifecycle events
+    lifecycle_events: broadcast::Sender<ServerEvent>,
 }
 
 #[derive(Debug)]
@@ -329,13 +397,28 @@ impl<L: Provider> Circuit<L> {
             }
         })
     }
-    async fn start(id: u64, mut stream: TcpStream, library: L, cancel: CancellationToken) {
-        info!("{id}: Starting circuit with {:?}", stream.peer_addr());
+    async fn start(
+        id: u64,
+        mut stream: TcpStream,
+        library: L,
+        cancel: CancellationToken,
+        lifecycle: broadcast::Sender<ServerEvent>,
+    ) {
+        let Ok(peer_addr) = stream.peer_addr() else {
+            debug!("Peer disconnected before circuit could be started!");
+            return;
+        };
+        debug!("{id}: Starting circuit with {:?}", stream.peer_addr());
         let client_version = Circuit::<L>::do_version_exchange(&mut stream)
             .await
             .unwrap();
         // Client version is the bare minimum we need to establish a valid circuit
         debug!("{id}: Got client version: {client_version}");
+        let _ = lifecycle.send(ServerEvent::CircuitOpened {
+            id,
+            peer: peer_addr,
+        });
+
         let (monitor_value_available, mut monitor_updates) = mpsc::channel::<String>(32);
         let mut circuit = Circuit {
             id,
@@ -344,10 +427,12 @@ impl<L: Provider> Circuit<L> {
             client_host_name: None,
             client_user_name: None,
             client_events_on: true,
+            client_addr: peer_addr,
             library,
             channels: HashMap::new(),
             next_channel_id: 0,
             monitor_value_available,
+            lifecycle_events: lifecycle,
         };
 
         // Now, everything else is based on responding to events
@@ -425,8 +510,11 @@ impl<L: Provider> Circuit<L> {
         }
 
         // If out here, we are closing the channel
-        info!("{id}: Closing circuit");
+        debug!("{id}: Closing circuit");
         let _ = stream.shutdown().await;
+        let _ = circuit
+            .lifecycle_events
+            .send(ServerEvent::CircuitClose { id });
     }
 
     async fn handle_monitor_update(&mut self, pv_name: &str) -> Result<Vec<Message>, MessageError> {
@@ -444,7 +532,7 @@ impl<L: Provider> Circuit<L> {
         let subscription = c.subscription.as_mut().unwrap();
         let dbr = subscription.receiver.recv().await.unwrap();
 
-        info!("Circuit got update notification: {dbr:?}");
+        debug!("Circuit got update notification: {dbr:?}");
         let (item_count, data) = dbr
             .convert_to(subscription.data_type)
             .unwrap()
@@ -477,6 +565,10 @@ impl<L: Provider> Circuit<L> {
                     )
                     .map_err(MessageError::ErrorResponse)?;
 
+                let _ = self.lifecycle_events.send(ServerEvent::Subscribe {
+                    circuit_id: self.id,
+                    channel_id: msg.server_id,
+                });
                 channel.subscription = Some(PVSubscription {
                     data_type: msg.data_type,
                     data_count: msg.data_count as usize,
@@ -496,41 +588,73 @@ impl<L: Provider> Circuit<L> {
             }
             Message::EventCancel(_) => todo!(),
             Message::ClientName(name) if self.client_user_name.is_none() => {
-                info!("{id}: Got client username: {}", name.name);
+                debug!("{id}: Got client username: {}", name.name);
                 self.client_user_name = Some(name.name);
+                if self.client_host_name.is_some() {
+                    let _ = self.lifecycle_events.send(ServerEvent::ClientIdentified {
+                        circuit_id: self.id,
+                        client_hostname: self.client_host_name.clone().unwrap(),
+                        client_username: self.client_user_name.clone().unwrap(),
+                    });
+                }
                 Ok(Vec::default())
             }
             Message::HostName(name) if self.client_host_name.is_none() => {
-                info!("{id}: Got client hostname: {}", name.name);
+                debug!("{id}: Got client hostname: {}", name.name);
                 self.client_host_name = Some(name.name);
+                if self.client_user_name.is_some() {
+                    let _ = self.lifecycle_events.send(ServerEvent::ClientIdentified {
+                        circuit_id: self.id,
+                        client_hostname: self.client_host_name.clone().unwrap(),
+                        client_username: self.client_user_name.clone().unwrap(),
+                    });
+                }
                 Ok(Vec::default())
             }
             Message::CreateChannel(message) => {
-                info!(
+                debug!(
                     "{id}: Got request to create channel to: {}",
                     message.channel_name
                 );
                 let (messages, channel) = self.create_channel(message);
                 if let Ok(channel) = channel {
+                    let _ = self.lifecycle_events.send(ServerEvent::CreateChannel {
+                        circuit_id: self.id,
+                        channel_id: channel.server_id,
+                        channel_name: channel.name.clone(),
+                    });
                     self.channels.insert(channel.server_id, channel);
                 }
                 Ok(messages)
             }
             Message::ClearChannel(message) => {
-                info!("{id}:{}: Request to clear channel", message.server_id);
+                debug!("{id}:{}: Request to clear channel", message.server_id);
                 self.channels.remove(&message.server_id);
+                let _ = self.lifecycle_events.send(ServerEvent::ClearChannel {
+                    circuit_id: self.id,
+                    channel_id: message.server_id,
+                });
                 Ok(Vec::default())
             }
             Message::ReadNotify(msg) => {
-                info!("{id}:{}: ReadNotify request: {:?}", msg.server_id, msg);
+                debug!("{id}:{}: ReadNotify request: {:?}", msg.server_id, msg);
                 match self.do_read(&msg) {
                     Ok(r) => {
                         debug!("Sending response: {r:?}");
-                        // self.stream.write_all(&r.as_bytes()).await?
+                        let _ = self.lifecycle_events.send(ServerEvent::Read {
+                            circuit_id: self.id,
+                            channel_id: msg.server_id,
+                            success: true,
+                        });
                         Ok(vec![Message::ReadNotifyResponse(r)])
                     }
 
                     Err(e) => {
+                        let _ = self.lifecycle_events.send(ServerEvent::Read {
+                            circuit_id: self.id,
+                            channel_id: msg.server_id,
+                            success: false,
+                        });
                         // Send an error in response to the read
                         let err = ECAError::new(e, msg.client_ioid, Message::ReadNotify(msg));
                         error!("Returning error: {err:?}");
@@ -586,10 +710,26 @@ impl<L: Provider> Circuit<L> {
             request.data_count as usize,
             &request.data,
         ) else {
+            let _ = self.lifecycle_events.send(ServerEvent::Write {
+                circuit_id: self.id,
+                channel_id: request.server_id,
+                success: false,
+            });
             return false;
         };
         debug!("Got write request: {dbr:?}");
-        self.library.write_value(&channel.name, dbr).is_ok()
+        let _ = self.lifecycle_events.send(ServerEvent::Write {
+            circuit_id: self.id,
+            channel_id: request.server_id,
+            success: false,
+        });
+        let success = self.library.write_value(&channel.name, dbr).is_ok();
+        let _ = self.lifecycle_events.send(ServerEvent::Write {
+            circuit_id: self.id,
+            channel_id: request.server_id,
+            success,
+        });
+        success
     }
 
     fn create_channel(&mut self, message: CreateChannel) -> (Vec<Message>, Result<Channel, ()>) {
@@ -619,7 +759,7 @@ impl<L: Provider> Circuit<L> {
             client_id: message.client_id,
             server_id: id,
         };
-        info!(
+        debug!(
             "{}:{}: Opening {:?} channel to {}",
             self.id, id, access_rights.access_rights, message.channel_name
         );

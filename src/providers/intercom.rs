@@ -9,7 +9,7 @@ use tokio::sync::{
     broadcast::{self},
     mpsc::{self, error::TrySendError},
 };
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use crate::{
     Provider,
@@ -401,7 +401,7 @@ impl Provider for IntercomProvider {
             .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
-        info!("Provider: Processing write: {value:?}");
+        debug!("Provider: Processing write: {value:?}");
         if let Err(e) = pv.store_from_ca(value.value()) {
             error!("    Error: {e:?}");
             Err(e)
