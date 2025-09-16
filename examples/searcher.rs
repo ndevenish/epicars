@@ -1,6 +1,6 @@
 use clap::Parser;
 use epicars::client::Searcher;
-
+use std::time::Duration;
 use tracing::level_filters::LevelFilter;
 
 #[derive(Parser)]
@@ -43,5 +43,9 @@ async fn main() {
                 searcher.timeout().unwrap().as_secs_f32()
             ),
         }
+    }
+    if opts.verbose {
+        println!("Lingering to wait for unexpected extra messages...");
+        std::thread::sleep(Duration::from_secs(3));
     }
 }
