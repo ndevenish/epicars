@@ -13,7 +13,7 @@ use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream, UdpSocket},
     select,
-    sync::{broadcast, mpsc},
+    sync::{broadcast, mpsc, oneshot},
     task::{JoinHandle, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
@@ -71,6 +71,8 @@ pub struct ServerHandle {
     cancel: CancellationToken,
     handle: JoinHandle<Result<(), io::Error>>,
     events: broadcast::Receiver<ServerEvent>,
+    /// Connection and Search ports this server has launched with
+    ports: (u16, u16),
 }
 
 impl ServerHandle {
@@ -86,6 +88,14 @@ impl ServerHandle {
     /// Get a subscriber to server events
     pub fn listen_to_events(&self) -> broadcast::Receiver<ServerEvent> {
         self.events.resubscribe()
+    }
+    /// Get the actual port this server accepts connections on
+    pub fn connection_port(&self) -> u16 {
+        self.ports.0
+    }
+    /// Get the actual port this server accepts UDP searches on
+    pub fn search_port(&self) -> u16 {
+        self.ports.1
     }
 }
 
@@ -173,7 +183,10 @@ async fn try_bind_ports(
 }
 
 impl<L: Provider> Server<L> {
-    async fn listen(mut self) -> Result<(), std::io::Error> {
+    async fn listen(
+        mut self,
+        conn_info: oneshot::Sender<(u16, u16)>,
+    ) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port;
         let connection_socket = try_bind_ports(request_port).await?;
@@ -181,7 +194,11 @@ impl<L: Provider> Server<L> {
         // Whatever we ended up with, we want to advertise
         let listen_port = connection_socket.local_addr().unwrap().port();
 
-        self.listen_for_searches(listen_port);
+        let search_port = self
+            .listen_for_searches(listen_port)
+            .await
+            .map_err(|_| std::io::Error::other("Error: Search startup failed to get port"))?;
+        let _ = conn_info.send((listen_port, search_port));
         self.handle_tcp_connections(connection_socket);
         self.broadcast_beacons(listen_port).await?;
 
@@ -240,10 +257,16 @@ impl<L: Provider> Server<L> {
         Ok(())
     }
 
-    fn listen_for_searches(&mut self, connection_port: u16) {
+    /// Start listening for searches. Return the port we ended up binding.
+    async fn listen_for_searches(
+        &mut self,
+        connection_port: u16,
+    ) -> Result<u16, oneshot::error::RecvError> {
         let search_port = self.search_port;
         let library_provider = self.library_provider.clone();
         let cancel = self.shutdown.clone();
+
+        let (tx, rx) = oneshot::channel();
 
         self.tasks.spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
@@ -253,7 +276,7 @@ impl<L: Provider> Server<L> {
                     panic!("Failed to create reusable UDP socket 0.0.0.0:{search_port}: {e}");
                 }
             };
-
+            let _ = tx.send(listener.local_addr().unwrap().port());
             debug!(
                 "Listening for searches on {:?}",
                 listener.local_addr().unwrap()
@@ -316,6 +339,7 @@ impl<L: Provider> Server<L> {
             }
             Ok(())
         });
+        rx.await
     }
 
     fn handle_tcp_connections(&mut self, listener: TcpListener) {
@@ -815,7 +839,7 @@ impl<L: Provider> ServerBuilder<L> {
         self
     }
 
-    pub fn start(self) -> ServerHandle {
+    pub async fn start(self) -> Result<ServerHandle, ()> {
         let shutdown = self.cancellation_token.clone();
         let server = Server {
             beacon_port: self.beacon_port,
@@ -825,11 +849,54 @@ impl<L: Provider> ServerBuilder<L> {
             shutdown,
             ..Default::default()
         };
+        let events = server.lifecycle_events.subscribe();
+        let (tx, rx) = oneshot::channel();
+        let handle = tokio::spawn(async move { server.listen(tx).await });
+        let ports = rx.await.map_err(|_| ())?;
 
-        ServerHandle {
+        Ok(ServerHandle {
             cancel: self.cancellation_token,
-            events: server.lifecycle_events.subscribe(),
-            handle: tokio::spawn(async move { server.listen().await }),
+            events,
+            handle,
+            ports,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        Provider, ServerBuilder,
+        dbr::{Dbr, DbrType},
+        messages::ErrorCondition,
+    };
+
+    #[derive(Default, Clone, Debug)]
+    struct BlankProvider {}
+    impl Provider for BlankProvider {
+        fn provides(&self, _pv_name: &str) -> bool {
+            false
         }
+
+        fn read_value(
+            &self,
+            _pv_name: &str,
+            _requested_type: Option<DbrType>,
+        ) -> Result<Dbr, ErrorCondition> {
+            Err(ErrorCondition::UnavailInServ)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_random_bind() {
+        // BlankProvider{}
+        let handle = ServerBuilder::new(BlankProvider {})
+            .connection_port(0)
+            .search_port(0)
+            .start()
+            .await
+            .unwrap();
+        assert_ne!(handle.connection_port(), 0, "Connection port");
+        assert_ne!(handle.search_port(), 0, "Search port");
     }
 }

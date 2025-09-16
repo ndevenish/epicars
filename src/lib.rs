@@ -41,7 +41,7 @@
 //! async fn main() {
 //! #   let mut provider = IntercomProvider::new();
 //! #   provider.add_pv("NUMERIC_VALUE", 42i32).unwrap();
-//! #   let _server = ServerBuilder::new(provider).start();
+//! #   let _server = ServerBuilder::new(provider).start().await.unwrap();
 //! #
 //!     let mut client = Client::new().await.unwrap();
 //!

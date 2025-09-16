@@ -156,7 +156,7 @@ async fn main() {
         .add_string_pv("FILENAME", "c:\\some_file.cif", Some(32))
         .unwrap();
 
-    let mut server = ServerBuilder::new(provider).start();
+    let mut server = ServerBuilder::new(provider).start().await.unwrap();
 
     // Set up output so we print info about events
     let listen = server.listen_to_events();
