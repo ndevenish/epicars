@@ -395,6 +395,11 @@ macro_rules! impl_dbrvalue_conversions_between {
                 DbrValue::$variant(value)
             }
         }
+        impl From<&$typ> for DbrValue {
+            fn from(value: &$typ) -> Self {
+                DbrValue::$variant(vec![value.clone()])
+            }
+        }
         impl TryFrom<&DbrValue> for Vec<$typ> {
             type Error = ErrorCondition;
             fn try_from(value: &DbrValue) -> Result<Self, Self::Error> {
@@ -412,6 +417,21 @@ impl_dbrvalue_conversions_between!(Long, i32);
 impl_dbrvalue_conversions_between!(Float, f32);
 impl_dbrvalue_conversions_between!(Double, f64);
 impl_dbrvalue_conversions_between!(String, String);
+
+macro_rules! impl_dbrvalue_copy_conversions_between {
+    ($variant:ident, $typ:ty) => {
+        impl From<$typ> for DbrValue {
+            fn from(value: $typ) -> Self {
+                DbrValue::$variant(vec![value])
+            }
+        }
+    };
+}
+impl_dbrvalue_copy_conversions_between!(Char, i8);
+impl_dbrvalue_copy_conversions_between!(Int, i16);
+impl_dbrvalue_copy_conversions_between!(Long, i32);
+impl_dbrvalue_copy_conversions_between!(Float, f32);
+impl_dbrvalue_copy_conversions_between!(Double, f64);
 
 #[derive(Clone, Debug)]
 pub struct Limits<T: num_traits::Bounded + ToBytes> {
