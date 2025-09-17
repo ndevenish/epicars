@@ -186,6 +186,7 @@ impl<L: Provider> Server<L> {
     async fn listen(
         mut self,
         conn_info: oneshot::Sender<(u16, u16)>,
+        broadcast_beacons: bool,
     ) -> Result<(), std::io::Error> {
         // Create the TCP listener first so we know what port to advertise
         let request_port = self.connection_port;
@@ -200,7 +201,10 @@ impl<L: Provider> Server<L> {
             .map_err(|_| std::io::Error::other("Error: Search startup failed to get port"))?;
         let _ = conn_info.send((listen_port, search_port));
         self.handle_tcp_connections(connection_socket);
-        self.broadcast_beacons(listen_port).await?;
+
+        if broadcast_beacons {
+            self.broadcast_beacons(listen_port).await?;
+        }
 
         // Join all tasks, and take the first io::Error as the error to return
         let results: Vec<_> = self
@@ -810,6 +814,7 @@ pub struct ServerBuilder<L: Provider> {
     connection_port: Option<u16>,
     provider: L,
     cancellation_token: CancellationToken,
+    beacons: bool,
 }
 
 impl<L: Provider> ServerBuilder<L> {
@@ -820,6 +825,7 @@ impl<L: Provider> ServerBuilder<L> {
             connection_port: None,
             provider,
             cancellation_token: CancellationToken::new(),
+            beacons: true,
         }
     }
     pub fn beacon_port(mut self, port: u16) -> ServerBuilder<L> {
@@ -828,6 +834,10 @@ impl<L: Provider> ServerBuilder<L> {
     }
     pub fn search_port(mut self, port: u16) -> ServerBuilder<L> {
         self.search_port = port;
+        self
+    }
+    pub fn beacons(mut self, active: bool) -> ServerBuilder<L> {
+        self.beacons = active;
         self
     }
     pub fn connection_port(mut self, port: u16) -> ServerBuilder<L> {
@@ -851,7 +861,7 @@ impl<L: Provider> ServerBuilder<L> {
         };
         let events = server.lifecycle_events.subscribe();
         let (tx, rx) = oneshot::channel();
-        let handle = tokio::spawn(async move { server.listen(tx).await });
+        let handle = tokio::spawn(async move { server.listen(tx, self.beacons).await });
         let ports = rx.await.map_err(|_| ())?;
 
         Ok(ServerHandle {
