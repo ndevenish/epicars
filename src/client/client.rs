@@ -606,21 +606,33 @@ pub enum ClientError {
 
 impl Client {
     pub async fn new() -> Result<Client, io::Error> {
-        let search_port = get_default_server_port();
+        Self::new_with(get_default_server_port(), None).await
+    }
+    pub async fn new_with(
+        search_port: u16,
+        broadcast_addresses: Option<Vec<SocketAddr>>,
+    ) -> Result<Client, io::Error> {
         let beacon_port = get_default_beacon_port();
         let cancel = CancellationToken::new();
+        let searcher_b = SearcherBuilder::new()
+            .search_port(search_port)
+            .stop_token(cancel.clone());
+        let searcher = if let Some(addr) = broadcast_addresses {
+            searcher_b.broadcast_to(addr)
+        } else {
+            searcher_b
+        }
+        .start()
+        .await
+        .unwrap();
+
         let mut client = Client {
             beacon_port,
             search_port,
             observed_beacons: Default::default(),
             circuits: Default::default(),
             cancellation: CancellationToken::new(),
-            searcher: SearcherBuilder::new()
-                .search_port(search_port)
-                .stop_token(cancel.clone())
-                .start()
-                .await
-                .unwrap(),
+            searcher,
         };
         client.start().await?;
         Ok(client)

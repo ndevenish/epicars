@@ -81,6 +81,9 @@ impl SearcherBuilder {
         self.timeout = timeout;
         self
     }
+    /// Specify addresses to broadcast search packets to
+    ///
+    /// Will replace any default addresses
     pub fn broadcast_to(mut self, addresses: Vec<SocketAddr>) -> Self {
         self.broadcast_addresses = Some(addresses);
         self
