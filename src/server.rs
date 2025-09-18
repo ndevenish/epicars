@@ -563,7 +563,11 @@ impl<L: Provider> Circuit<L> {
             "{}: {}: Got update notification for PV {}",
             self.id, c.server_id, c.name
         );
-        let subscription = c.subscription.as_mut().unwrap();
+        let Some(subscription) = c.subscription.as_mut() else {
+            // This was probably sent before closing
+            trace!("Got monitor update for closed subscription!!");
+            return Ok(Vec::new());
+        };
         let dbr = subscription.receiver.recv().await.unwrap();
 
         debug!("Circuit got update notification: {dbr:?}");
@@ -592,6 +596,7 @@ impl<L: Provider> Circuit<L> {
                     .library
                     .monitor_value(
                         &channel.name,
+                        (self.id << 32) | channel.server_id as u64,
                         msg.data_type,
                         msg.data_count as usize,
                         msg.mask,
@@ -610,7 +615,6 @@ impl<L: Provider> Circuit<L> {
                     subscription_id: msg.subscription_id,
                     receiver,
                 });
-
                 // Send back an initial value\
                 let name = channel.name.clone();
                 let value = self.do_read_dbr(&name, msg.data_type);
@@ -620,7 +624,18 @@ impl<L: Provider> Circuit<L> {
                         .into(),
                 ])
             }
-            Message::EventCancel(_) => todo!(),
+            Message::EventCancel(msg) => {
+                debug!("{id}: {}: Got {:?}", msg.server_id, msg);
+                let channel = &mut self.channels.get_mut(&msg.server_id).unwrap();
+                self.library.cancel_monitor_value(
+                    &channel.name,
+                    (self.id << 32) | channel.server_id as u64,
+                    msg.data_type,
+                    msg.data_count as usize,
+                );
+                channel.subscription = None;
+                Ok(vec![])
+            }
             Message::ClientName(name) if self.client_user_name.is_none() => {
                 debug!("{id}: Got client username: {}", name.name);
                 self.client_user_name = Some(name.name);

@@ -34,7 +34,7 @@ struct PV {
     /// Channel to send updates to EPIC clients
     sender: broadcast::Sender<Dbr>,
     /// Trigger channel, to notify the server there is a new broadcast available
-    triggers: Vec<mpsc::Sender<String>>,
+    triggers: HashMap<u64, mpsc::Sender<String>>,
     /// The EPICS record type, for CLASS_NAME responses
     epics_record_type: Option<String>,
 }
@@ -112,10 +112,10 @@ impl PV {
         // Send the "please look at" triggers, filtering out any that are dead
         self.triggers = self
             .triggers
-            .iter()
-            .filter_map(|t| match t.try_send(self.name.clone()) {
-                Ok(_) => Some(t.clone()),
-                Err(TrySendError::Full(_)) => Some(t.clone()),
+            .iter() // TODO: Should this be into_iter?
+            .filter_map(|(k, t)| match t.try_send(self.name.clone()) {
+                Ok(_) => Some((*k, t.clone())),
+                Err(TrySendError::Full(_)) => Some((*k, t.clone())),
                 Err(TrySendError::Closed(_)) => None,
             })
             .collect();
@@ -132,7 +132,7 @@ impl Default for PV {
             force_dbr_type: None,
             timestamp: SystemTime::now(),
             sender: broadcast::Sender::new(16),
-            triggers: Vec::new(),
+            triggers: Default::default(),
             epics_record_type: None,
         }
     }
@@ -413,6 +413,7 @@ impl Provider for IntercomProvider {
     fn monitor_value(
         &mut self,
         pv_name: &str,
+        unique_subscriber_id: u64,
         _data_type: DbrType,
         _data_count: usize,
         _mask: MonitorMask,
@@ -424,8 +425,26 @@ impl Provider for IntercomProvider {
             .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
-        pv.triggers.push(trigger);
+        pv.triggers.insert(unique_subscriber_id, trigger);
         Ok(pv.sender.subscribe())
+    }
+
+    fn cancel_monitor_value(
+        &mut self,
+        pv_name: &str,
+        unique_subscriber_id: u64,
+        _data_type: DbrType,
+        _data_count: usize,
+    ) {
+        let mut pvmap = self.pvs.lock().unwrap();
+        let Some(mut pv) = pvmap
+            .get_mut(self.normalize_pv_name(pv_name))
+            .and_then(|f| f.lock().ok())
+        else {
+            debug!("Got remove subscription for nonexistent subsription!");
+            return;
+        };
+        pv.triggers.remove(&unique_subscriber_id);
     }
 }
 

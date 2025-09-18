@@ -1,11 +1,6 @@
 use std::time::Duration;
 
-use epicars::{
-    Client, Provider, ServerBuilder,
-    dbr::{Dbr, DbrType, DbrValue},
-    messages::{self, ErrorCondition, MonitorMask},
-    providers::IntercomProvider,
-};
+use epicars::{Client, ServerBuilder, providers::IntercomProvider};
 use tokio::select;
 
 #[tokio::test]

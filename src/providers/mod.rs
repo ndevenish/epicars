@@ -59,11 +59,22 @@ pub trait Provider: Sync + Send + Clone + Default + 'static {
     fn monitor_value(
         &mut self,
         pv_name: &str,
+        unique_subscriber_id: u64,
         data_type: DbrType,
         data_count: usize,
         mask: MonitorMask,
         trigger: mpsc::Sender<String>,
     ) -> Result<broadcast::Receiver<Dbr>, ErrorCondition> {
         Err(ErrorCondition::UnavailInServ)
+    }
+
+    #[allow(unused_variables)]
+    fn cancel_monitor_value(
+        &mut self,
+        pv_name: &str,
+        unique_subscriber_id: u64,
+        data_type: DbrType,
+        data_count: usize,
+    ) {
     }
 }
