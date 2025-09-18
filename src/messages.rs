@@ -379,8 +379,9 @@ pub enum Message {
     ECAError(ECAError),
     Echo,
     EventAdd(EventAdd),
-    EventCancel(EventCancel),
     EventAddResponse(EventAddResponse),
+    EventCancel(EventCancel),
+    EventCancelResponse(EventCancelResponse),
     EventsOff,
     EventsOn,
     HostName(HostName),
@@ -409,6 +410,7 @@ impl AsBytes for Message {
             Message::Echo => Echo.as_bytes(),
             Message::EventAdd(message) => message.as_bytes(),
             Message::EventCancel(message) => message.as_bytes(),
+            Message::EventCancelResponse(message) => message.as_bytes(),
             Message::EventAddResponse(message) => message.as_bytes(),
             Message::EventsOff => EventsOff.as_bytes(),
             Message::EventsOn => EventsOn.as_bytes(),
@@ -444,7 +446,14 @@ impl Message {
     pub fn from_raw_client_message(message: RawMessage) -> Result<Self, MessageError> {
         Ok(match message.command {
             0 => Self::Version(message.try_into()?),
-            1 => Self::EventAddResponse(message.try_into()?),
+            // Command parameter 1 is overloaded for both EventAddResponse and EventCancelResponse
+            // - make a best guess at trying to work out which one it was... IF this
+            // isn't enough then we will need to start storing EventAdd so we can
+            // exactly match up.
+            1 => match (message.payload_size(), message.field_2_data_count) {
+                (0, 0) => Self::EventCancelResponse(message.try_into()?),
+                _ => Self::EventAddResponse(message.try_into()?),
+            },
             6 => Self::SearchResponse(message.try_into()?),
             11 => Self::ECAError(message.try_into()?),
             15 => Self::ReadNotifyResponse(message.try_into()?),
@@ -547,6 +556,7 @@ impl_from_for!(
     EventAdd,
     EventCancel,
     EventAddResponse,
+    EventCancelResponse,
     HostName,
     ReadNotify,
     ReadNotifyResponse,
@@ -1607,6 +1617,57 @@ impl CAMessage for EventCancel {
             command: 2,
             field_1_data_type: self.data_type.into(),
             field_2_data_count: self.data_count,
+            field_3_parameter_1: self.server_id,
+            field_4_parameter_2: self.subscription_id,
+            ..Default::default()
+        }
+        .write(writer)
+    }
+}
+
+impl EventCancel {
+    fn response(&self) -> EventCancelResponse {
+        EventCancelResponse {
+            data_type: self.data_type,
+            server_id: self.server_id,
+            subscription_id: self.subscription_id,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct EventCancelResponse {
+    pub data_type: DbrType,
+    /// Server SID of the channel on which to cancel this subscription
+    pub server_id: u32,
+    /// Client ID identifying this subscription
+    pub subscription_id: u32,
+}
+
+impl TryFrom<RawMessage> for EventCancelResponse {
+    type Error = MessageError;
+    fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
+        value.expect_id(1)?;
+        if value.payload_size() != 0 {
+            return Err(MessageError::InvalidField(
+                "Payload present, should be zero".to_string(),
+            ));
+        }
+        Ok(EventCancelResponse {
+            data_type: DbrType::try_from(value.field_1_data_type)
+                .map_err(|_| MessageError::ErrorResponse(ErrorCondition::BadType))?,
+            server_id: value.field_3_parameter_1,
+            subscription_id: value.field_4_parameter_2,
+        })
+    }
+}
+
+impl CAMessage for EventCancelResponse {
+    fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        RawMessage {
+            command: 1,
+            field_1_data_type: self.data_type.into(),
+            field_2_data_count: 0,
             field_3_parameter_1: self.server_id,
             field_4_parameter_2: self.subscription_id,
             ..Default::default()

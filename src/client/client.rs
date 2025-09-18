@@ -44,6 +44,9 @@ enum CircuitRequest {
         dbr_type: DbrType,
         reply: oneshot::Sender<Result<broadcast::Receiver<Dbr>, ClientError>>,
     },
+    Unsubscribe {
+        channel: u32,
+    },
 }
 
 struct Circuit {
@@ -421,6 +424,9 @@ impl CircuitInternal {
                     }
                     .into(),
                 ]
+            }
+            CircuitRequest::Unsubscribe { channel: _channel } => {
+                todo!();
             }
         }
     }
