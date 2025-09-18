@@ -634,7 +634,7 @@ impl<L: Provider> Circuit<L> {
                     msg.data_count as usize,
                 );
                 channel.subscription = None;
-                Ok(vec![])
+                Ok(vec![msg.response().into()])
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {
                 debug!("{id}: Got client username: {}", name.name);

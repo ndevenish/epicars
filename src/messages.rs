@@ -1626,7 +1626,7 @@ impl CAMessage for EventCancel {
 }
 
 impl EventCancel {
-    fn response(&self) -> EventCancelResponse {
+    pub fn response(&self) -> EventCancelResponse {
         EventCancelResponse {
             data_type: self.data_type,
             server_id: self.server_id,
