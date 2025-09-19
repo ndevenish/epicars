@@ -46,6 +46,9 @@ enum CircuitRequest {
     },
     Unsubscribe {
         channel: u32,
+        subscription_id: u32,
+        length: usize,
+        dbr_type: DbrType,
     },
 }
 
@@ -184,6 +187,24 @@ impl Circuit {
             .await
             .map_err(|_| ClientError::ClientClosed)?;
         rx.await.unwrap()
+    }
+    async fn unsubscribe(&self, name: &str) {
+        let Ok(channel) = self.get_channel(name.to_string()).await else {
+            return;
+        };
+        debug!("Circuit unsubscribe for channel: {channel:?}");
+        let _ = self
+            .requests_tx
+            .send(CircuitRequest::Unsubscribe {
+                channel: channel.cid,
+                subscription_id: todo!(),
+                length: 0,
+                dbr_type: DbrType {
+                    basic_type: channel.native_type,
+                    category: DbrCategory::Time,
+                },
+            })
+            .await;
     }
 }
 
@@ -425,8 +446,24 @@ impl CircuitInternal {
                     .into(),
                 ]
             }
-            CircuitRequest::Unsubscribe { channel: _channel } => {
-                todo!();
+            CircuitRequest::Unsubscribe {
+                channel: cid,
+                subscription_id: ioid,
+                length,
+                dbr_type,
+            } => {
+                let Some(channel) = self.channels.get_mut(&cid) else {
+                    return Vec::new();
+                };
+                vec![
+                    messages::EventCancel {
+                        data_type: dbr_type,
+                        data_count: length as u32,
+                        server_id: channel.sid,
+                        subscription_id: ioid,
+                    }
+                    .into(),
+                ]
             }
         }
     }
@@ -590,6 +627,8 @@ pub struct Client {
     /// The cancellation token
     cancellation: CancellationToken,
     searcher: Searcher,
+    /// Stores all open subscriptions, to make cancelling them easier
+    subscriptions: HashMap<String, SocketAddr>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -639,6 +678,7 @@ impl Client {
             circuits: Default::default(),
             cancellation: CancellationToken::new(),
             searcher,
+            subscriptions: Default::default(),
         };
         client.start().await?;
         Ok(client)
@@ -654,8 +694,11 @@ impl Client {
         Ok(())
     }
 
-    async fn get_or_create_circuit(&mut self, addr: SocketAddr) -> Result<&Circuit, ClientError> {
-        Ok(match self.circuits.entry(addr) {
+    async fn get_or_create_circuit(
+        circuits: &mut HashMap<SocketAddr, Circuit>,
+        addr: SocketAddr,
+    ) -> Result<&Circuit, ClientError> {
+        Ok(match circuits.entry(addr) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let circuit = Circuit::connect(&addr, None, None).await?;
@@ -667,14 +710,32 @@ impl Client {
     pub async fn read_pv(&mut self, name: &str) -> Result<DbrValue, ClientError> {
         // First, find the server that holds this name
         let ioc = self.searcher.search_for(name).await?;
-        let circuit = self.get_or_create_circuit(ioc).await?;
+        let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
         // let channel = circuit
         circuit.read_pv(name).await.map(|d| d.take_value())
     }
     pub async fn subscribe(&mut self, name: &str) -> Result<broadcast::Receiver<Dbr>, ClientError> {
         let ioc = self.searcher.search_for(name).await?;
-        let circuit = self.get_or_create_circuit(ioc).await?;
-        circuit.subscribe(name).await
+        let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
+        let result = circuit.subscribe(name).await?;
+        self.subscriptions.insert(name.to_string(), ioc);
+        Ok(result)
+    }
+
+    /// Stop receiving messages for a specific PV
+    ///
+    /// > [!NOTE]
+    /// > It is still possible to get updated messages returned after
+    /// > calling this function, because there may have been messages
+    /// > in-flight before the termination request gets through.
+    pub async fn unsubscribe(&mut self, name: &str) {
+        let Some(ioc) = self.subscriptions.remove(name) else {
+            return;
+        };
+        let Some(circuit) = self.circuits.get(&ioc) else {
+            return;
+        };
+        circuit.unsubscribe(name).await;
     }
 
     /// Watch for broadcast beacons, and record their ID and timestamp into the client map
