@@ -34,7 +34,7 @@ async fn main() {
         .init();
 
     let mut client = Client::new().await.unwrap();
-    let mut monitor = client.subscribe(&opts.name).await.unwrap();
+    let (mut monitor, _) = client.subscribe(&opts.name).await.unwrap();
     while let Ok(reply) = monitor.recv().await {
         let display = match reply.value() {
             DbrValue::String(s) => s.join(" "),

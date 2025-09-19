@@ -1,10 +1,14 @@
 use std::time::Duration;
 
 use epicars::{Client, ServerBuilder, providers::IntercomProvider};
-use tokio::select;
+use tokio::{select, sync::broadcast};
+use tracing::{info, level_filters::LevelFilter};
 
 #[tokio::test]
 async fn test_events() {
+    tracing_subscriber::fmt()
+        .with_max_level(LevelFilter::TRACE)
+        .init();
     // Start up a simple server
     let mut provider = IntercomProvider::new();
     let mut pv = provider.add_pv("TEST", 42i16).unwrap();
@@ -14,7 +18,7 @@ async fn test_events() {
         .start()
         .await
         .unwrap();
-    println!(
+    info!(
         "Server ports: {} {}",
         server.connection_port(),
         server.search_port()
@@ -32,7 +36,7 @@ async fn test_events() {
 
     // Validate this works
     assert_eq!(client.read_pv("TEST").await.unwrap(), 42i16.into());
-    let mut sub = client.subscribe("TEST").await.unwrap();
+    let (mut sub, sub_token) = client.subscribe("TEST").await.unwrap();
     assert_eq!(sub.try_recv().unwrap().value(), &42i16.into());
     pv.store(&413i16);
     select! {
@@ -43,4 +47,10 @@ async fn test_events() {
     }
 
     // Now, unsubscribe
+    client.unsubscribe(sub_token).await;
+    // Make sure that if we try to listen again we fail
+    assert_eq!(
+        sub.recv().await.unwrap_err(),
+        broadcast::error::RecvError::Closed
+    );
 }

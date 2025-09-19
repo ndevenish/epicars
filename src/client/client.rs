@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use core::panic;
 use std::{
     cmp::max,
     collections::{HashMap, hash_map::Entry},
@@ -28,6 +29,12 @@ use crate::{
     },
 };
 
+#[derive(Debug)]
+pub struct SubscriptionToken {
+    circuit: SocketAddr,
+    ioid: u32,
+}
+
 enum CircuitRequest {
     GetChannel(String, oneshot::Sender<Result<ChannelInfo, ClientError>>),
     /// Read a single value from the server
@@ -42,14 +49,9 @@ enum CircuitRequest {
         channel: u32,
         length: usize,
         dbr_type: DbrType,
-        reply: oneshot::Sender<Result<broadcast::Receiver<Dbr>, ClientError>>,
+        reply: oneshot::Sender<Result<(broadcast::Receiver<Dbr>, u32), ClientError>>,
     },
-    Unsubscribe {
-        channel: u32,
-        subscription_id: u32,
-        length: usize,
-        dbr_type: DbrType,
-    },
+    Unsubscribe(u32),
 }
 
 struct Circuit {
@@ -107,9 +109,9 @@ impl Circuit {
                 pending_reads: Default::default(),
                 last_echo_sent_at: Instant::now(),
                 last_received_message_at: Instant::now(),
-                pending_broadcasts: Default::default(),
-                broadcast_receivers: Default::default(),
-                broadcast_channels: Default::default(),
+                pending_monitors: Default::default(),
+                monitor_receivers: Default::default(),
+                monitor_channels: Default::default(),
             }
             .circuit_lifecycle(tcp)
             .await;
@@ -170,7 +172,7 @@ impl Circuit {
         rx.await.map_err(|_| ClientError::ClientClosed)?
     }
 
-    async fn subscribe(&self, name: &str) -> Result<broadcast::Receiver<Dbr>, ClientError> {
+    async fn subscribe(&self, name: &str) -> Result<(broadcast::Receiver<Dbr>, u32), ClientError> {
         let channel = self.get_channel(name.to_string()).await?;
         debug!("Circuit subscribe got channel: {channel:?}");
         let (tx, rx) = oneshot::channel();
@@ -186,24 +188,12 @@ impl Circuit {
             })
             .await
             .map_err(|_| ClientError::ClientClosed)?;
-        rx.await.unwrap()
+        rx.await.map_err(|_| ClientError::ChannelCreateFailed)?
     }
-    async fn unsubscribe(&self, name: &str) {
-        let Ok(channel) = self.get_channel(name.to_string()).await else {
-            return;
-        };
-        debug!("Circuit unsubscribe for channel: {channel:?}");
+    async fn unsubscribe(&self, subscription_id: u32) {
         let _ = self
             .requests_tx
-            .send(CircuitRequest::Unsubscribe {
-                channel: channel.cid,
-                subscription_id: todo!(),
-                length: 0,
-                dbr_type: DbrType {
-                    basic_type: channel.native_type,
-                    category: DbrCategory::Time,
-                },
-            })
+            .send(CircuitRequest::Unsubscribe(subscription_id))
             .await;
     }
 }
@@ -270,19 +260,21 @@ struct CircuitInternal {
     pending_reads: HashMap<u32, (Instant, oneshot::Sender<Result<Dbr, ClientError>>)>,
     /// Broadcast subscriptions we have not had confirmed yet
     #[allow(clippy::type_complexity)] // TODO: Actually follow Clippy's advice here
-    pending_broadcasts: HashMap<
+    pending_monitors: HashMap<
         u32,
         (
             Instant,
             (
                 usize,
                 DbrType,
-                oneshot::Sender<Result<broadcast::Receiver<Dbr>, ClientError>>,
+                oneshot::Sender<Result<(broadcast::Receiver<Dbr>, u32), ClientError>>,
             ),
         ),
     >,
-    broadcast_receivers: HashMap<u32, (usize, DbrType, broadcast::Sender<Dbr>)>,
-    broadcast_channels: HashMap<u32, u32>,
+    /// Lookup subscription info from an IOID to the subscription info§
+    monitor_receivers: HashMap<u32, (usize, DbrType, broadcast::Sender<Dbr>)>,
+    /// The ioid->channel ID lookup table. IOID is unique across the whole circuit.
+    monitor_channels: HashMap<u32, u32>,
 }
 
 impl CircuitInternal {
@@ -431,9 +423,9 @@ impl CircuitInternal {
                 };
                 let _span = debug_span!("handle_request", cid = cid).entered();
                 let ioid = wrapping_inplace_add(&mut channel.next_ioid);
-                self.pending_broadcasts
+                self.pending_monitors
                     .insert(ioid, (Instant::now(), (length, dbr_type, reply)));
-                self.broadcast_channels.insert(ioid, channel.cid);
+                self.monitor_channels.insert(ioid, channel.cid);
                 channel.broadcast_receivers.push(ioid);
                 vec![
                     messages::EventAdd {
@@ -446,24 +438,32 @@ impl CircuitInternal {
                     .into(),
                 ]
             }
-            CircuitRequest::Unsubscribe {
-                channel: cid,
-                subscription_id: ioid,
-                length,
-                dbr_type,
-            } => {
-                let Some(channel) = self.channels.get_mut(&cid) else {
-                    return Vec::new();
-                };
-                vec![
-                    messages::EventCancel {
-                        data_type: dbr_type,
-                        data_count: length as u32,
-                        server_id: channel.sid,
-                        subscription_id: ioid,
+            CircuitRequest::Unsubscribe(ioid) => {
+                debug!("Got unsubscribe request for: {ioid}");
+                // Any pending should just be removed now
+                self.pending_monitors.remove(&ioid);
+
+                // Remove from lookup tables if not already partially
+                // cleared. Only if we have all tables present can we
+                // send a cancel message, the otherwise assumption is
+                // that e.g. we have a partially closed circuit.
+                if let (Some(cid), Some((count, dbr_type, _))) = (
+                    self.monitor_channels.remove(&ioid),
+                    self.monitor_receivers.remove(&ioid),
+                ) {
+                    if let Some(channel) = self.channels.get(&cid) {
+                        return vec![
+                            messages::EventCancel {
+                                data_type: dbr_type,
+                                data_count: count as u32,
+                                server_id: channel.sid,
+                                subscription_id: ioid,
+                            }
+                            .into(),
+                        ];
                     }
-                    .into(),
-                ]
+                }
+                Vec::new()
             }
         }
     }
@@ -533,7 +533,7 @@ impl CircuitInternal {
                 Vec::new()
             }
             ClientMessage::EventAddResponse(msg) => {
-                let Some(channel_id) = self.broadcast_channels.get(&msg.subscription_id) else {
+                let Some(channel_id) = self.monitor_channels.get(&msg.subscription_id) else {
                     warn!(
                         "Got subscription message without associated channel: {}",
                         msg.subscription_id
@@ -549,16 +549,16 @@ impl CircuitInternal {
                     // This is a special case: The server is requesting termination
                     // of the subscription (possibly because we asked it to). Shut down
                     // the channel monitors.
-                    if let Some(cid) = self.broadcast_channels.get(&msg.subscription_id) {
+                    if let Some(cid) = self.monitor_channels.get(&msg.subscription_id) {
                         self.channels
                             .get_mut(cid)
                             .unwrap()
                             .broadcast_receivers
                             .retain(|s| *s != msg.subscription_id);
                     }
-                    self.broadcast_channels.remove(&msg.subscription_id);
-                    self.broadcast_receivers.remove(&msg.subscription_id);
-                    self.pending_broadcasts.remove(&msg.subscription_id);
+                    self.monitor_channels.remove(&msg.subscription_id);
+                    self.monitor_receivers.remove(&msg.subscription_id);
+                    self.pending_monitors.remove(&msg.subscription_id);
                     return Vec::new();
                 }
                 let Ok(dbr) = Dbr::from_bytes(msg.data_type, msg.data_count as usize, &msg.data)
@@ -572,18 +572,18 @@ impl CircuitInternal {
                 );
                 // Check - this might be the first
                 if let Some((_, (length, dbrtype, reply))) =
-                    self.pending_broadcasts.remove(&msg.subscription_id)
+                    self.pending_monitors.remove(&msg.subscription_id)
                 {
                     // This is the first EventAdd response, tell waiting clients that opening was successful
                     // TODO: Make this capacity configurable.
                     let (tx, rx) = broadcast::channel(32);
-                    self.broadcast_receivers
+                    self.monitor_receivers
                         .insert(msg.subscription_id, (length, dbrtype, tx));
                     // Send the receiver to the waiting client
-                    let _ = reply.send(Ok(rx));
+                    let _ = reply.send(Ok((rx, msg.subscription_id)));
                 }
                 let transmitter = &self
-                    .broadcast_receivers
+                    .monitor_receivers
                     .get(&msg.subscription_id)
                     .expect("Should have just created this")
                     .2;
@@ -627,8 +627,6 @@ pub struct Client {
     /// The cancellation token
     cancellation: CancellationToken,
     searcher: Searcher,
-    /// Stores all open subscriptions, to make cancelling them easier
-    subscriptions: HashMap<String, SocketAddr>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -678,7 +676,6 @@ impl Client {
             circuits: Default::default(),
             cancellation: CancellationToken::new(),
             searcher,
-            subscriptions: Default::default(),
         };
         client.start().await?;
         Ok(client)
@@ -714,12 +711,19 @@ impl Client {
         // let channel = circuit
         circuit.read_pv(name).await.map(|d| d.take_value())
     }
-    pub async fn subscribe(&mut self, name: &str) -> Result<broadcast::Receiver<Dbr>, ClientError> {
+    /// Subscribe to changes for a particular PV
+    ///
+    /// Returns the [broadcast::Receiver] for the PV, but also a token
+    /// that can be used to later cancel the subscription.
+    pub async fn subscribe(
+        &mut self,
+        name: &str,
+    ) -> Result<(broadcast::Receiver<Dbr>, SubscriptionToken), ClientError> {
         let ioc = self.searcher.search_for(name).await?;
         let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
-        let result = circuit.subscribe(name).await?;
-        self.subscriptions.insert(name.to_string(), ioc);
-        Ok(result)
+        let (receiver, ioid) = circuit.subscribe(name).await?;
+        // self.subscriptions.insert(name.to_string(), ioc);
+        Ok((receiver, SubscriptionToken { circuit: ioc, ioid }))
     }
 
     /// Stop receiving messages for a specific PV
@@ -728,14 +732,14 @@ impl Client {
     /// > It is still possible to get updated messages returned after
     /// > calling this function, because there may have been messages
     /// > in-flight before the termination request gets through.
-    pub async fn unsubscribe(&mut self, name: &str) {
-        let Some(ioc) = self.subscriptions.remove(name) else {
+    pub async fn unsubscribe(&mut self, subscription: SubscriptionToken) {
+        // let Some(ioc) = self.subscriptions.remove(name) else {
+        //     return;
+        // };
+        let Some(circuit) = self.circuits.get(&subscription.circuit) else {
             return;
         };
-        let Some(circuit) = self.circuits.get(&ioc) else {
-            return;
-        };
-        circuit.unsubscribe(name).await;
+        circuit.unsubscribe(subscription.ioid).await;
     }
 
     /// Watch for broadcast beacons, and record their ID and timestamp into the client map

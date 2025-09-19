@@ -50,7 +50,7 @@
 //!     println!("Read NUMERIC_VALUE: {number:?}");
 //!
 //!     // Or get a subscriber to receieve all updates
-//!     let mut reader = client.subscribe("NUMERIC_VALUE").await.unwrap();
+//!     let (mut reader, _) = client.subscribe("NUMERIC_VALUE").await.unwrap();
 //!
 //!     while let Ok(value) = reader.recv().await {
 //!         println!("Got update: {:?}", value.value());
