@@ -53,4 +53,6 @@ async fn test_events() {
         sub.recv().await.unwrap_err(),
         broadcast::error::RecvError::Closed
     );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    server.stop().await.unwrap();
 }

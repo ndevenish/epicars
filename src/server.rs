@@ -377,6 +377,14 @@ impl<L: Provider> Server<L> {
                 });
                 id += 1;
             }
+            while let Some(result) = tasks.join_next().await {
+                if let Err(e) = result
+                    && e.is_panic()
+                {
+                    debug!("Circuit Panicked! Resuming unwind");
+                    std::panic::resume_unwind(e.into_panic());
+                }
+            }
             tasks.join_all().await;
             Ok(())
         });
