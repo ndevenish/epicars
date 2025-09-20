@@ -33,7 +33,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio_util::{
     bytes::{Buf, BytesMut},
-    codec::Decoder,
+    codec::{Decoder, Encoder},
 };
 use tracing::trace;
 
@@ -368,7 +368,7 @@ impl CAMessage for MessageHeader {
 ///
 /// Provides utility function [`Message::read_server_message`] to translate a
 /// raw stream into parsed messages.
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub enum Message {
     AccessRights(AccessRights),
     ClearChannel(ClearChannel),
@@ -377,6 +377,7 @@ pub enum Message {
     CreateChannelFailure(CreateChannelFailure),
     CreateChannelResponse(CreateChannelResponse),
     ECAError(ECAError),
+    #[default]
     Echo,
     EventAdd(EventAdd),
     EventAddResponse(EventAddResponse),
@@ -580,6 +581,7 @@ pub enum ClientMessage {
     #[default]
     Echo,
     EventAddResponse(EventAddResponse),
+    EventCancelResponse(EventCancelResponse),
     ReadNotifyResponse(ReadNotifyResponse),
     SearchResponse(SearchResponse),
     ServerDisconnect(ServerDisconnect),
@@ -625,7 +627,10 @@ impl TryFrom<RawMessage> for ClientMessage {
     fn try_from(value: RawMessage) -> Result<Self, Self::Error> {
         Ok(match value.command {
             0 => Self::Version(value.try_into()?),
-            1 => Self::EventAddResponse(value.try_into()?),
+            1 => match (value.payload_size(), value.field_2_data_count) {
+                (0, 0) => Self::EventCancelResponse(value.try_into()?),
+                _ => Self::EventAddResponse(value.try_into()?),
+            },
             6 => Self::SearchResponse(value.try_into()?),
             11 => Self::ECAError(value.try_into()?),
             15 => Self::ReadNotifyResponse(value.try_into()?),
@@ -652,11 +657,14 @@ impl Decoder for ClientMessage {
     }
 }
 
-// impl From<Version> for Message {
-//     fn from(value: Version) -> Self {
-//         Message::Version(value)
-//     }
-// }
+impl Encoder<Message> for Message {
+    type Error = io::Error;
+
+    fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        dst.extend_from_slice(&item.as_bytes());
+        Ok(())
+    }
+}
 // /// Represent any message that can be sent to a Server
 // pub enum ServerMessage {
 //     ClearChannel(ClearChannel),

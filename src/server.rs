@@ -298,6 +298,7 @@ impl<L: Provider> Server<L> {
                 .unwrap();
                 let msg_buf = &buf[..size];
                 if let Ok(searches) = parse_search_packet(msg_buf) {
+                    trace!("Gotten searches: {searches:?}");
                     // Handle rejection window:
                     // Drop all requests for identical PVs from the same source port
                     let rejection_window_start = Instant::now()

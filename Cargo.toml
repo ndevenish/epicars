@@ -31,7 +31,10 @@ tracing = "0.1.41"
 whoami = { version = "1.6.0", default-features = false }
 
 [dev-dependencies]
+anyhow = "1.0.100"
 clap = { version = "4.5.43", features = ["derive"] }
 colored = "3.0.0"
+futures = "0.3.31"
+futures-sink = "0.3.31"
 time = { version = "0.3.43", features = ["formatting", "macros"] }
 tracing-subscriber = { version = "=0.3.19", features=["local-time"] }
