@@ -68,6 +68,7 @@ use std::{
     fmt::Debug,
     io::{self, Cursor},
     num::NonZeroUsize,
+    str::FromStr,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -697,6 +698,11 @@ pub const DBR_CLASS_NAME: DbrType = DbrType {
     category: DbrCategory::ClassName,
 };
 
+pub const DBR_BASIC_INT: DbrType = DbrType {
+    basic_type: DbrBasicType::Int,
+    category: DbrCategory::Basic,
+};
+
 impl TryFrom<u16> for DbrType {
     type Error = ();
     fn try_from(value: u16) -> Result<Self, Self::Error> {
@@ -742,6 +748,59 @@ impl DbrType {
             (DbrCategory::Control, DbrBasicType::Char) => 1,
             _ => 0,
         }
+    }
+    fn new(basic_type: DbrBasicType, category: DbrCategory) -> Self {
+        Self {
+            basic_type,
+            category,
+        }
+    }
+}
+
+impl FromStr for DbrType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let upper = s.to_uppercase();
+        let mut s: &str = &upper;
+        if s.starts_with("DBR_") {
+            s = &s[4..];
+        };
+        let category = if s.contains("_") {
+            let cats = &s[..s.find("_").unwrap()];
+            s = &s[s.find("_").unwrap() + 1..];
+            match cats {
+                "BASIC" => DbrCategory::Basic,
+                "STS" => DbrCategory::Status,
+                "TIME" => DbrCategory::Time,
+                "GR" => DbrCategory::Graphics,
+                "CTRL" => DbrCategory::Control,
+                "CLASS" => DbrCategory::ClassName,
+                _ => return Err(()),
+            }
+        } else {
+            DbrCategory::Basic
+        };
+        let kind = match s {
+            "STRING" => DbrBasicType::String,
+            "INT" => DbrBasicType::Int,
+            "SHORT" => DbrBasicType::Int,
+            "FLOAT" => DbrBasicType::Float,
+            "ENUM" => DbrBasicType::Enum,
+            "CHAR" => DbrBasicType::Char,
+            "LONG" => DbrBasicType::Long,
+            "DOUBLE" => DbrBasicType::Double,
+            "NAME" if category == DbrCategory::ClassName => DbrBasicType::String,
+            _ => return Err(()),
+        };
+        if matches!(category, DbrCategory::ClassName) && !matches!(kind, DbrBasicType::String) {
+            // Class name is _only_ CLASS_NAME
+            return Err(());
+        }
+        Ok(DbrType {
+            basic_type: kind,
+            category,
+        })
     }
 }
 
@@ -1120,5 +1179,67 @@ mod tests {
         let re_s = as_char.convert_to(DbrBasicType::String).unwrap();
 
         assert_eq!(s, re_s);
+    }
+
+    #[test]
+    fn test_dbr_string_conversions() {
+        assert_eq!(
+            DbrType::new(DbrBasicType::Int, DbrCategory::Basic),
+            "INT".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Int, DbrCategory::Status),
+            "DBR_STS_INT".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Int, DbrCategory::Time),
+            "TIME_INT".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Int, DbrCategory::Graphics),
+            "DBR_GR_INT".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Int, DbrCategory::Control),
+            "DBR_CTRL_INT".parse().unwrap()
+        );
+
+        assert_eq!(
+            DbrType::new(DbrBasicType::Int, DbrCategory::Basic),
+            "INT".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::String, DbrCategory::Graphics),
+            "GR_STRING".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Int, DbrCategory::Basic),
+            "SHORT".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Float, DbrCategory::Basic),
+            "FLOAT".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Long, DbrCategory::Basic),
+            "LONG".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Enum, DbrCategory::Basic),
+            "ENUM".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Char, DbrCategory::Basic),
+            "CHAR".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::Double, DbrCategory::Basic),
+            "DOUBLE".parse().unwrap()
+        );
+        assert_eq!(
+            DbrType::new(DbrBasicType::String, DbrCategory::ClassName),
+            "DBR_CLASS_NAME".parse().unwrap()
+        );
+        assert!("DBR_CLASS_INT".parse::<DbrType>().is_err());
     }
 }
