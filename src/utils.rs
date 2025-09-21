@@ -118,3 +118,171 @@ pub fn get_default_max_search_interval() -> f32 {
         .unwrap_or(300.0f32)
         .max(60f32)
 }
+
+/// Test utilities
+#[cfg(test)]
+pub mod test {
+    use core::panic;
+    use std::{
+        net::SocketAddr,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use crate::{
+        Provider, ServerBuilder, ServerHandle,
+        messages::{ClientMessage, ClientName, CreateChannel, HostName, Message, Version},
+    };
+    use futures::{sink::SinkExt, stream};
+    use futures_sink::Sink;
+    use tokio::{
+        io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf, split},
+        net::TcpStream,
+    };
+    use tokio_stream::{Stream, StreamExt};
+    use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
+
+    /// Convenience class to hold separate write/read frame decoders
+    pub struct SplitFramed<T, D, E>
+    where
+        T: AsyncRead + AsyncWrite,
+    {
+        write: FramedWrite<tokio::io::WriteHalf<T>, E>,
+        read: FramedRead<tokio::io::ReadHalf<T>, D>,
+    }
+    impl<T, D, E> SplitFramed<T, D, E>
+    where
+        T: AsyncRead + AsyncWrite,
+        D: Decoder,
+        E: Encoder<E>,
+    {
+        fn new(stream: T, decoder: D, encoder: E) -> SplitFramed<T, D, E> {
+            let (tcp_rx, tcp_tx) = split(stream);
+            SplitFramed {
+                write: FramedWrite::new(tcp_tx, encoder),
+                read: FramedRead::new(tcp_rx, decoder),
+            }
+        }
+    }
+    impl<T, D, E> Stream for SplitFramed<T, D, E>
+    where
+        T: AsyncRead + AsyncWrite,
+        FramedRead<ReadHalf<T>, D>: Stream,
+    {
+        type Item = <FramedRead<ReadHalf<T>, D> as Stream>::Item;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            Pin::new(&mut self.read).poll_next(cx)
+        }
+    }
+
+    impl<T, D, E, Message> Sink<Message> for SplitFramed<T, D, E>
+    where
+        T: AsyncRead + AsyncWrite,
+        FramedWrite<WriteHalf<T>, E>: Sink<Message>,
+    {
+        type Error = <FramedWrite<WriteHalf<T>, E> as Sink<Message>>::Error;
+
+        fn poll_ready(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.write).poll_ready(cx)
+        }
+
+        fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            Pin::new(&mut self.write).start_send(item)
+        }
+
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.write).poll_flush(cx)
+        }
+
+        fn poll_close(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.write).poll_close(cx)
+        }
+    }
+
+    pub async fn bare_test_client(port: u16) -> SplitFramed<TcpStream, ClientMessage, Message> {
+        // let (tcp_rx, tcp_tx) = split(TcpStream::connect(server).await.unwrap());
+
+        let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+        // let mut reader = tokio_util::codec::FramedRead::new(tcp_rx, ClientMessage::default());
+        SplitFramed::new(
+            TcpStream::connect(addr).await.unwrap(),
+            ClientMessage::default(),
+            Message::default(),
+        )
+    }
+
+    pub async fn test_server<T>(provider: T) -> ServerHandle
+    where
+        T: Provider,
+    {
+        ServerBuilder::new(provider)
+            .connection_port(0)
+            .beacons(false)
+            .start()
+            .await
+            .unwrap()
+    }
+
+    impl<T, D> SplitFramed<T, ClientMessage, D>
+    where
+        T: AsyncRead + AsyncWrite,
+        D: Encoder<Message>,
+        <D as Encoder<Message>>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        pub async fn send_messages<I>(&mut self, messages: I) -> anyhow::Result<()>
+        where
+            I: IntoIterator<Item = Message>,
+        {
+            let mut stream = stream::iter(messages.into_iter().map(Ok));
+            self.send_all(&mut stream).await?;
+            Ok(())
+        }
+
+        pub async fn do_handshake(&mut self) -> anyhow::Result<()> {
+            self.send_messages([
+                Version::default().into(),
+                ClientName::new("testclient").into(),
+                HostName::new("test-hostname").into(),
+            ])
+            .await
+            .unwrap();
+
+            let ClientMessage::Version(_) = self.next().await.unwrap().unwrap() else {
+                panic!("Didn't get expected version packet");
+            };
+            Ok(())
+        }
+        pub async fn create_channel(&mut self, name: &str, client_id: u32) -> u32 {
+            self.send(
+                CreateChannel {
+                    client_id,
+                    channel_name: name.to_string(),
+                    ..Default::default()
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+            // Skip the access rights
+            self.next().await.unwrap().unwrap();
+            let ClientMessage::CreateChannelResponse(chan) = self.next().await.unwrap().unwrap()
+            else {
+                panic!("Failed to connect to channel");
+            };
+            chan.server_id
+        }
+    }
+}

@@ -94,18 +94,16 @@ async fn main() {
     }
     // Send an EventCancel to see what happens
     Message::write_all_messages(
-        &vec![
-            EventCancel {
-                data_type: DbrType {
-                    basic_type: DbrBasicType::String,
-                    category: epicars::dbr::DbrCategory::Time,
-                },
-                data_count: 1,
-                server_id: chan.server_id,
-                subscription_id: 0,
-            }
-            .into(),
-        ],
+        &[EventCancel {
+            data_type: DbrType {
+                basic_type: DbrBasicType::String,
+                category: epicars::dbr::DbrCategory::Time,
+            },
+            data_count: 1,
+            server_id: chan.server_id,
+            subscription_id: 0,
+        }
+        .into()],
         &mut tcp_tx,
     )
     .await

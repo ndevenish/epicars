@@ -899,10 +899,17 @@ impl<L: Provider> ServerBuilder<L> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use futures::{SinkExt, StreamExt};
+    use tokio::select;
+
     use crate::{
         Provider, ServerBuilder,
         dbr::{Dbr, DbrType},
-        messages::ErrorCondition,
+        messages::{ClientMessage, ErrorCondition, EventAdd, EventCancel, MonitorMask},
+        providers::IntercomProvider,
+        utils::test::{bare_test_client, test_server},
     };
 
     #[derive(Default, Clone, Debug)]
@@ -932,5 +939,61 @@ mod tests {
             .unwrap();
         assert_ne!(handle.connection_port(), 0, "Connection port");
         assert_ne!(handle.search_port(), 0, "Search port");
+    }
+
+    #[tokio::test]
+    async fn test_server_event_lifecycle() {
+        let mut provider = IntercomProvider::new();
+        let mut pv = provider.add_pv("TEST", 42i16).unwrap();
+        let server = test_server(provider).await;
+
+        let mut client = bare_test_client(server.connection_port()).await;
+        client.do_handshake().await.unwrap();
+        let server_id = client.create_channel("TEST", 0).await;
+        // Request subscription
+        client
+            .send(
+                EventAdd {
+                    data_type: "DBR_TIME_INT".parse().unwrap(),
+                    data_count: 1,
+                    server_id,
+                    subscription_id: 0,
+                    mask: MonitorMask::default(),
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+        let evr = client.next().await.unwrap().unwrap();
+        println!("Got EventAdd response: {evr:?}");
+        pv.store(&(pv.load() + 1));
+        let ClientMessage::EventAddResponse(_resp) = client.next().await.unwrap().unwrap() else {
+            panic!("Failed to get stream update");
+        };
+        // Send a cancel
+        client
+            .send(
+                EventCancel {
+                    data_type: "DBR_TIME_INT".parse().unwrap(),
+                    data_count: 1,
+                    server_id,
+                    subscription_id: 0,
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+        // Wait for the cancel response
+        match client.next().await.unwrap().unwrap() {
+            ClientMessage::EventCancelResponse(_) => (),
+            m => panic!("Got unexpected response to cancel: {m:?}"),
+        };
+
+        // Change the PV and check we don't get a reply
+        pv.store(&22i16);
+        select! {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => (),
+            m = client.next() => panic!("Got response: {m:?} after cancelling sub"),
+        }
     }
 }

@@ -44,6 +44,12 @@ enum CircuitRequest {
         category: DbrCategory,
         reply: oneshot::Sender<Result<Dbr, ClientError>>,
     },
+    Write {
+        channel: u32,
+        reply: oneshot::Sender<Result<(), ClientError>>,
+        value: DbrValue,
+        notify: bool,
+    },
     /// Start a subscription to a PV on the server
     Subscribe {
         channel: u32,
@@ -107,6 +113,7 @@ impl Circuit {
                 channel_lookup: Default::default(),
                 channels: Default::default(),
                 pending_reads: Default::default(),
+                pending_writes: Default::default(),
                 last_echo_sent_at: Instant::now(),
                 last_received_message_at: Instant::now(),
                 pending_monitors: Default::default(),
@@ -170,6 +177,24 @@ impl Circuit {
             .await
             .map_err(|_| ClientError::ClientClosed)?;
         rx.await.map_err(|_| ClientError::ClientClosed)?
+    }
+
+    async fn write_pv(&self, name: &str, value: impl Into<DbrValue>) -> Result<(), ClientError> {
+        let channel = self.get_channel(name.to_owned()).await?;
+        if matches!(channel.permissions, Access::None | Access::Read) {
+            return Err(ClientError::ChannelReadOnly);
+        };
+        let (tx, rx) = oneshot::channel();
+        self.requests_tx
+            .send(CircuitRequest::Write {
+                channel: channel.cid,
+                reply: tx,
+                value: value.into(),
+                notify: true,
+            })
+            .await
+            .map_err(|_| ClientError::ClientClosed)?;
+        rx.await.unwrap_or(Err(ClientError::ChannelClosed))
     }
 
     async fn subscribe(&self, name: &str) -> Result<(broadcast::Receiver<Dbr>, u32), ClientError> {
@@ -243,6 +268,8 @@ impl Channel {
     }
 }
 
+type Ioid = u32;
+
 // Inner circuit state, used to hold async management data
 struct CircuitInternal {
     /// A copy of the address we are connected to
@@ -258,6 +285,8 @@ struct CircuitInternal {
     channel_lookup: HashMap<String, u32>,
     /// Watchers waiting for specific reads
     pending_reads: HashMap<u32, (Instant, oneshot::Sender<Result<Dbr, ClientError>>)>,
+    /// Watchers waiting for write notifications
+    pending_writes: HashMap<u32, (Instant, oneshot::Sender<Result<(), ClientError>>)>,
     /// Broadcast subscriptions we have not had confirmed yet
     #[allow(clippy::type_complexity)] // TODO: Actually follow Clippy's advice here
     pending_monitors: HashMap<
@@ -410,6 +439,54 @@ impl CircuitInternal {
                     }
                     .into(),
                 ]
+            }
+            CircuitRequest::Write {
+                channel: cid,
+                reply,
+                value,
+                notify,
+            } => {
+                let Some(channel) = self.channels.get_mut(&cid) else {
+                    let _ = reply.send(Err(ClientError::ChannelClosed));
+                    return Vec::new();
+                };
+                let _span = debug_span!("handle_request", cid = cid).entered();
+                let ioid = wrapping_inplace_add(&mut channel.next_ioid);
+                debug!(
+                    "Sending write request {ioid} for channel {cid} ({})",
+                    channel.name
+                );
+                let (_, data) = value.to_bytes(None);
+                if notify {
+                    self.pending_writes.insert(ioid, (Instant::now(), reply));
+                    vec![
+                        messages::WriteNotify {
+                            data_type: DbrType {
+                                basic_type: value.get_type(),
+                                category: DbrCategory::Basic,
+                            },
+                            data_count: value.get_count() as u32,
+                            server_id: channel.sid,
+                            client_ioid: ioid,
+                            data,
+                        }
+                        .into(),
+                    ]
+                } else {
+                    vec![
+                        messages::Write {
+                            data_type: DbrType {
+                                basic_type: value.get_type(),
+                                category: DbrCategory::Basic,
+                            },
+                            data_count: value.get_count() as u32,
+                            server_id: channel.sid,
+                            client_ioid: ioid,
+                            data,
+                        }
+                        .into(),
+                    ]
+                }
             }
             CircuitRequest::Subscribe {
                 channel: cid,
@@ -599,12 +676,23 @@ impl CircuitInternal {
                 };
                 Vec::new()
             }
+            ClientMessage::WriteNotifyResponse(msg) => {
+                let Some((_, tx)) = self.pending_writes.remove(&msg.client_ioid) else {
+                    debug!("Got WriteNotifyResponse for unknown write ioid!");
+                    return Vec::new();
+                };
+                if msg.status_code == 1 {
+                    let _ = tx.send(Ok(()));
+                } else {
+                    let _ = tx.send(Err(ClientError::WriteFailed(msg.status_code)));
+                }
+                Vec::new()
+            }
             msg => {
                 debug!("Got unhandled message from server: {msg:?}");
                 Vec::new()
             } // ClientMessage::SearchResponse(msg) => todo!(),
               // ClientMessage::ServerDisconnect(msg) => todo!(),
-              // ClientMessage::WriteNotifyResponse(msg) => todo!(),
               // ClientMessage::ECAError(msg) => todo!(),
         }
     }
@@ -645,6 +733,10 @@ pub enum ClientError {
     ChannelClosed,
     #[error("Channel creation failed")]
     ChannelCreateFailed,
+    #[error("PV is read-only")]
+    ChannelReadOnly,
+    #[error["Write to PV failed, code: {0}"]]
+    WriteFailed(u32),
 }
 
 impl Client {
@@ -724,6 +816,16 @@ impl Client {
         let (receiver, ioid) = circuit.subscribe(name).await?;
         // self.subscriptions.insert(name.to_string(), ioc);
         Ok((receiver, SubscriptionToken { circuit: ioc, ioid }))
+    }
+
+    pub async fn write_pv(
+        &mut self,
+        name: &str,
+        value: impl Into<DbrValue>,
+    ) -> Result<(), ClientError> {
+        let ioc = self.searcher.search_for(name).await?;
+        let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
+        circuit.write_pv(name, value.into()).await
     }
 
     /// Stop receiving messages for a specific PV
