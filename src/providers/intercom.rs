@@ -172,7 +172,7 @@ where
         ex.first().unwrap_or(&T::default()).clone()
     }
 
-    pub fn store(&mut self, value: &T) {
+    pub fn store(&self, value: &T) {
         self.pv
             .lock()
             .unwrap()
