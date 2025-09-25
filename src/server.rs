@@ -244,7 +244,7 @@ impl<L: Provider> Server<L> {
                         .await
                         .unwrap();
                 }
-                debug!(
+                trace!(
                     "Broadcasting beacon {} to {} interfaces: {:?}",
                     message.beacon_id,
                     broadcast_ips.len(),
