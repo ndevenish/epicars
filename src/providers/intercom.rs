@@ -31,7 +31,7 @@ struct PV {
     force_dbr_type: Option<DbrBasicType>,
     /// The last time this value was written
     timestamp: SystemTime,
-    /// Channel to send updates to EPIC clients
+    /// Channel to send updates to any interested listeners
     sender: broadcast::Sender<Dbr>,
     /// Trigger channel, to notify the server there is a new broadcast available
     triggers: HashMap<u64, mpsc::Sender<String>>,
@@ -179,6 +179,10 @@ where
             .store(&(vec![value.clone()]).into())
             .expect("Provider logic should ensure this never fails");
     }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Dbr> {
+        self.pv.lock().unwrap().sender.subscribe()
+    }
 }
 
 #[derive(Clone)]
@@ -217,6 +221,10 @@ where
             .store(&value.to_vec().into())
             .expect("Provider logic should ensure this never fails");
     }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Dbr> {
+        self.pv.lock().unwrap().sender.subscribe()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -245,6 +253,10 @@ impl StringIntercom {
             .unwrap()
             .store(&vec![value.to_owned()].into())
             .expect("Provider logic should ensure this never fails");
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Dbr> {
+        self.pv.lock().unwrap().sender.subscribe()
     }
 }
 
