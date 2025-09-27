@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use core::str;
+use core::{panic, str};
 use pnet::datalink;
 use std::{
     collections::HashMap,
@@ -332,10 +332,12 @@ impl<L: Provider> Server<L> {
                         for reply in &replies {
                             reply.write(&mut reply_buf).unwrap();
                         }
-                        listener
-                            .send_to(&reply_buf.into_inner(), origin)
-                            .await
-                            .unwrap();
+                        match listener.send_to(&reply_buf.into_inner(), origin).await {
+                            Ok(_) => (),
+                            Err(e) => {
+                                panic!("Failed to send UDP socket to {origin:?}: {e}");
+                            }
+                        }
                         debug!("Sending {} search results", replies.len());
                     }
                 } else {
