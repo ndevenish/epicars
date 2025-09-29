@@ -148,12 +148,12 @@ async fn main() {
         .init();
 
     let mut provider = IntercomProvider::new();
-    let mut value = provider.add_pv("NUMERIC_VALUE", 42i32).unwrap();
+    let value = provider.add_pv("NUMERIC_VALUE", 42i32).unwrap();
     let _vecvalue = provider
-        .add_vec_pv("something2", vec![0, 1, 2, 4, 5], Some(10))
+        .add_pv("something2", vec![0i16, 1, 2, 4, 5])
         .unwrap();
     let _svalue = provider
-        .add_string_pv("FILENAME", "c:\\some_file.cif", Some(32))
+        .add_pv("FILENAME", "c:\\some_file.cif".to_string())
         .unwrap();
 
     let mut server = ServerBuilder::new(provider).start().await.unwrap();
@@ -176,7 +176,7 @@ async fn main() {
 
         let v2 = value.load() + 1;
         info!("Updating value to {v2}");
-        value.store(&v2);
+        value.store(v2);
     }
     // Wait for shutdown, unless another ctrl-c
     select! {

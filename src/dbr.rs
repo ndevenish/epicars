@@ -391,21 +391,27 @@ impl DbrValue {
 /// Implement a From<datatype> for a specific dbrvalue kind
 macro_rules! impl_dbrvalue_conversions_between {
     ($variant:ident, $typ:ty) => {
-        impl From<Vec<$typ>> for DbrValue {
-            fn from(value: Vec<$typ>) -> Self {
-                DbrValue::$variant(value)
-            }
-        }
         impl From<&$typ> for DbrValue {
             fn from(value: &$typ) -> Self {
                 DbrValue::$variant(vec![value.clone()])
             }
         }
-        impl TryFrom<&DbrValue> for Vec<$typ> {
+        impl TryFrom<&DbrValue> for $typ {
             type Error = ErrorCondition;
             fn try_from(value: &DbrValue) -> Result<Self, Self::Error> {
                 Ok(match value.convert_to(DbrBasicType::$variant)? {
-                    DbrValue::$variant(v) => v,
+                    DbrValue::$variant(v) => v.first().ok_or(ErrorCondition::NoConvert)?.clone(),
+                    _ => unreachable!(),
+                })
+            }
+        }
+        impl TryFrom<DbrValue> for $typ {
+            type Error = ErrorCondition;
+            fn try_from(value: DbrValue) -> Result<Self, Self::Error> {
+                Ok(match value.convert_to(DbrBasicType::$variant)? {
+                    DbrValue::$variant(v) => {
+                        v.into_iter().nth(0).ok_or(ErrorCondition::NoConvert)?
+                    }
                     _ => unreachable!(),
                 })
             }
@@ -417,7 +423,100 @@ impl_dbrvalue_conversions_between!(Int, i16);
 impl_dbrvalue_conversions_between!(Long, i32);
 impl_dbrvalue_conversions_between!(Float, f32);
 impl_dbrvalue_conversions_between!(Double, f64);
-impl_dbrvalue_conversions_between!(String, String);
+
+// String is special, a lone string encodes as Char
+impl From<String> for DbrValue {
+    fn from(value: String) -> Self {
+        DbrValue::Char(value.as_bytes().iter().map(|&v| v as i8).collect())
+    }
+}
+impl From<&str> for DbrValue {
+    fn from(value: &str) -> Self {
+        DbrValue::Char(
+            value
+                .to_string()
+                .as_bytes()
+                .iter()
+                .map(|&v| v as i8)
+                .collect(),
+        )
+    }
+}
+impl TryFrom<DbrValue> for String {
+    type Error = ErrorCondition;
+
+    fn try_from(value: DbrValue) -> Result<Self, Self::Error> {
+        match value {
+            DbrValue::Char(items) => {
+                let as_unsigned: Vec<u8> = items
+                    .into_iter()
+                    .map(|v| v as u8)
+                    .take_while(|c| *c != 0)
+                    .collect();
+                Ok(String::from_utf8(as_unsigned).map_err(|_| ErrorCondition::NoConvert)?)
+            }
+            _ => Err(ErrorCondition::NoConvert),
+        }
+    }
+}
+impl TryFrom<&DbrValue> for String {
+    type Error = ErrorCondition;
+
+    fn try_from(value: &DbrValue) -> Result<Self, Self::Error> {
+        match value {
+            DbrValue::Char(items) => {
+                let as_unsigned: Vec<u8> = items
+                    .iter()
+                    .map(|v| *v as u8)
+                    .take_while(|c| *c != 0)
+                    .collect();
+                Ok(String::from_utf8(as_unsigned).map_err(|_| ErrorCondition::NoConvert)?)
+            }
+            _ => Err(ErrorCondition::NoConvert),
+        }
+    }
+}
+
+// Implement From<Vec<datatype>> for a specific DBR Kind
+macro_rules! impl_vec_dbrvalue_conversions_between {
+    ($variant:ident, $typ:ty) => {
+        impl From<$typ> for DbrValue {
+            fn from(value: $typ) -> Self {
+                DbrValue::$variant(value)
+            }
+        }
+        impl From<&$typ> for DbrValue {
+            fn from(value: &$typ) -> Self {
+                DbrValue::$variant(value.clone())
+            }
+        }
+        impl TryFrom<&DbrValue> for $typ {
+            type Error = ErrorCondition;
+            fn try_from(value: &DbrValue) -> Result<Self, Self::Error> {
+                Ok(match value.convert_to(DbrBasicType::$variant)? {
+                    DbrValue::$variant(v) => v,
+                    _ => unreachable!(),
+                })
+            }
+        }
+        impl TryFrom<DbrValue> for $typ {
+            type Error = ErrorCondition;
+            fn try_from(value: DbrValue) -> Result<Self, Self::Error> {
+                Ok(match value.convert_to(DbrBasicType::$variant)? {
+                    DbrValue::$variant(v) => v,
+                    _ => unreachable!(),
+                })
+            }
+        }
+    };
+}
+
+impl_vec_dbrvalue_conversions_between!(String, Vec<String>);
+impl_vec_dbrvalue_conversions_between!(Char, Vec<i8>);
+impl_vec_dbrvalue_conversions_between!(Int, Vec<i16>);
+impl_vec_dbrvalue_conversions_between!(Long, Vec<i32>);
+impl_vec_dbrvalue_conversions_between!(Float, Vec<f32>);
+impl_vec_dbrvalue_conversions_between!(Double, Vec<f64>);
 
 macro_rules! impl_dbrvalue_copy_conversions_between {
     ($variant:ident, $typ:ty) => {
@@ -630,30 +729,6 @@ impl TryFrom<u16> for DbrBasicType {
         }
     }
 }
-
-/// Marks a type as being convertible to a DBRValue representation
-pub trait IntoDbrBasicType {
-    fn get_dbr_basic_type() -> DbrBasicType;
-}
-
-macro_rules! impl_into_dbr_basic_type {
-    ($t:ty, $variant:ident) => {
-        impl IntoDbrBasicType for $t {
-            fn get_dbr_basic_type() -> DbrBasicType {
-                DbrBasicType::$variant
-            }
-        }
-    };
-}
-
-impl_into_dbr_basic_type!(i8, Char);
-impl_into_dbr_basic_type!(u8, Int);
-impl_into_dbr_basic_type!(i16, Int);
-impl_into_dbr_basic_type!(u16, Long);
-impl_into_dbr_basic_type!(i32, Long);
-impl_into_dbr_basic_type!(f32, Float);
-impl_into_dbr_basic_type!(f64, Double);
-impl_into_dbr_basic_type!(String, String);
 
 /// Mapping of DBR categories
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

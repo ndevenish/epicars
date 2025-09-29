@@ -946,7 +946,7 @@ mod tests {
     #[tokio::test]
     async fn test_server_event_lifecycle() {
         let mut provider = IntercomProvider::new();
-        let mut pv = provider.add_pv("TEST", 42i16).unwrap();
+        let pv = provider.add_pv("TEST", 42i16).unwrap();
         let server = test_server(provider).await;
 
         let mut client = bare_test_client(server.connection_port()).await;
@@ -968,7 +968,7 @@ mod tests {
             .unwrap();
         let evr = client.next().await.unwrap().unwrap();
         println!("Got EventAdd response: {evr:?}");
-        pv.store(&(pv.load() + 1));
+        pv.store(pv.load() + 1);
         let ClientMessage::EventAddResponse(_resp) = client.next().await.unwrap().unwrap() else {
             panic!("Failed to get stream update");
         };
@@ -992,7 +992,7 @@ mod tests {
         };
 
         // Change the PV and check we don't get a reply
-        pv.store(&22i16);
+        pv.store(22i16);
         select! {
             _ = tokio::time::sleep(Duration::from_millis(100)) => (),
             m = client.next() => panic!("Got response: {m:?} after cancelling sub"),

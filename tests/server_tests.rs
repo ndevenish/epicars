@@ -1,34 +1,11 @@
 use core::panic;
-use std::{
-    any, io,
-    net::SocketAddr,
-    pin::Pin,
-    task::{Context, Poll},
-    time::Duration,
-};
+use std::time::Duration;
 
-use epicars::{
-    Client, Provider, ServerBuilder, ServerHandle,
-    dbr::DbrType,
-    messages::{
-        ClientMessage, ClientName, CreateChannel, EventAdd, EventCancel, HostName, Message,
-        MonitorMask, Version,
-    },
-    providers::IntercomProvider,
-};
-use futures::{sink::SinkExt, stream};
-use futures_sink::Sink;
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf, split},
-    net::TcpStream,
-    select,
-    sync::broadcast,
-};
-use tokio_stream::{Stream, StreamExt};
-use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
+use epicars::providers::intercom::Intercom;
+use epicars::{Client, Provider, ServerBuilder, ServerHandle, providers::IntercomProvider};
+use tokio::{select, sync::broadcast};
 use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::fmt::TestWriter;
-
 /// Create a client and server instance, connected to each other via random port
 pub async fn connected_client_server<T>(provider: T) -> (Client, ServerHandle)
 where
@@ -67,14 +44,14 @@ async fn test_events() {
         .try_init();
     // Start up a simple server
     let mut provider = IntercomProvider::new();
-    let mut pv = provider.add_pv("TEST", 42i16).unwrap();
+    let pv = provider.add_pv("TEST", 42i16).unwrap();
     let (mut client, server) = connected_client_server(provider).await;
 
     // Validate this works
     assert_eq!(client.read_pv("TEST").await.unwrap(), 42i16.into());
     let (mut sub, sub_token) = client.subscribe("TEST").await.unwrap();
     assert_eq!(sub.try_recv().unwrap().value(), &42i16.into());
-    pv.store(&413i16);
+    pv.store(413i16);
     select! {
         _ = tokio::time::sleep(Duration::from_secs(4)) => panic!("Did not get subscription event"),
         v = sub.recv() => {
@@ -103,8 +80,8 @@ async fn test_read_written_strings() {
         .with_writer(TestWriter::new())
         .try_init();
     let mut provider = IntercomProvider::new();
-    let pv = provider.add_string_pv("TEST", "", Some(16)).unwrap();
-    let (mut client, server) = connected_client_server(provider).await;
-    client.write_pv("TEST", &"Atest".to_string()).await.unwrap();
+    let pv: Intercom<String> = provider.add_pv("TEST", "".to_string()).unwrap();
+    let (mut client, _server) = connected_client_server(provider).await;
+    client.write_pv("TEST", "Atest".to_string()).await.unwrap();
     assert_eq!(pv.load(), "Atest");
 }

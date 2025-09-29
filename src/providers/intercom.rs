@@ -13,7 +13,7 @@ use tracing::{debug, error};
 
 use crate::{
     Provider,
-    dbr::{DBR_CLASS_NAME, Dbr, DbrBasicType, DbrType, DbrValue, IntoDbrBasicType, Status},
+    dbr::{DBR_CLASS_NAME, Dbr, DbrBasicType, DbrType, DbrValue, Status},
     messages::{self, ErrorCondition, MonitorMask},
 };
 
@@ -26,9 +26,6 @@ struct PV {
     /// minimum length will be increased. If None, then only the current
     /// array length items will be sent.
     minimum_length: Option<usize>,
-    /// The optional type to serialize as. This is useful for forcing an
-    /// otherwise String DbrValue to be DbrValue::Char when sending off.
-    force_dbr_type: Option<DbrBasicType>,
     /// The last time this value was written
     timestamp: SystemTime,
     /// Channel to send updates to any interested listeners
@@ -57,13 +54,6 @@ impl PV {
                     .clone()
                     .unwrap_or_else(|| value.get_default_record_type()),
             ]));
-        }
-        if let Some(to_type) = self.force_dbr_type
-            && value.get_type() != to_type
-        {
-            value = value
-                .convert_to(to_type)
-                .expect("PV Logic should ensure stored value can always be converted")
         }
         // Handle minimum length
         if let Some(size) = self.minimum_length
@@ -129,7 +119,6 @@ impl Default for PV {
             name: String::new(),
             value: Arc::new(Mutex::new(DbrValue::Int(vec![0]))),
             minimum_length: None,
-            force_dbr_type: None,
             timestamp: SystemTime::now(),
             sender: broadcast::Sender::new(16),
             triggers: Default::default(),
@@ -142,7 +131,8 @@ impl Default for PV {
 #[derive(Clone, Debug)]
 pub struct Intercom<T>
 where
-    T: IntoDbrBasicType,
+    T: TryFrom<DbrValue>,
+    DbrValue: From<T>,
 {
     pv: Arc<Mutex<PV>>,
     _marker: PhantomData<T>,
@@ -150,11 +140,18 @@ where
 
 impl<T> Intercom<T>
 where
-    T: IntoDbrBasicType + Clone + Default,
-    for<'a> Vec<T>: TryFrom<&'a DbrValue>,
-    DbrValue: From<Vec<T>>,
+    T: TryFrom<DbrValue>,
+    DbrValue: From<T>,
 {
     fn new(pv: Arc<Mutex<PV>>) -> Self {
+        if cfg!(debug_assertions) {
+            // Ensure that this pv can be converted into our static type..
+            // the library user should not be able to do this, so this
+            // indicates an error in our logic
+            let Ok(_) = TryInto::<T>::try_into(pv.lock().unwrap().load()) else {
+                panic!("Failed to convert PV to static type");
+            };
+        }
         Self {
             pv,
             _marker: PhantomData,
@@ -163,95 +160,17 @@ where
 
     pub fn load(&self) -> T {
         let value = self.pv.lock().unwrap().load();
-        // Convert the DbrValue into T
-        let ex: Vec<T> = match (&value).try_into() {
-            Ok(v) => v,
-            _ => panic!("Provider logic should ensure this conversion never fails!"),
-        };
-        // Extract the zeroth value from this vector
-        ex.first().unwrap_or(&T::default()).clone()
-    }
-
-    pub fn store(&self, value: &T) {
-        self.pv
-            .lock()
-            .unwrap()
-            .store(&(vec![value.clone()]).into())
-            .expect("Provider logic should ensure this never fails");
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<Dbr> {
-        self.pv.lock().unwrap().sender.subscribe()
-    }
-}
-
-#[derive(Clone)]
-pub struct VecIntercom<T>
-where
-    T: IntoDbrBasicType,
-{
-    pv: Arc<Mutex<PV>>,
-    _marker: PhantomData<T>,
-}
-
-impl<T> VecIntercom<T>
-where
-    T: IntoDbrBasicType + Clone + Default,
-    for<'a> Vec<T>: TryFrom<&'a DbrValue>,
-    DbrValue: From<Vec<T>>,
-{
-    fn new(pv: Arc<Mutex<PV>>) -> Self {
-        Self {
-            pv,
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn load(&self) -> Vec<T> {
-        match (&self.pv.lock().unwrap().load()).try_into() {
+        match value.try_into() {
             Ok(v) => v,
             _ => panic!("Provider logic should ensure this conversion never fails!"),
         }
     }
 
-    pub fn store(&mut self, value: &[T]) {
+    pub fn store(&self, value: T) {
         self.pv
             .lock()
             .unwrap()
-            .store(&value.to_vec().into())
-            .expect("Provider logic should ensure this never fails");
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<Dbr> {
-        self.pv.lock().unwrap().sender.subscribe()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct StringIntercom {
-    pv: Arc<Mutex<PV>>,
-}
-
-impl StringIntercom {
-    fn new(pv: Arc<Mutex<PV>>) -> Self {
-        assert!(pv.lock().unwrap().value.lock().unwrap().get_type() == DbrBasicType::String);
-        Self { pv }
-    }
-    pub fn load(&self) -> String {
-        let DbrValue::String(value) = self.pv.lock().unwrap().load() else {
-            panic!("StringIntercom PV is not of string type!");
-        };
-        match value.as_slice() {
-            [] => String::new(),
-            [value] => value.clone(),
-            _ => panic!("Got multi-value string DbrValue in StringIntercom!"),
-        }
-    }
-    pub fn store(&mut self, value: &str) {
-        self.pv
-            .lock()
-            .unwrap()
-            .store(&vec![value.to_owned()].into())
+            .store(&(value).into())
             .expect("Provider logic should ensure this never fails");
     }
 
@@ -281,14 +200,18 @@ impl IntercomProvider {
         }
     }
 
-    fn register_pv(&mut self, pv: Arc<Mutex<PV>>) -> Result<(), PVAlreadyExists> {
-        let name = &pv.lock().unwrap().name;
+    fn register_pv<T>(&mut self, pv: Arc<Mutex<PV>>) -> Result<Intercom<T>, PVAlreadyExists>
+    where
+        T: TryFrom<DbrValue>,
+        DbrValue: From<T>,
+    {
+        let name = pv.lock().unwrap().name.clone();
         let mut pvmap = self.pvs.lock().unwrap();
-        if pvmap.contains_key(name) {
+        if pvmap.contains_key(&name) {
             return Err(PVAlreadyExists);
         }
-        let _ = pvmap.insert(name.to_owned(), pv.clone());
-        Ok(())
+        let _ = pvmap.insert(name, pv.clone());
+        Ok(Intercom::<T>::new(pv))
     }
 
     pub fn add_pv<T>(
@@ -297,56 +220,16 @@ impl IntercomProvider {
         initial_value: T,
     ) -> Result<Intercom<T>, PVAlreadyExists>
     where
-        T: IntoDbrBasicType + Clone + Default,
-        for<'a> Vec<T>: TryFrom<&'a DbrValue>,
-        DbrValue: From<Vec<T>>,
+        T: TryFrom<DbrValue> + Clone + Default,
+        DbrValue: From<T>,
     {
         let pv = Arc::new(Mutex::new(PV {
             name: name.to_owned(),
-            value: Arc::new(Mutex::new(DbrValue::from(vec![initial_value.clone()]))),
+            value: Arc::new(Mutex::new(DbrValue::from(initial_value))),
             ..Default::default()
         }));
         self.register_pv(pv.clone())?;
         Ok(Intercom::<T>::new(pv))
-    }
-
-    pub fn add_vec_pv<T>(
-        &mut self,
-        name: &str,
-        initial_value: Vec<T>,
-        minimum_length: Option<usize>,
-    ) -> Result<VecIntercom<T>, PVAlreadyExists>
-    where
-        T: IntoDbrBasicType + Clone + Default,
-        for<'a> Vec<T>: TryFrom<&'a DbrValue>,
-        DbrValue: From<Vec<T>>,
-    {
-        // let pv = self.create_pv(name, DbrValue::from(initial_value.clone()), minimum_length)?;
-        let pv = Arc::new(Mutex::new(PV {
-            name: name.to_owned(),
-            value: Arc::new(Mutex::new(DbrValue::from(initial_value.clone()))),
-            minimum_length,
-            ..Default::default()
-        }));
-        self.register_pv(pv.clone())?;
-        Ok(VecIntercom::<T>::new(pv))
-    }
-
-    pub fn add_string_pv(
-        &mut self,
-        name: &str,
-        initial_value: &str,
-        minimum_u8_len: Option<usize>,
-    ) -> Result<StringIntercom, PVAlreadyExists> {
-        let pv = Arc::new(Mutex::new(PV {
-            name: name.to_owned(),
-            minimum_length: minimum_u8_len,
-            force_dbr_type: Some(DbrBasicType::Char),
-            value: Arc::new(Mutex::new(DbrValue::String(vec![initial_value.to_owned()]))),
-            ..Default::default()
-        }));
-        self.register_pv(pv.clone())?;
-        Ok(StringIntercom::new(pv))
     }
 
     /// Normalize a PV name by stripping prefix/suffix
@@ -466,18 +349,18 @@ mod tests {
 
     use crate::{
         dbr::DbrBasicType,
-        providers::intercom::{PV, StringIntercom},
+        providers::intercom::{Intercom, PV},
     };
 
     #[test]
     fn test_string_intercom() {
         let pv = Arc::new(Mutex::new(PV {
             name: "TEST".to_owned(),
-            value: Arc::new(Mutex::new(vec!["Test String".to_owned()].into())),
-            force_dbr_type: Some(DbrBasicType::Char),
+            value: Arc::new(Mutex::new("Test String".to_string().into())),
             ..Default::default()
         }));
-        let si = StringIntercom::new(pv.clone());
+        let si = Intercom::<String>::new(pv.clone());
+        // let si = StringIntercom::new(pv.clone());
         assert_eq!(si.load(), "Test String");
         assert_eq!(
             pv.lock().unwrap().load_for_ca(None).data_type().basic_type,

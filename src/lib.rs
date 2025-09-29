@@ -75,7 +75,7 @@
 //!     let mut value = provider.add_pv("NUMERIC_VALUE", 42i32).unwrap();
 //!     let _server = ServerBuilder::new(provider).start();
 //!     loop {
-//!         value.store(&(value.load() + 1));
+//!         value.store(value.load() + 1);
 //!         println!("Value is now: {}", value.load());
 //! #       break
 //!         tokio::time::sleep(Duration::from_secs(3)).await;
