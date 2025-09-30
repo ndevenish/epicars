@@ -61,10 +61,10 @@ where
 
 #[tokio::test]
 async fn test_events() {
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_max_level(LevelFilter::TRACE)
         .with_writer(TestWriter::new())
-        .init();
+        .try_init();
     // Start up a simple server
     let mut provider = IntercomProvider::new();
     let mut pv = provider.add_pv("TEST", 42i16).unwrap();
@@ -95,13 +95,13 @@ async fn test_events() {
 
 #[tokio::test]
 async fn test_read_written_strings() {
-    /// Note: Have seen cases where see to get rogue null bytes in the PV?
-    /// This was to track this down, but seems to have failed. Keep here so that
-    /// we can look again later.
-    tracing_subscriber::fmt()
+    // Note: Have seen cases where see to get rogue null bytes in the PV?
+    // This was to track this down, but seems to have failed. Keep here so that
+    // we can look again later.
+    let _ = tracing_subscriber::fmt()
         .with_max_level(LevelFilter::TRACE)
         .with_writer(TestWriter::new())
-        .init();
+        .try_init();
     let mut provider = IntercomProvider::new();
     let pv = provider.add_string_pv("TEST", "", Some(16)).unwrap();
     let (mut client, server) = connected_client_server(provider).await;
