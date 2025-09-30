@@ -256,8 +256,60 @@ where
             .expect("Provider logic should ensure this never fails");
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<Dbr> {
-        self.pv.lock().unwrap().sender.subscribe()
+    pub fn subscribe(&self) -> ConverterReceiver<T> {
+        ConverterReceiver {
+            receiver: self.pv.lock().unwrap().sender.subscribe(),
+            _phantom: Default::default(),
+        }
+    }
+}
+
+/// Wrap a Dbr broadcast receiver into a receiver that converts to a specific type
+#[derive(Debug)]
+pub struct ConverterReceiver<T>
+where
+    T: TryFrom<DbrValue>,
+    DbrValue: From<T>,
+{
+    receiver: broadcast::Receiver<Dbr>,
+    _phantom: PhantomData<T>,
+}
+
+pub enum ConverterRecvError {
+    /// There are no more active senders implying no further messages will ever
+    /// be sent.
+    Closed,
+
+    /// The receiver lagged too far behind. Attempting to receive again will
+    /// return the oldest message still retained by the channel.
+    ///
+    /// Includes the number of skipped messages.
+    Lagged(u64),
+    ConversionError,
+}
+impl From<broadcast::error::RecvError> for ConverterRecvError {
+    fn from(value: broadcast::error::RecvError) -> Self {
+        match value {
+            broadcast::error::RecvError::Closed => Self::Closed,
+            broadcast::error::RecvError::Lagged(n) => Self::Lagged(n),
+        }
+    }
+}
+impl<T> ConverterReceiver<T>
+where
+    T: TryFrom<DbrValue>,
+    DbrValue: From<T>,
+{
+    pub async fn recv(&mut self) -> Result<T, ConverterRecvError> {
+        self.receiver
+            .recv()
+            .await
+            .map_err(|e| e.into())
+            .and_then(|dbr| {
+                dbr.take_value()
+                    .try_into()
+                    .map_err(|_| ConverterRecvError::ConversionError)
+            })
     }
 }
 
