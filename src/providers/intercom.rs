@@ -13,7 +13,7 @@ use tracing::{debug, error};
 
 use crate::{
     Provider,
-    dbr::{DBR_CLASS_NAME, Dbr, DbrBasicType, DbrType, DbrValue, Status},
+    dbr::{DBR_CLASS_NAME, Dbr, DbrBasicType, DbrType, DbrValue, DefaultEpicsClass, Status},
     messages::{self, ErrorCondition, MonitorMask},
 };
 
@@ -33,7 +33,7 @@ where
 
 impl<'a, T> PVBuilder<'a, T>
 where
-    T: TryFrom<DbrValue> + Clone,
+    T: TryFrom<DbrValue> + Clone + DefaultEpicsClass,
     DbrValue: From<T>,
 {
     pub fn new(provider: &'a mut IntercomProvider, name: &str, initial_value: T) -> Self {
@@ -68,13 +68,17 @@ where
     /// Instantiate the PV, and return an Intercom to talk to it
     pub fn build(self) -> Result<Intercom<T>, PVAlreadyExists> {
         let value = Arc::new(Mutex::new(self.value.into()));
+        let classname = self
+            .class_name
+            .or(T::get_default_record_type().map(|v| v.to_string()));
+
         // If we requested an automatic RBV, make an entry for that
         if self.automatic_rbv {
             let pv_rbv = PV {
                 name: format!("{}_RBV", self.name),
                 value: value.clone(),
                 minimum_length: self.minimum_length,
-                epics_record_type: self.class_name.clone(),
+                epics_record_type: classname.clone(),
                 read_only: true,
                 ..Default::default()
             };
@@ -84,7 +88,7 @@ where
             name: self.name,
             value,
             minimum_length: self.minimum_length,
-            epics_record_type: self.class_name,
+            epics_record_type: classname,
             read_only: self.read_only,
             ..Default::default()
         };
@@ -468,5 +472,13 @@ mod tests {
         let ic = p.build_pv("COUNT", 32i8).rbv(true).build().unwrap();
         assert!(p.provides("COUNT_RBV"));
         assert!(!ic.pv.lock().unwrap().read_only);
+    }
+
+    #[test]
+    fn test_bool_intercom() {
+        let mut p = IntercomProvider::new();
+        let ic = p.add_pv("FLAG", false).unwrap();
+        ic.store(false);
+        assert_eq!(ic.load(), false);
     }
 }

@@ -477,6 +477,25 @@ impl TryFrom<&DbrValue> for String {
     }
 }
 
+impl From<bool> for DbrValue {
+    fn from(value: bool) -> Self {
+        DbrValue::Char(vec![if value { 1 } else { 0 }])
+    }
+}
+impl TryFrom<DbrValue> for bool {
+    type Error = ErrorCondition;
+
+    fn try_from(value: DbrValue) -> Result<Self, Self::Error> {
+        match value
+            .convert_to(DbrBasicType::Char)
+            .map_err(|_| ErrorCondition::NoConvert)?
+        {
+            DbrValue::Char(items) => Ok(items.first() != Some(&0)),
+            _ => unreachable!(),
+        }
+    }
+}
+
 // Implement From<Vec<datatype>> for a specific DBR Kind
 macro_rules! impl_vec_dbrvalue_conversions_between {
     ($variant:ident, $typ:ty) => {
@@ -532,6 +551,34 @@ impl_dbrvalue_copy_conversions_between!(Int, i16);
 impl_dbrvalue_copy_conversions_between!(Long, i32);
 impl_dbrvalue_copy_conversions_between!(Float, f32);
 impl_dbrvalue_copy_conversions_between!(Double, f64);
+
+pub trait DefaultEpicsClass {
+    fn get_default_record_type() -> Option<&'static str>;
+}
+
+macro_rules! impl_default_record_type {
+    ($typ:ty, $kind:literal) => {
+        impl DefaultEpicsClass for $typ {
+            fn get_default_record_type() -> Option<&'static str> {
+                Some($kind)
+            }
+        }
+    };
+}
+impl_default_record_type!(bool, "bo");
+impl_default_record_type!(i8, "longout");
+impl_default_record_type!(i16, "longout");
+impl_default_record_type!(i32, "longout");
+impl_default_record_type!(f32, "ao");
+impl_default_record_type!(f64, "ao");
+impl_default_record_type!(String, "waveform");
+
+impl_default_record_type!(Vec<i8>, "longout");
+impl_default_record_type!(Vec<i16>, "longout");
+impl_default_record_type!(Vec<i32>, "longout");
+impl_default_record_type!(Vec<f32>, "aao");
+impl_default_record_type!(Vec<f64>, "aao");
+impl_default_record_type!(Vec<String>, "stringout");
 
 #[derive(Clone, Debug)]
 pub struct Limits<T: num_traits::Bounded + ToBytes> {
