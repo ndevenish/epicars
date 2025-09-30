@@ -17,6 +17,81 @@ use crate::{
     messages::{self, ErrorCondition, MonitorMask},
 };
 
+pub struct PVBuilder<'a, T>
+where
+    T: TryFrom<DbrValue> + Clone,
+    DbrValue: From<T>,
+{
+    name: String,
+    value: T,
+    read_only: bool,
+    class_name: Option<String>,
+    automatic_rbv: bool,
+    minimum_length: Option<usize>,
+    provider: &'a mut IntercomProvider,
+}
+
+impl<'a, T> PVBuilder<'a, T>
+where
+    T: TryFrom<DbrValue> + Clone,
+    DbrValue: From<T>,
+{
+    pub fn new(provider: &'a mut IntercomProvider, name: &str, initial_value: T) -> Self {
+        PVBuilder::<T> {
+            name: name.to_string(),
+            value: initial_value,
+            read_only: false,
+            class_name: None,
+            automatic_rbv: false,
+            minimum_length: None,
+            provider,
+        }
+    }
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+    /// Set the EPICS class name
+    pub fn class_name(mut self, name: &str) -> Self {
+        self.class_name = Some(name.to_string());
+        self
+    }
+    /// If a read-only RBV-suffix value should automatically be created for this
+    pub fn rbv(mut self, auto_rb: bool) -> Self {
+        self.automatic_rbv = auto_rb;
+        self
+    }
+    pub fn minimum_length(mut self, length: usize) -> Self {
+        self.minimum_length = Some(length);
+        self
+    }
+    /// Instantiate the PV, and return an Intercom to talk to it
+    pub fn build(self) -> Result<Intercom<T>, PVAlreadyExists> {
+        let value = Arc::new(Mutex::new(self.value.into()));
+        // If we requested an automatic RBV, make an entry for that
+        if self.automatic_rbv {
+            let pv_rbv = PV {
+                name: format!("{}_RBV", self.name),
+                value: value.clone(),
+                minimum_length: self.minimum_length,
+                epics_record_type: self.class_name.clone(),
+                read_only: true,
+                ..Default::default()
+            };
+            self.provider.register_pv(Arc::new(Mutex::new(pv_rbv)))?;
+        }
+        let pv = PV {
+            name: self.name,
+            value,
+            minimum_length: self.minimum_length,
+            epics_record_type: self.class_name,
+            read_only: self.read_only,
+            ..Default::default()
+        };
+        self.provider.register_pv(Arc::new(Mutex::new(pv)))
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PV {
     name: String,
@@ -34,6 +109,8 @@ struct PV {
     triggers: HashMap<u64, mpsc::Sender<String>>,
     /// The EPICS record type, for CLASS_NAME responses
     epics_record_type: Option<String>,
+    /// Whether this PV can be written via EPICS
+    read_only: bool,
 }
 
 impl PV {
@@ -123,6 +200,7 @@ impl Default for PV {
             sender: broadcast::Sender::new(16),
             triggers: Default::default(),
             epics_record_type: None,
+            read_only: false,
         }
     }
 }
@@ -187,8 +265,6 @@ pub struct IntercomProvider {
     pvs: Arc<Mutex<HashMap<String, Arc<Mutex<PV>>>>>,
     /// A Prefix that is inserted in front of any PV name
     pub prefix: String,
-    /// Automatically map PV alternative names with a "_RBV" suffix
-    pub rbv: bool,
 }
 
 impl IntercomProvider {
@@ -196,7 +272,6 @@ impl IntercomProvider {
         IntercomProvider {
             pvs: Arc::new(Mutex::new(HashMap::new())),
             prefix: String::new(),
-            rbv: false,
         }
     }
 
@@ -232,14 +307,26 @@ impl IntercomProvider {
         Ok(Intercom::<T>::new(pv))
     }
 
+    pub fn build_pv<T>(&mut self, name: &str, initial_value: T) -> PVBuilder<T>
+    where
+        T: TryFrom<DbrValue> + Clone + Default,
+        DbrValue: From<T>,
+    {
+        PVBuilder {
+            name: name.to_string(),
+            value: initial_value,
+            read_only: false,
+            class_name: None,
+            automatic_rbv: false,
+            minimum_length: None,
+            provider: self,
+        }
+    }
     /// Normalize a PV name by stripping prefix/suffix
     fn normalize_pv_name<'a>(&self, pv_name: &'a str) -> &'a str {
         let mut name = pv_name;
         if pv_name.starts_with(&self.prefix) {
             name = &name[self.prefix.len()..];
-        }
-        if self.rbv && name.ends_with("_RBV") {
-            name = &name[..name.len() - 4]
         }
         name
     }
@@ -278,7 +365,11 @@ impl Provider for IntercomProvider {
         _client_user_name: Option<&str>,
         _client_host_name: Option<&str>,
     ) -> messages::Access {
-        if self.rbv && pv_name.ends_with("_RBV") {
+        let pvs = self.pvs.lock().unwrap();
+        let Some(pv) = pvs.get(self.normalize_pv_name(pv_name)) else {
+            return messages::Access::None;
+        };
+        if pv.lock().unwrap().read_only {
             messages::Access::Read
         } else {
             messages::Access::ReadWrite
@@ -286,16 +377,15 @@ impl Provider for IntercomProvider {
     }
 
     fn write_value(&mut self, pv_name: &str, value: Dbr) -> Result<(), ErrorCondition> {
-        // Don't allow writing of the implicit RBV
-        if self.rbv && pv_name.ends_with("_RBV") {
-            return Err(ErrorCondition::NoWtAccess);
-        }
         let mut pvmap = self.pvs.lock().unwrap();
         let mut pv = pvmap
             .get_mut(self.normalize_pv_name(pv_name))
             .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
+        if pv.read_only {
+            return Err(ErrorCondition::NoWtAccess);
+        }
         debug!("Provider: Processing write: {value:?}");
         if let Err(e) = pv.store_from_ca(value.value()) {
             error!("    Error: {e:?}");
@@ -348,8 +438,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::{
+        Provider,
         dbr::DbrBasicType,
-        providers::intercom::{Intercom, PV},
+        providers::{
+            IntercomProvider,
+            intercom::{Intercom, PV},
+        },
     };
 
     #[test]
@@ -366,5 +460,13 @@ mod tests {
             pv.lock().unwrap().load_for_ca(None).data_type().basic_type,
             DbrBasicType::Char
         );
+    }
+
+    #[test]
+    fn test_automatic_rbv() {
+        let mut p = IntercomProvider::new();
+        let ic = p.build_pv("COUNT", 32i8).rbv(true).build().unwrap();
+        assert!(p.provides("COUNT_RBV"));
+        assert!(!ic.pv.lock().unwrap().read_only);
     }
 }

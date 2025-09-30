@@ -153,7 +153,9 @@ async fn main() {
         .add_pv("something2", vec![0i16, 1, 2, 4, 5])
         .unwrap();
     let _svalue = provider
-        .add_pv("FILENAME", "c:\\some_file.cif".to_string())
+        .build_pv("FILENAME", "c:\\some_file.cif".to_string())
+        .minimum_length(128)
+        .build()
         .unwrap();
 
     let mut server = ServerBuilder::new(provider).start().await.unwrap();
