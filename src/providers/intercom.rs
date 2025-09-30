@@ -394,6 +394,7 @@ impl IntercomProvider {
         Ok(Intercom::<T>::new(pv))
     }
 
+    /// Add a PV with default configuration
     pub fn add_pv<T>(
         &mut self,
         name: &str,
@@ -412,6 +413,7 @@ impl IntercomProvider {
         Ok(Intercom::<T>::new(pv))
     }
 
+    /// Create a [PVBuilder] for customisation
     pub fn build_pv<T>(&mut self, name: &str, initial_value: T) -> PVBuilder<'_, T>
     where
         T: TryFrom<DbrValue> + Clone + Default,
