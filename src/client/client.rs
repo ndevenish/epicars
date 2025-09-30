@@ -527,18 +527,17 @@ impl CircuitInternal {
                 if let (Some(cid), Some((count, dbr_type, _))) = (
                     self.monitor_channels.remove(&ioid),
                     self.monitor_receivers.remove(&ioid),
-                ) {
-                    if let Some(channel) = self.channels.get(&cid) {
-                        return vec![
-                            messages::EventCancel {
-                                data_type: dbr_type,
-                                data_count: count as u32,
-                                server_id: channel.sid,
-                                subscription_id: ioid,
-                            }
-                            .into(),
-                        ];
-                    }
+                ) && let Some(channel) = self.channels.get(&cid)
+                {
+                    return vec![
+                        messages::EventCancel {
+                            data_type: dbr_type,
+                            data_count: count as u32,
+                            server_id: channel.sid,
+                            subscription_id: ioid,
+                        }
+                        .into(),
+                    ];
                 }
                 Vec::new()
             }
