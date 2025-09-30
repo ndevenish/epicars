@@ -307,7 +307,7 @@ impl IntercomProvider {
         Ok(Intercom::<T>::new(pv))
     }
 
-    pub fn build_pv<T>(&mut self, name: &str, initial_value: T) -> PVBuilder<T>
+    pub fn build_pv<T>(&mut self, name: &str, initial_value: T) -> PVBuilder<'_, T>
     where
         T: TryFrom<DbrValue> + Clone + Default,
         DbrValue: From<T>,
