@@ -259,7 +259,7 @@ where
     pub fn subscribe(&self) -> ConverterReceiver<T> {
         ConverterReceiver {
             receiver: self.pv.lock().unwrap().sender.subscribe(),
-            _phantom: Default::default(),
+            _phantom: PhantomData,
         }
     }
 }
@@ -287,11 +287,35 @@ pub enum ConverterRecvError {
     Lagged(u64),
     ConversionError,
 }
+pub enum ConverterTryRecvError {
+    /// The channel is currently empty. There are still active Sender
+    /// handles, so data may yet become available.
+    Empty,
+    /// There are no more active senders implying no further messages
+    /// will ever be sent.
+    Closed,
+
+    /// The receiver lagged too far behind. Attempting to receive again
+    /// will return the oldest message still retained by the channel.
+    ///
+    /// Includes the number of skipped messages.
+    Lagged(u64),
+    ConversionError,
+}
 impl From<broadcast::error::RecvError> for ConverterRecvError {
     fn from(value: broadcast::error::RecvError) -> Self {
         match value {
             broadcast::error::RecvError::Closed => Self::Closed,
             broadcast::error::RecvError::Lagged(n) => Self::Lagged(n),
+        }
+    }
+}
+impl From<broadcast::error::TryRecvError> for ConverterTryRecvError {
+    fn from(value: broadcast::error::TryRecvError) -> Self {
+        match value {
+            broadcast::error::TryRecvError::Closed => Self::Closed,
+            broadcast::error::TryRecvError::Lagged(n) => Self::Lagged(n),
+            broadcast::error::TryRecvError::Empty => Self::Empty,
         }
     }
 }
@@ -310,6 +334,31 @@ where
                     .try_into()
                     .map_err(|_| ConverterRecvError::ConversionError)
             })
+    }
+    pub fn try_recv(&mut self) -> Result<T, ConverterTryRecvError> {
+        self.receiver
+            .try_recv()
+            .map_err(|e| e.into())
+            .and_then(|dbr| {
+                dbr.take_value()
+                    .try_into()
+                    .map_err(|_| ConverterTryRecvError::ConversionError)
+            })
+    }
+    pub fn resubscribe(&self) -> Self {
+        Self {
+            receiver: self.receiver.resubscribe(),
+            _phantom: PhantomData,
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.receiver.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.receiver.is_empty()
+    }
+    pub fn is_closed(&self) -> bool {
+        self.receiver.is_closed()
     }
 }
 
