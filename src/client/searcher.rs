@@ -1,4 +1,5 @@
 use num::{FromPrimitive, traits::WrappingAdd};
+use socket2::Socket;
 use std::{
     cmp::min,
     collections::HashMap,
@@ -162,11 +163,12 @@ impl Searcher {
     }
 
     /// Get the SocketAddr for the server serving a specific PV
-    pub async fn search_for(&self, name: &str) -> Result<SocketAddr, CouldNotFindError> {
+    pub async fn search_for(&self, name: String) -> Result<SocketAddr, CouldNotFindError> {
         let (ret_send, ret_recv) = oneshot::channel::<broadcast::Receiver<Option<SocketAddr>>>();
+
         // Send the request into our async search loop
         self.pending_requests
-            .send((name.to_string(), ret_send))
+            .send((name, ret_send))
             .await
             .map_err(|_| CouldNotFindError)?;
         // Get the receiver back from here
@@ -177,6 +179,13 @@ impl Searcher {
             .await
             .unwrap_or(None)
             .ok_or(CouldNotFindError)
+    }
+
+    pub fn search_async(
+        &self,
+        name: String,
+        result: oneshot::Sender<Result<SocketAddr, CouldNotFindError>>,
+    ) {
     }
 
     pub fn stop(&self) {

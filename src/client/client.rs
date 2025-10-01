@@ -710,6 +710,12 @@ struct SubscriptionInfo {
     circuit: Option<SocketAddr>,
 }
 
+/// Internal requests to manage state within the CircuitInternal
+#[derive(Debug)]
+enum ClientInternalRequest {
+    Null,
+}
+
 /// Internal state for the Client async task
 ///
 /// Because we want to manage state outside of a direct user async call
@@ -723,6 +729,8 @@ struct ClientInternal {
     subscriptions: Vec<SubscriptionInfo>,
     /// Currently active connections
     circuits: HashMap<SocketAddr, Circuit>,
+    /// Known and trusted resolutions to specific PV requests
+    known_ioc: HashMap<String, SocketAddr>,
     /// Servers we have seen broadcasting.
     /// This can be used to trigger e.g. re-searching on the appearance
     /// of a new beacon server or the case of one restarting (at which
@@ -732,8 +740,16 @@ struct ClientInternal {
     searcher: Searcher,
     /// Requests coming from the Client user
     requests: mpsc::Receiver<ClientRequest>,
+    internal_requests: mpsc::Sender<ClientInternalRequest>,
     subtasks: JoinSet<()>,
 }
+
+// struct ReadRequest = (
+//     String,
+//     DbrCategory,
+//     usize,
+//     oneshot::Sender<Result<Dbr, GetError>>,
+// );
 
 impl ClientInternal {
     async fn start(
@@ -757,6 +773,7 @@ impl ClientInternal {
             }
         };
         let (tx, rx) = mpsc::channel(32);
+        let (tx_i, mut rx_i) = mpsc::channel(32);
         let mut internal = ClientInternal {
             cancellation: cancel_token,
             subscriptions: Vec::new(),
@@ -765,6 +782,8 @@ impl ClientInternal {
             searcher,
             requests: rx,
             subtasks: Default::default(),
+            known_ioc: Default::default(),
+            internal_requests: tx_i,
         };
         if let Err(err) = internal.watch_broadcasts(beacon_port).await {
             warn!(
@@ -774,7 +793,16 @@ impl ClientInternal {
         }
 
         let _ = started.send(Ok(tx));
-        internal.do_client().await;
+        loop {
+            select! {
+                _ = internal.cancellation.cancelled() => break,
+                request = internal.requests.recv() => match request {
+                    Some(r) => internal.handle_request(r),
+                    None => break,
+                },
+                request = rx_i.recv() => internal.handle_internal_request(request.unwrap()),
+            }
+        }
     }
 
     async fn start_searcher(
@@ -833,20 +861,55 @@ impl ClientInternal {
         Ok(())
     }
 
-    /// Handle main client loop interactions
-    async fn do_client(mut self) {
-        loop {
-            select! {
-                _ = self.cancellation.cancelled() => break,
-                request = self.requests.recv() => match request {
-                    Some(r) => self.handle_request(r),
-                    None => break,
-                }
+    fn handle_request(&mut self, request: ClientRequest) {
+        match request {
+            ClientRequest::Get {
+                name,
+                kind,
+                length,
+                result,
+            } => {
+                let Some(addr) = self.known_ioc.get(&name) else {
+                    // We don't know this IOC, we have to search for it.
+                    let handle = self.searcher.search_for(name.to_string());
+                    self.subtasks.spawn(async move {
+                        let addr = handle.await;
+                    });
+                    return;
+                };
             }
+            ClientRequest::Put {
+                name,
+                value,
+                result,
+            } => todo!(),
+            ClientRequest::Subscribe {
+                name,
+                kind,
+                length,
+                monitor,
+                result,
+            } => todo!(),
         }
     }
-    fn handle_request(&mut self, request: ClientRequest) {
-        println!("Got request for client internal: {request:?}");
+    /// Handle internal operations messages
+    ///
+    /// We need this because we don't want to block, especially while
+    /// holding a mutable self-reference - in the main request handling
+    /// function.
+    fn handle_internal_request(&mut self, request: ClientInternalRequest) {}
+
+    // fn get_known_ioc(&self, pv_name: &str) -> Option<SocketAddr> {}
+    async fn find_ioc(&mut self, pv_name: &str) -> Result<SocketAddr, CouldNotFindError> {
+        let addr = if let Some(addr) = self.known_ioc.get(pv_name) {
+            *addr
+        } else {
+            // We need to search for this
+            let addr = self.searcher.search_for(pv_name).await?;
+            self.known_ioc.insert(pv_name.to_string(), addr);
+            addr
+        };
+        Ok(addr)
     }
 }
 
@@ -856,7 +919,15 @@ pub enum GetError {
     Closed,
     #[error("Could not convert data type to requested")]
     NoConvert,
+    #[error("Could not find a source IOC for this PV name")]
+    CouldNotFindIOC,
 }
+impl From<CouldNotFindError> for GetError {
+    fn from(_: CouldNotFindError) -> Self {
+        GetError::CouldNotFindIOC
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 enum PutError {}
 #[derive(thiserror::Error, Debug)]
