@@ -779,6 +779,7 @@ enum ClientInternalRequest {
     ReadAvailable(String, Result<Dbr, ClientError>),
 }
 
+#[derive(Debug)]
 enum CircuitState {
     Pending,
     Open(Circuit),
@@ -812,6 +813,7 @@ struct ClientInternal {
     read_requests: Vec<ReadRequest>,
 }
 
+#[derive(Debug)]
 struct ReadRequest {
     name: String,
     kind: DbrCategory,
@@ -938,6 +940,7 @@ impl ClientInternal {
                 length,
                 result,
             } => {
+                debug!("Got CA read request for {name}");
                 self.read_requests.push(ReadRequest {
                     name: name.clone(),
                     kind,
@@ -945,11 +948,13 @@ impl ClientInternal {
                     response: result,
                 });
                 if let Some(addr) = self.known_ioc.get(&name) {
+                    debug!("  Known IOC: {addr}");
                     // We already have it, send ourselves a message to proceed
                     let _ = self
                         .internal_requests
                         .send(ClientInternalRequest::DeterminedPV(name, Some(*addr)));
                 } else {
+                    debug!("  Unknown IOC, searching");
                     // We don't know this IOC, we have to search for it.
                     let handle = self.searcher.search_spawn(name.clone());
                     let req = self.internal_requests.clone();
@@ -981,8 +986,12 @@ impl ClientInternal {
     /// holding a mutable self-reference - in the main request handling
     /// function.
     fn handle_internal_request(&mut self, request: ClientInternalRequest) {
+        trace!("Handling internal request: {request:?}");
         match request {
             ClientInternalRequest::DeterminedPV(name, socket_addr) => {
+                debug!("Got notification of PV {name} determined: {socket_addr:?}");
+
+                trace!("Outstanding requests: {:?}", self.read_requests);
                 let Some(addr) = socket_addr else {
                     // Send responses to anyone waiting for this to say it couldn't be found
                     for req in self.read_requests.extract_if(.., |k| k.name == name) {
@@ -990,13 +999,24 @@ impl ClientInternal {
                     }
                     return;
                 };
+                debug!("Known circuits: {:?}", self.circuits);
+                self.known_ioc.insert(name, addr);
+
+                // Temporarily remove the circuit to avoid mutable borrow of self
+                let circuit = self.circuits.remove(&addr);
+
                 // Now we know what server a given PV is served by, check if we already have a connection
-                match self.circuits.get(&addr) {
+                match circuit {
                     Some(CircuitState::Open(circuit)) => {
                         // We already have this circuit open! Send any read requests to it
-                        todo!();
+                        self.send_outstanding_requests_for(&circuit);
+                        self.circuits.insert(addr, CircuitState::Open(circuit));
                     }
-                    Some(CircuitState::Pending) => (), // Nothing to do, this will open and handle requests when ready
+                    Some(CircuitState::Pending) => {
+                        // Nothing to do, this will open and handle requests when ready
+                        // So, put the circuit back.
+                        self.circuits.insert(addr, CircuitState::Pending);
+                    }
                     None => {
                         // We need to open this circuit
                         self.circuits.insert(addr, CircuitState::Pending);
@@ -1018,35 +1038,23 @@ impl ClientInternal {
             }
             ClientInternalRequest::OpenedCircuit(circuit) => {
                 debug!("Circuit to {} opened", circuit.address);
-                let address = circuit.address;
+                self.send_outstanding_requests_for(&circuit);
                 self.circuits
                     .insert(circuit.address, CircuitState::Open(circuit));
-                let Some(CircuitState::Open(circuit)) = self.circuits.get(&address) else {
-                    panic!();
-                };
-                // Go through all open read requests, then dispatch the request if for
-                // this circuit ... at the moment this is rather indirect but wary about
-                // introducing more state caches
-                for request in self.read_requests.iter().filter(|r| {
+            }
+            ClientInternalRequest::CircuitOpenFailed(socket_addr) => {
+                warn!("Circuit {socket_addr} open failed, failing reads");
+                for request in self.read_requests.extract_if(.., |r| {
                     self.known_ioc
                         .get(&r.name)
-                        .map(|addr| *addr == address)
+                        .map(|addr| *addr == socket_addr)
                         .is_some()
                 }) {
-                    let result =
-                        circuit.read_spawn(&request.name, request.kind, Some(request.length));
-                    let mq = self.internal_requests.clone();
-                    let name = request.name.clone();
-                    self.subtasks.spawn(async move {
-                        // request.response.send()
-                        if let Ok(response) = result.await {
-                            let _ = mq.send(ClientInternalRequest::ReadAvailable(name, response));
-                        }
-                    });
+                    let _ = request.response.send(Err(GetError::InternalClientError));
                 }
             }
-            ClientInternalRequest::CircuitOpenFailed(socket_addr) => todo!(),
             ClientInternalRequest::ReadAvailable(name, dbr) => {
+                debug!("Got read of {name} from circuit");
                 let dbr = dbr.map_err(|_| GetError::InternalClientError);
                 for request in self.read_requests.extract_if(.., |r| r.name == name) {
                     let _ = request.response.send(dbr.clone());
@@ -1055,6 +1063,27 @@ impl ClientInternal {
         }
     }
 
+    fn send_outstanding_requests_for(&mut self, circuit: &Circuit) {
+        // Go through all open read requests, then dispatch the request if for
+        // this circuit ... at the moment this is rather indirect but wary about
+        // introducing more state caches
+        for request in self.read_requests.iter().filter(|r| {
+            self.known_ioc
+                .get(&r.name)
+                .map(|addr| *addr == circuit.address)
+                .is_some()
+        }) {
+            let result = circuit.read_spawn(&request.name, request.kind, Some(request.length));
+            let mq = self.internal_requests.clone();
+            let name = request.name.clone();
+            self.subtasks.spawn(async move {
+                // request.response.send()
+                if let Ok(response) = result.await {
+                    let _ = mq.send(ClientInternalRequest::ReadAvailable(name, response));
+                }
+            });
+        }
+    }
     // async fn get_or_create_circuit(
     //     circuits: &mut HashMap<SocketAddr, Circuit>,
     //     addr: SocketAddr,
@@ -1185,6 +1214,7 @@ impl Client {
                 result_tx,
             )
             .await;
+            debug!("ClientInternal terminated");
         });
         // Wait for this to start
         let internal_tx = result_rx.await.unwrap()?;
