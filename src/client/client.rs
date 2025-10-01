@@ -61,6 +61,7 @@ enum CircuitRequest {
     Unsubscribe(u32),
 }
 
+#[derive(Debug)]
 struct Circuit {
     address: SocketAddr,
     cancel: CancellationToken,
@@ -164,7 +165,7 @@ impl Circuit {
     }
 
     /// Request a PV from the circuit
-    async fn read_pv(&self, name: &str) -> Result<Dbr, ClientError> {
+    async fn read_pv(&self, name: &str, kind: DbrCategory) -> Result<Dbr, ClientError> {
         let channel = self.get_channel(name.to_owned()).await?;
         debug!("Circuit read_pv got channel: {channel:?}");
         let (tx, rx) = oneshot::channel();
@@ -172,12 +173,70 @@ impl Circuit {
             .send(CircuitRequest::Read {
                 channel: channel.cid,
                 length: 0usize,
-                category: DbrCategory::Time,
+                category: kind,
                 reply: tx,
             })
             .await
             .map_err(|_| ClientError::ClientClosed)?;
         rx.await.map_err(|_| ClientError::ClientClosed)?
+    }
+    /// Do a Circuit read, by spawning a task and responding via channel
+    fn read_spawn(
+        &self,
+        name: &str,
+        kind: DbrCategory,
+        length: Option<usize>,
+    ) -> oneshot::Receiver<Result<Dbr, ClientError>> {
+        let (read_tx, read_rx) = oneshot::channel();
+        let name = name.to_string();
+        let requests_tx = self.requests_tx.clone();
+        // Note: Because spawning, we cannot do this whilst holding &self. So do it by
+        // communicating via completely cloneable channels.
+        tokio::spawn(async move {
+            // Get the channel first
+            let (tx, rx) = oneshot::channel();
+            // Send the GetChannel request, with a reply oneshot
+            if requests_tx
+                .send(CircuitRequest::GetChannel(name, tx))
+                .await
+                .is_err()
+            {
+                let _ = read_tx.send(Err(ClientError::ClientClosed));
+                return;
+            }
+            // Wait for a response on this oneshot
+            let Ok(channel_result) = rx.await else {
+                let _ = read_tx.send(Err(ClientError::ClientClosed));
+                return;
+            };
+            // Pull the result, or error, out of this oneshot
+            let channel = match channel_result {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = read_tx.send(Err(e));
+                    return;
+                }
+            };
+
+            // We have a channel! Request the read...
+            trace!("Circuit read_pv got channel: {channel:?}");
+            let (tx, rx) = oneshot::channel();
+            let _ = requests_tx
+                .send(CircuitRequest::Read {
+                    channel: channel.cid,
+                    length: length.unwrap_or(0usize),
+                    category: kind,
+                    reply: tx,
+                })
+                .await;
+            let Ok(res) = rx.await else {
+                let _ = read_tx.send(Err(ClientError::ClientClosed));
+                return;
+            };
+            trace!("Circuit read got result: {res:?}");
+            let _ = read_tx.send(res);
+        });
+        read_rx
     }
 
     async fn write_pv(&self, name: &str, value: impl Into<DbrValue>) -> Result<(), ClientError> {
@@ -713,9 +772,17 @@ struct SubscriptionInfo {
 /// Internal requests to manage state within the CircuitInternal
 #[derive(Debug)]
 enum ClientInternalRequest {
-    Null,
+    /// A search for a PV has concluded, either positively or negatively
+    DeterminedPV(String, Option<SocketAddr>),
+    OpenedCircuit(Circuit),
+    CircuitOpenFailed(SocketAddr),
+    ReadAvailable(String, Result<Dbr, ClientError>),
 }
 
+enum CircuitState {
+    Pending,
+    Open(Circuit),
+}
 /// Internal state for the Client async task
 ///
 /// Because we want to manage state outside of a direct user async call
@@ -728,7 +795,7 @@ struct ClientInternal {
     /// Record of all open subscriptions, for reconnection
     subscriptions: Vec<SubscriptionInfo>,
     /// Currently active connections
-    circuits: HashMap<SocketAddr, Circuit>,
+    circuits: HashMap<SocketAddr, CircuitState>,
     /// Known and trusted resolutions to specific PV requests
     known_ioc: HashMap<String, SocketAddr>,
     /// Servers we have seen broadcasting.
@@ -740,16 +807,17 @@ struct ClientInternal {
     searcher: Searcher,
     /// Requests coming from the Client user
     requests: mpsc::Receiver<ClientRequest>,
-    internal_requests: mpsc::Sender<ClientInternalRequest>,
+    internal_requests: mpsc::UnboundedSender<ClientInternalRequest>,
     subtasks: JoinSet<()>,
+    read_requests: Vec<ReadRequest>,
 }
 
-// struct ReadRequest = (
-//     String,
-//     DbrCategory,
-//     usize,
-//     oneshot::Sender<Result<Dbr, GetError>>,
-// );
+struct ReadRequest {
+    name: String,
+    kind: DbrCategory,
+    length: usize,
+    response: oneshot::Sender<Result<Dbr, GetError>>,
+}
 
 impl ClientInternal {
     async fn start(
@@ -773,7 +841,7 @@ impl ClientInternal {
             }
         };
         let (tx, rx) = mpsc::channel(32);
-        let (tx_i, mut rx_i) = mpsc::channel(32);
+        let (tx_i, mut rx_i) = mpsc::unbounded_channel();
         let mut internal = ClientInternal {
             cancellation: cancel_token,
             subscriptions: Vec::new(),
@@ -784,6 +852,7 @@ impl ClientInternal {
             subtasks: Default::default(),
             known_ioc: Default::default(),
             internal_requests: tx_i,
+            read_requests: Default::default(),
         };
         if let Err(err) = internal.watch_broadcasts(beacon_port).await {
             warn!(
@@ -869,26 +938,41 @@ impl ClientInternal {
                 length,
                 result,
             } => {
-                let Some(addr) = self.known_ioc.get(&name) else {
+                self.read_requests.push(ReadRequest {
+                    name: name.clone(),
+                    kind,
+                    length,
+                    response: result,
+                });
+                if let Some(addr) = self.known_ioc.get(&name) {
+                    // We already have it, send ourselves a message to proceed
+                    let _ = self
+                        .internal_requests
+                        .send(ClientInternalRequest::DeterminedPV(name, Some(*addr)));
+                } else {
                     // We don't know this IOC, we have to search for it.
-                    let handle = self.searcher.search_for(name.to_string());
+                    let handle = self.searcher.search_spawn(name.clone());
+                    let req = self.internal_requests.clone();
                     self.subtasks.spawn(async move {
-                        let addr = handle.await;
+                        let _ = req.send(ClientInternalRequest::DeterminedPV(
+                            name,
+                            handle.await.ok().flatten(),
+                        ));
                     });
                     return;
                 };
             }
             ClientRequest::Put {
-                name,
-                value,
-                result,
+                name: _,
+                value: _,
+                result: _,
             } => todo!(),
             ClientRequest::Subscribe {
-                name,
-                kind,
-                length,
-                monitor,
-                result,
+                name: _,
+                kind: _,
+                length: _,
+                monitor: _,
+                result: _,
             } => todo!(),
         }
     }
@@ -897,20 +981,113 @@ impl ClientInternal {
     /// We need this because we don't want to block, especially while
     /// holding a mutable self-reference - in the main request handling
     /// function.
-    fn handle_internal_request(&mut self, request: ClientInternalRequest) {}
+    fn handle_internal_request(&mut self, request: ClientInternalRequest) {
+        match request {
+            ClientInternalRequest::DeterminedPV(name, socket_addr) => {
+                let Some(addr) = socket_addr else {
+                    // Send responses to anyone waiting for this to say it couldn't be found
+                    for req in self.read_requests.extract_if(.., |k| k.name == name) {
+                        let _ = req.response.send(Err(GetError::CouldNotFindIOC));
+                    }
+                    return;
+                };
+                // Now we know what server a given PV is served by, check if we already have a connection
+                match self.circuits.get(&addr) {
+                    Some(CircuitState::Open(circuit)) => {
+                        // We already have this circuit open! Send any read requests to it
+                        todo!();
+                    }
+                    Some(CircuitState::Pending) => (), // Nothing to do, this will open and handle requests when ready
+                    None => {
+                        // We need to open this circuit
+                        self.circuits.insert(addr, CircuitState::Pending);
+                        let req = self.internal_requests.clone();
+                        self.subtasks.spawn(async move {
+                            match Circuit::connect(&addr, None, None).await {
+                                Ok(circuit) => {
+                                    let _ = req.send(ClientInternalRequest::OpenedCircuit(circuit));
+                                }
+                                Err(e) => {
+                                    warn!("Failed to connect to Circuit {addr}: {e}");
+                                    let _ =
+                                        req.send(ClientInternalRequest::CircuitOpenFailed(addr));
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+            ClientInternalRequest::OpenedCircuit(circuit) => {
+                debug!("Circuit to {} opened", circuit.address);
+                let address = circuit.address;
+                self.circuits
+                    .insert(circuit.address.clone(), CircuitState::Open(circuit));
+                let Some(CircuitState::Open(circuit)) = self.circuits.get(&address) else {
+                    panic!();
+                };
+                // Go through all open read requests, then dispatch the request if for
+                // this circuit ... at the moment this is rather indirect but wary about
+                // introducing more state caches
+                for request in self.read_requests.iter().filter(|r| {
+                    self.known_ioc
+                        .get(&r.name)
+                        .map(|addr| *addr == address)
+                        .is_some()
+                }) {
+                    let result =
+                        circuit.read_spawn(&request.name, request.kind, Some(request.length));
+                    let mq = self.internal_requests.clone();
+                    let name = request.name.clone();
+                    self.subtasks.spawn(async move {
+                        // request.response.send()
+                        if let Ok(response) = result.await {
+                            let _ = mq.send(ClientInternalRequest::ReadAvailable(name, response));
+                        }
+                    });
+                }
+            }
+            ClientInternalRequest::CircuitOpenFailed(socket_addr) => todo!(),
+            ClientInternalRequest::ReadAvailable(name, dbr) => {
+                let request: Vec<_> = self
+                    .read_requests
+                    .extract_if(.., |r| r.name == name)
+                    .take(1)
+                    .collect();
 
-    // fn get_known_ioc(&self, pv_name: &str) -> Option<SocketAddr> {}
-    async fn find_ioc(&mut self, pv_name: &str) -> Result<SocketAddr, CouldNotFindError> {
-        let addr = if let Some(addr) = self.known_ioc.get(pv_name) {
-            *addr
-        } else {
-            // We need to search for this
-            let addr = self.searcher.search_for(pv_name).await?;
-            self.known_ioc.insert(pv_name.to_string(), addr);
-            addr
-        };
-        Ok(addr)
+                let _ = request
+                    .first()
+                    .unwrap()
+                    .response
+                    .send(dbr.map_err(GetError::ClientError));
+            }
+        }
     }
+
+    // async fn get_or_create_circuit(
+    //     circuits: &mut HashMap<SocketAddr, Circuit>,
+    //     addr: SocketAddr,
+    // ) -> Result<&Circuit, ClientError> {
+    //     Ok(match circuits.entry(addr) {
+    //         Entry::Occupied(entry) => entry.into_mut(),
+    //         Entry::Vacant(entry) => {
+    //             let circuit = Circuit::connect(&addr, None, None).await?;
+    //             entry.insert(circuit)
+    //         }
+    //     })
+    // }
+
+    // // fn get_known_ioc(&self, pv_name: &str) -> Option<SocketAddr> {}
+    // async fn find_ioc(&mut self, pv_name: &str) -> Result<SocketAddr, CouldNotFindError> {
+    //     let addr = if let Some(addr) = self.known_ioc.get(pv_name) {
+    //         *addr
+    //     } else {
+    //         // We need to search for this
+    //         let addr = self.searcher.search_for(pv_name).await?;
+    //         self.known_ioc.insert(pv_name.to_string(), addr);
+    //         addr
+    //     };
+    //     Ok(addr)
+    // }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -921,6 +1098,8 @@ pub enum GetError {
     NoConvert,
     #[error("Could not find a source IOC for this PV name")]
     CouldNotFindIOC,
+    #[error("Internal client error: {0}")]
+    ClientError(#[from] ClientError),
 }
 impl From<CouldNotFindError> for GetError {
     fn from(_: CouldNotFindError) -> Self {

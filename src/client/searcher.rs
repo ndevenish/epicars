@@ -1,5 +1,4 @@
 use num::{FromPrimitive, traits::WrappingAdd};
-use socket2::Socket;
 use std::{
     cmp::min,
     collections::HashMap,
@@ -13,7 +12,7 @@ use tokio::{
     io,
     net::UdpSocket,
     select,
-    sync::{broadcast, mpsc, oneshot},
+    sync::{mpsc, oneshot},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
@@ -55,11 +54,11 @@ impl SearcherBuilder {
         SearcherBuilder::default()
     }
     pub async fn start(self) -> Result<Searcher, io::Error> {
-        let (send, request_recv) = mpsc::channel(32);
+        let (send, request_recv) = mpsc::unbounded_channel();
         let mut searcher = Searcher {
             timeout: self.timeout,
             pending_requests: send,
-            stop_token: CancellationToken::new(),
+            stop_token: self.stop_token,
             broadcast_addresses: self
                 .broadcast_addresses
                 .unwrap_or_else(|| get_target_broadcast_ips(get_default_server_port())),
@@ -95,10 +94,7 @@ impl SearcherBuilder {
 pub struct Searcher {
     timeout: Option<Duration>,
     /// Submit requests to search for new PVs
-    pending_requests: mpsc::Sender<(
-        String,
-        oneshot::Sender<broadcast::Receiver<Option<SocketAddr>>>,
-    )>,
+    pending_requests: mpsc::UnboundedSender<(String, oneshot::Sender<Option<SocketAddr>>)>,
     /// Interfaces to broadcast onto
     broadcast_addresses: Vec<SocketAddr>,
     stop_token: CancellationToken,
@@ -115,9 +111,9 @@ impl Searcher {
 
     async fn start_searching(
         &mut self,
-        mut incoming_requests: mpsc::Receiver<(
+        mut incoming_requests: mpsc::UnboundedReceiver<(
             String,
-            oneshot::Sender<broadcast::Receiver<Option<SocketAddr>>>,
+            oneshot::Sender<Option<SocketAddr>>,
         )>,
     ) -> Result<(), io::Error> {
         let send_socket = UdpSocket::bind(self.bind_address).await?;
@@ -163,29 +159,16 @@ impl Searcher {
     }
 
     /// Get the SocketAddr for the server serving a specific PV
-    pub async fn search_for(&self, name: String) -> Result<SocketAddr, CouldNotFindError> {
-        let (ret_send, ret_recv) = oneshot::channel::<broadcast::Receiver<Option<SocketAddr>>>();
-
-        // Send the request into our async search loop
-        self.pending_requests
-            .send((name, ret_send))
-            .await
-            .map_err(|_| CouldNotFindError)?;
-        // Get the receiver back from here
-        let mut result_receiver = ret_recv.await.map_err(|_| CouldNotFindError)?;
-        // Now, wait on this
-        result_receiver
-            .recv()
-            .await
-            .unwrap_or(None)
-            .ok_or(CouldNotFindError)
+    pub async fn search_for(&self, name: &str) -> Option<SocketAddr> {
+        let rec = self.search_spawn(name.to_string());
+        rec.await.ok().flatten()
     }
 
-    pub fn search_async(
-        &self,
-        name: String,
-        result: oneshot::Sender<Result<SocketAddr, CouldNotFindError>>,
-    ) {
+    pub fn search_spawn(&self, name: String) -> oneshot::Receiver<Option<SocketAddr>> {
+        let (ret_send, ret_recv) = oneshot::channel();
+        // Send the request into our async search loop
+        let _ = self.pending_requests.send((name.to_string(), ret_send));
+        ret_recv
     }
 
     pub fn stop(&self) {
@@ -221,7 +204,7 @@ struct SearchAttempt {
     active_searches: Vec<u32>,
     next_search_at: Instant,
     /// How are results reported back to the requesters?
-    reporter: broadcast::Sender<Option<SocketAddr>>,
+    requesters: Vec<oneshot::Sender<Option<SocketAddr>>>,
 }
 
 impl SearchAttempt {
@@ -245,7 +228,7 @@ impl Default for SearchAttempt {
             search_expires_at: None,
             active_searches: Vec::new(),
             next_search_at: Instant::now(),
-            reporter: broadcast::Sender::new(1),
+            requesters: Vec::new(),
         }
     }
 }
@@ -290,10 +273,7 @@ impl SearcherInternal {
     async fn handle_new_requests(
         &mut self,
         socket: &UdpSocket,
-        requests: Vec<(
-            String,
-            oneshot::Sender<broadcast::Receiver<Option<SocketAddr>>>,
-        )>,
+        requests: Vec<(String, oneshot::Sender<Option<SocketAddr>>)>,
     ) {
         // We have received messages on the buffer
         debug_assert!(!requests.is_empty());
@@ -310,7 +290,7 @@ impl SearcherInternal {
                     ..Default::default()
                 });
             // Give the requester a place to wait for replies
-            let _ = waiter_reply.send(info.reporter.subscribe());
+            info.requesters.push(waiter_reply);
             let search_id = wrapping_add(&mut self.search_id);
             // Register this search attempt
             self.in_flight.insert(search_id, name.clone());
@@ -352,7 +332,7 @@ impl SearcherInternal {
             };
             // Now we know we have a response to an actual request - clear out any past
             // requests for this and send the notification up to the caller
-            let info = self.per_pv_info.remove(&pv_name).unwrap();
+            let mut info = self.per_pv_info.remove(&pv_name).unwrap();
             // Get rid of any other in-flight searches for this
             for search_id in info.active_searches {
                 self.in_flight.remove(&search_id);
@@ -364,7 +344,9 @@ impl SearcherInternal {
                 .into();
             // Report this to all the listeners
             debug!("Found server for {pv_name}: {server_origin:?}");
-            let _ = info.reporter.send(Some(server_origin));
+            for requester in info.requesters.drain(..) {
+                let _ = requester.send(Some(server_origin));
+            }
         }
     }
 
@@ -377,7 +359,9 @@ impl SearcherInternal {
             Some(time) => {
                 if time < now {
                     // We are discarding this. Send the termination signal,
-                    let _ = v.reporter.send(None);
+                    for r in v.requesters.drain(..) {
+                        let _ = r.send(None);
+                    }
                     // And then remove from the in-flight register
                     for id in v.active_searches.iter() {
                         let _ = self.in_flight.remove(id);
