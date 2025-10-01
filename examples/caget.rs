@@ -37,4 +37,5 @@ async fn main() {
         let res: Result<DbrValue, _> = client.get(&name).await;
         println!("    Result: {res:?}");
     }
+    client.stop().await;
 }

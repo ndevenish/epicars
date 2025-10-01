@@ -805,7 +805,6 @@ impl ClientInternal {
         let stop = self.cancellation.clone();
         self.subtasks.spawn(async move {
             let mut buf: Vec<u8> = vec![0; 0xFFFF];
-
             loop {
                 select! {
                     _ = stop.cancelled() => break,
@@ -934,9 +933,10 @@ impl Client {
         // A way to get the "Launched OK" message back
         let (result_tx, result_rx) = oneshot::channel();
 
+        let internal_cancel = cancel.clone();
         let handle = tokio::spawn(async move {
             ClientInternal::start(
-                cancel.clone(),
+                internal_cancel,
                 search_port,
                 beacon_port,
                 broadcast_addresses,
@@ -948,7 +948,7 @@ impl Client {
         let internal_tx = result_rx.await.unwrap()?;
 
         Ok(Client {
-            cancellation: CancellationToken::new(),
+            cancellation: cancel,
             internal_requests: internal_tx,
             handle: Some(handle),
         })
@@ -1064,5 +1064,22 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         self.cancellation.cancel();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tracing::level_filters::LevelFilter;
+
+    use crate::Client;
+
+    #[tokio::test]
+    async fn test_stop() {
+        let t_ = tracing_subscriber::fmt()
+            .with_max_level(LevelFilter::DEBUG)
+            .try_init();
+
+        let mut client = Client::new().await.unwrap();
+        client.stop().await;
     }
 }
