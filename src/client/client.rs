@@ -3,7 +3,7 @@
 use core::panic;
 use std::{
     cmp::max,
-    collections::{HashMap, hash_map::Entry},
+    collections::HashMap,
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
@@ -13,7 +13,8 @@ use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, split},
     net::TcpStream,
     select,
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot, watch},
+    task::{JoinHandle, JoinSet},
 };
 use tokio_stream::StreamExt;
 use tokio_util::{codec::FramedRead, sync::CancellationToken};
@@ -697,23 +698,197 @@ impl CircuitInternal {
     }
 }
 
-pub struct Client {
-    /// Port to listen for server beacon messages
-    beacon_port: u16,
-    /// Multicast port on which to send searches
-    search_port: u16,
+/// Keep track of active subscriptions, so we can carry service over disconnects
+struct SubscriptionInfo {
+    /// The PV name this subscription is for
+    name: String,
+    /// The sender, so that we can hand it out to new circuits
+    sender: broadcast::Sender<Dbr>,
+    /// The watcher, so that we can hand it out to new circuits
+    watcher: watch::Sender<Dbr>,
+    /// The last known IOC that supplied this subscription
+    circuit: Option<SocketAddr>,
+}
+
+/// Internal state for the Client async task
+///
+/// Because we want to manage state outside of a direct user async call
+/// (e.g. managing reconnection), we need to have a separate task loop to
+/// communicate with.
+///
+/// Anything related to managing reconnections should go in here.
+struct ClientInternal {
+    cancellation: CancellationToken,
+    /// Record of all open subscriptions, for reconnection
+    subscriptions: Vec<SubscriptionInfo>,
+    /// Currently active connections
+    circuits: HashMap<SocketAddr, Circuit>,
     /// Servers we have seen broadcasting.
     /// This can be used to trigger e.g. re-searching on the appearance
     /// of a new beacon server or the case of one restarting (at which
     /// point the beacon ID resets).
     observed_beacons: Arc<Mutex<HashMap<SocketAddr, (u32, Instant)>>>,
-    /// Active name searches and how long ago we sent them
-    // name_searches: HashMap<u32, (String, Instant, oneshot::Sender<SocketAddr>)>,
-    /// Active connections to different servers
-    circuits: HashMap<SocketAddr, Circuit>,
-    /// The cancellation token
-    cancellation: CancellationToken,
+    /// The searcher object
     searcher: Searcher,
+    /// Requests coming from the Client user
+    requests: mpsc::Receiver<ClientRequest>,
+    subtasks: JoinSet<()>,
+}
+
+impl ClientInternal {
+    async fn start(
+        cancel_token: CancellationToken,
+        search_port: u16,
+        beacon_port: u16,
+        broadcast_addresses: Option<Vec<SocketAddr>>,
+        started: oneshot::Sender<Result<mpsc::Sender<ClientRequest>, io::Error>>,
+    ) {
+        let searcher = match Self::start_searcher(
+            search_port,
+            broadcast_addresses,
+            cancel_token.clone(),
+        )
+        .await
+        {
+            Ok(x) => x,
+            Err(e) => {
+                let _ = started.send(Err(e));
+                return;
+            }
+        };
+        let (tx, rx) = mpsc::channel(32);
+        let mut internal = ClientInternal {
+            cancellation: cancel_token,
+            subscriptions: Vec::new(),
+            circuits: HashMap::new(),
+            observed_beacons: Default::default(),
+            searcher,
+            requests: rx,
+            subtasks: Default::default(),
+        };
+        if let Err(err) = internal.watch_broadcasts(beacon_port).await {
+            warn!(
+                "Failed to create broadcast watcher on port {}, will run without: {err:?}",
+                beacon_port
+            );
+        }
+
+        let _ = started.send(Ok(tx));
+        internal.do_client().await;
+    }
+
+    async fn start_searcher(
+        search_port: u16,
+        broadcast_addresses: Option<Vec<SocketAddr>>,
+        cancel_token: CancellationToken,
+    ) -> Result<Searcher, io::Error> {
+        // let cancel = CancellationToken::new();
+        let builder = SearcherBuilder::new()
+            .search_port(search_port)
+            .stop_token(cancel_token);
+        let searcher = if let Some(addr) = broadcast_addresses {
+            builder.broadcast_to(addr)
+        } else {
+            builder
+        }
+        .start()
+        .await
+        .unwrap();
+        Ok(searcher)
+    }
+
+    /// Watch for broadcast beacons, and record their ID and timestamp into the client map
+    async fn watch_broadcasts(&mut self, port: u16) -> Result<(), io::Error> {
+        // Bind the socket first, so that we know early if it fails
+        let broadcast_socket = new_reusable_udp_socket(SocketAddr::new([0, 0, 0, 0].into(), port))?;
+        let beacon_map = self.observed_beacons.clone();
+        let stop = self.cancellation.clone();
+        self.subtasks.spawn(async move {
+            let mut buf: Vec<u8> = vec![0; 0xFFFF];
+
+            loop {
+                select! {
+                    _ = stop.cancelled() => break,
+                    r = broadcast_socket.recv_from(&mut buf) => match r {
+                    Ok((size, addr)) => {
+                        if let Ok((_, beacon)) = RsrvIsUp::parse(&buf[..size]) {
+                            trace!("Observed beacon: {beacon:?}");
+                            let send_ip =
+                                beacon.server_ip.map(IpAddr::V4).unwrap_or(addr.ip());
+                            let mut beacons = beacon_map.lock().unwrap();
+                            beacons.insert(
+                                (send_ip, beacon.server_port).into(),
+                                (beacon.beacon_id, Instant::now()),
+                            );
+                        }
+                    }
+                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                    Err(e) => {
+                        warn!("Got unresumable error whilst watching broadcasts: {e:?}");
+                        break;
+                    }
+                }
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Handle main client loop interactions
+    async fn do_client(self) {
+        loop {
+            select! {
+                _ = self.cancellation.cancelled() => break,
+            }
+        }
+    }
+}
+
+enum GetError {}
+enum PutError {}
+enum SubscribeError {}
+
+type SubscriptionObjects = (broadcast::Receiver<Dbr>, watch::Receiver<Dbr>);
+
+/// Requests to send to the client internal
+enum ClientRequest {
+    /// Get a PV value, once
+    Get {
+        name: String,
+        kind: DbrType,
+        length: usize,
+        result: oneshot::Sender<Result<Dbr, GetError>>,
+    },
+    /// Write a value to a PV, once
+    Put {
+        name: String,
+        value: DbrValue,
+        result: oneshot::Sender<Result<(), PutError>>,
+    },
+    /// Request a subscription
+    Subscribe {
+        name: String,
+        kind: DbrType,
+        length: usize,
+        monitor: u8,
+        result: oneshot::Sender<Result<SubscriptionObjects, SubscribeError>>,
+    },
+}
+pub struct Client {
+    // /// Port to listen for server beacon messages
+    // beacon_port: u16,
+    // /// Multicast port on which to send searches
+    // search_port: u16,
+    // /// Known IOC addresses associated with each PV... these may be open or not
+    // known_sources: HashMap<String, SocketAddr>,
+    // active_subscriptions :
+    /// The central cancellation token, to completely shut down the client
+    cancellation: CancellationToken,
+    /// The persistent interface to search for new PVs
+    // searcher: Searcher,
+    /// Communication with the internal processing loop
+    internal_requests: mpsc::Sender<ClientRequest>,
+    handle: JoinHandle<()>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -748,138 +923,89 @@ impl Client {
     ) -> Result<Client, io::Error> {
         let beacon_port = get_default_beacon_port();
         let cancel = CancellationToken::new();
-        let searcher_b = SearcherBuilder::new()
-            .search_port(search_port)
-            .stop_token(cancel.clone());
-        let searcher = if let Some(addr) = broadcast_addresses {
-            searcher_b.broadcast_to(addr)
-        } else {
-            searcher_b
-        }
-        .start()
-        .await
-        .unwrap();
+        // A way to get the "Launched OK" message back
+        let (result_tx, result_rx) = oneshot::channel();
 
-        let mut client = Client {
-            beacon_port,
-            search_port,
-            observed_beacons: Default::default(),
-            circuits: Default::default(),
+        let handle = tokio::spawn(async move {
+            ClientInternal::start(
+                cancel.clone(),
+                search_port,
+                beacon_port,
+                broadcast_addresses,
+                result_tx,
+            )
+            .await;
+        });
+        // Wait for this to start
+        let internal_tx = result_rx.await.unwrap()?;
+
+        Ok(Client {
             cancellation: CancellationToken::new(),
-            searcher,
-        };
-        client.start().await?;
-        Ok(client)
-    }
-
-    async fn start(&mut self) -> Result<(), io::Error> {
-        if let Err(err) = self.watch_broadcasts(self.cancellation.clone()).await {
-            warn!(
-                "Failed to create broadcast watcher on port {}, will run without: {err:?}",
-                self.beacon_port
-            );
-        }
-        Ok(())
-    }
-
-    async fn get_or_create_circuit(
-        circuits: &mut HashMap<SocketAddr, Circuit>,
-        addr: SocketAddr,
-    ) -> Result<&Circuit, ClientError> {
-        Ok(match circuits.entry(addr) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                let circuit = Circuit::connect(&addr, None, None).await?;
-                entry.insert(circuit)
-            }
+            internal_requests: internal_tx,
+            handle,
         })
     }
 
-    pub async fn read_pv(&mut self, name: &str) -> Result<DbrValue, ClientError> {
-        // First, find the server that holds this name
-        let ioc = self.searcher.search_for(name).await?;
-        let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
-        // let channel = circuit
-        circuit.read_pv(name).await.map(|d| d.take_value())
-    }
-    /// Subscribe to changes for a particular PV
-    ///
-    /// Returns the [broadcast::Receiver] for the PV, but also a token
-    /// that can be used to later cancel the subscription.
-    pub async fn subscribe(
-        &mut self,
-        name: &str,
-    ) -> Result<(broadcast::Receiver<Dbr>, SubscriptionToken), ClientError> {
-        let ioc = self.searcher.search_for(name).await?;
-        let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
-        let (receiver, ioid) = circuit.subscribe(name).await?;
-        // self.subscriptions.insert(name.to_string(), ioc);
-        Ok((receiver, SubscriptionToken { circuit: ioc, ioid }))
-    }
+    // async fn get_or_create_circuit(
+    //     circuits: &mut HashMap<SocketAddr, Circuit>,
+    //     addr: SocketAddr,
+    // ) -> Result<&Circuit, ClientError> {
+    //     Ok(match circuits.entry(addr) {
+    //         Entry::Occupied(entry) => entry.into_mut(),
+    //         Entry::Vacant(entry) => {
+    //             let circuit = Circuit::connect(&addr, None, None).await?;
+    //             entry.insert(circuit)
+    //         }
+    //     })
+    // }
 
-    pub async fn write_pv(
-        &mut self,
-        name: &str,
-        value: impl Into<DbrValue>,
-    ) -> Result<(), ClientError> {
-        let ioc = self.searcher.search_for(name).await?;
-        let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
-        circuit.write_pv(name, value.into()).await
-    }
+    // pub async fn read_pv(&mut self, name: &str) -> Result<DbrValue, ClientError> {
+    //     // First, find the server that holds this name
+    //     let ioc = self.searcher.search_for(name).await?;
+    //     let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
+    //     // let channel = circuit
+    //     circuit.read_pv(name).await.map(|d| d.take_value())
+    // }
+    // /// Subscribe to changes for a particular PV
+    // ///
+    // /// Returns the [broadcast::Receiver] for the PV, but also a token
+    // /// that can be used to later cancel the subscription.
+    // pub async fn subscribe(
+    //     &mut self,
+    //     name: &str,
+    // ) -> Result<(broadcast::Receiver<Dbr>, SubscriptionToken), ClientError> {
+    //     let ioc = self.searcher.search_for(name).await?;
+    //     let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
+    //     let (receiver, ioid) = circuit.subscribe(name).await?;
+    //     // self.subscriptions.insert(name.to_string(), ioc);
+    //     Ok((receiver, SubscriptionToken { circuit: ioc, ioid }))
+    // }
 
-    /// Stop receiving messages for a specific PV
-    ///
-    /// > [!NOTE]
-    /// > It is still possible to get updated messages returned after
-    /// > calling this function, because there may have been messages
-    /// > in-flight before the termination request gets through.
-    pub async fn unsubscribe(&mut self, subscription: SubscriptionToken) {
-        // let Some(ioc) = self.subscriptions.remove(name) else {
-        //     return;
-        // };
-        let Some(circuit) = self.circuits.get(&subscription.circuit) else {
-            return;
-        };
-        circuit.unsubscribe(subscription.ioid).await;
-    }
+    // pub async fn write_pv(
+    //     &mut self,
+    //     name: &str,
+    //     value: impl Into<DbrValue>,
+    // ) -> Result<(), ClientError> {
+    //     let ioc = self.searcher.search_for(name).await?;
+    //     let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
+    //     circuit.write_pv(name, value.into()).await
+    // }
 
-    /// Watch for broadcast beacons, and record their ID and timestamp into the client map
-    async fn watch_broadcasts(&self, stop: CancellationToken) -> Result<(), io::Error> {
-        let port = self.beacon_port;
-        let beacon_map = self.observed_beacons.clone();
-        // Bind the socket first, so that we know early if it fails
-        let broadcast_socket = new_reusable_udp_socket(SocketAddr::new([0, 0, 0, 0].into(), port))?;
-
-        tokio::spawn(async move {
-            let mut buf: Vec<u8> = vec![0; 0xFFFF];
-
-            loop {
-                select! {
-                    _ = stop.cancelled() => break,
-                    r = broadcast_socket.recv_from(&mut buf) => match r {
-                    Ok((size, addr)) => {
-                        if let Ok((_, beacon)) = RsrvIsUp::parse(&buf[..size]) {
-                            trace!("Observed beacon: {beacon:?}");
-                            let send_ip =
-                                beacon.server_ip.map(IpAddr::V4).unwrap_or(addr.ip());
-                            let mut beacons = beacon_map.lock().unwrap();
-                            beacons.insert(
-                                (send_ip, beacon.server_port).into(),
-                                (beacon.beacon_id, Instant::now()),
-                            );
-                        }
-                    }
-                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                    Err(e) => {
-                        warn!("Got unresumable error whilst watching broadcasts: {e:?}");
-                        break;
-                    }
-                }
-                }
-            }
-        });
-        Ok(())
-    }
+    // /// Stop receiving messages for a specific PV
+    // ///
+    // /// > [!NOTE]
+    // /// > It is still possible to get updated messages returned after
+    // /// > calling this function, because there may have been messages
+    // /// > in-flight before the termination request gets through.
+    // pub async fn unsubscribe(&mut self, subscription: SubscriptionToken) {
+    //     // let Some(ioc) = self.subscriptions.remove(name) else {
+    //     //     return;
+    //     // };
+    //     let Some(circuit) = self.circuits.get(&subscription.circuit) else {
+    //         return;
+    //     };
+    //     circuit.unsubscribe(subscription.ioid).await;
+    // }
 }
 
 impl Drop for Client {
