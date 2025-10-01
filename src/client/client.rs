@@ -906,24 +906,24 @@ impl ClientInternal {
                 select! {
                     _ = stop.cancelled() => break,
                     r = broadcast_socket.recv_from(&mut buf) => match r {
-                    Ok((size, addr)) => {
-                        if let Ok((_, beacon)) = RsrvIsUp::parse(&buf[..size]) {
-                            trace!("Observed beacon: {beacon:?}");
-                            let send_ip =
-                                beacon.server_ip.map(IpAddr::V4).unwrap_or(addr.ip());
-                            let mut beacons = beacon_map.lock().unwrap();
-                            beacons.insert(
-                                (send_ip, beacon.server_port).into(),
-                                (beacon.beacon_id, Instant::now()),
-                            );
+                        Ok((size, addr)) => {
+                            if let Ok((_, beacon)) = RsrvIsUp::parse(&buf[..size]) {
+                                trace!("Observed beacon: {beacon:?}");
+                                let send_ip =
+                                    beacon.server_ip.map(IpAddr::V4).unwrap_or(addr.ip());
+                                let mut beacons = beacon_map.lock().unwrap();
+                                beacons.insert(
+                                    (send_ip, beacon.server_port).into(),
+                                    (beacon.beacon_id, Instant::now()),
+                                );
+                            }
+                        }
+                        Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                        Err(e) => {
+                            warn!("Got unresumable error whilst watching broadcasts: {e:?}");
+                            break;
                         }
                     }
-                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                    Err(e) => {
-                        warn!("Got unresumable error whilst watching broadcasts: {e:?}");
-                        break;
-                    }
-                }
                 }
             }
         });
@@ -959,7 +959,6 @@ impl ClientInternal {
                             handle.await.ok().flatten(),
                         ));
                     });
-                    return;
                 };
             }
             ClientRequest::Put {
@@ -1021,7 +1020,7 @@ impl ClientInternal {
                 debug!("Circuit to {} opened", circuit.address);
                 let address = circuit.address;
                 self.circuits
-                    .insert(circuit.address.clone(), CircuitState::Open(circuit));
+                    .insert(circuit.address, CircuitState::Open(circuit));
                 let Some(CircuitState::Open(circuit)) = self.circuits.get(&address) else {
                     panic!();
                 };
@@ -1048,17 +1047,10 @@ impl ClientInternal {
             }
             ClientInternalRequest::CircuitOpenFailed(socket_addr) => todo!(),
             ClientInternalRequest::ReadAvailable(name, dbr) => {
-                let request: Vec<_> = self
-                    .read_requests
-                    .extract_if(.., |r| r.name == name)
-                    .take(1)
-                    .collect();
-
-                let _ = request
-                    .first()
-                    .unwrap()
-                    .response
-                    .send(dbr.map_err(GetError::ClientError));
+                let dbr = dbr.map_err(|_| GetError::InternalClientError);
+                for request in self.read_requests.extract_if(.., |r| r.name == name) {
+                    let _ = request.response.send(dbr.clone());
+                }
             }
         }
     }
@@ -1090,7 +1082,7 @@ impl ClientInternal {
     // }
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum GetError {
     #[error("The internal client has closed")]
     Closed,
@@ -1098,8 +1090,8 @@ pub enum GetError {
     NoConvert,
     #[error("Could not find a source IOC for this PV name")]
     CouldNotFindIOC,
-    #[error("Internal client error: {0}")]
-    ClientError(#[from] ClientError),
+    #[error("Internal client error")]
+    InternalClientError,
 }
 impl From<CouldNotFindError> for GetError {
     fn from(_: CouldNotFindError) -> Self {
