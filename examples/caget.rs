@@ -1,5 +1,5 @@
 use clap::Parser;
-use epicars::client::Client;
+use epicars::{client::Client, dbr::DbrValue};
 
 use tracing::level_filters::LevelFilter;
 
@@ -34,7 +34,7 @@ async fn main() {
     let mut client = Client::new().await.unwrap();
     for name in opts.names {
         println!("Fetching {name}");
-        let res = client.read_pv(&name).await;
+        let res: Result<DbrValue, _> = client.get(&name).await;
         println!("    Result: {res:?}");
     }
 }

@@ -835,27 +835,43 @@ impl ClientInternal {
     }
 
     /// Handle main client loop interactions
-    async fn do_client(self) {
+    async fn do_client(mut self) {
         loop {
             select! {
                 _ = self.cancellation.cancelled() => break,
+                request = self.requests.recv() => match request {
+                    Some(r) => self.handle_request(r),
+                    None => break,
+                }
             }
         }
     }
+    fn handle_request(&mut self, request: ClientRequest) {
+        println!("Got request for client internal: {request:?}");
+    }
 }
 
-enum GetError {}
+#[derive(thiserror::Error, Debug)]
+pub enum GetError {
+    #[error("The internal client has closed")]
+    Closed,
+    #[error("Could not convert data type to requested")]
+    NoConvert,
+}
+#[derive(thiserror::Error, Debug)]
 enum PutError {}
+#[derive(thiserror::Error, Debug)]
 enum SubscribeError {}
 
 type SubscriptionObjects = (broadcast::Receiver<Dbr>, watch::Receiver<Dbr>);
 
 /// Requests to send to the client internal
+#[derive(Debug)]
 enum ClientRequest {
     /// Get a PV value, once
     Get {
         name: String,
-        kind: DbrType,
+        kind: DbrCategory,
         length: usize,
         result: oneshot::Sender<Result<Dbr, GetError>>,
     },
@@ -875,20 +891,12 @@ enum ClientRequest {
     },
 }
 pub struct Client {
-    // /// Port to listen for server beacon messages
-    // beacon_port: u16,
-    // /// Multicast port on which to send searches
-    // search_port: u16,
-    // /// Known IOC addresses associated with each PV... these may be open or not
-    // known_sources: HashMap<String, SocketAddr>,
-    // active_subscriptions :
     /// The central cancellation token, to completely shut down the client
     cancellation: CancellationToken,
-    /// The persistent interface to search for new PVs
-    // searcher: Searcher,
     /// Communication with the internal processing loop
     internal_requests: mpsc::Sender<ClientRequest>,
-    handle: JoinHandle<()>,
+    /// Handle to know when the internal loop has finished
+    handle: Option<JoinHandle<()>>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -942,8 +950,53 @@ impl Client {
         Ok(Client {
             cancellation: CancellationToken::new(),
             internal_requests: internal_tx,
-            handle,
+            handle: Some(handle),
         })
+    }
+
+    /// Cleanly shut down
+    pub async fn stop(&mut self) {
+        self.cancellation.cancel();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.await;
+        }
+    }
+
+    /// Read a PV directly from name into a specific data type
+    pub async fn get<T>(&self, name: &str) -> Result<T, GetError>
+    where
+        T: TryFrom<DbrValue>,
+    {
+        let result = self.get_kind(name, DbrCategory::Basic).await?;
+        let Ok(v) = T::try_from(result.take_value()) else {
+            return Err(GetError::NoConvert);
+        };
+        Ok(v)
+    }
+
+    /// Read a named PV, with a specific metadata payload
+    pub async fn get_kind(&self, name: &str, kind: DbrCategory) -> Result<Dbr, GetError> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .internal_requests
+            .send(ClientRequest::Get {
+                name: name.to_string(),
+                kind,
+                length: 0,
+                result: tx,
+            })
+            .await
+            .is_err()
+        {
+            // The other end of the oneshot was closed
+            return Err(GetError::Closed);
+        }
+        // Wait for some response
+        let Ok(result) = rx.await else {
+            // The other end of the oneshot was closed
+            return Err(GetError::Closed);
+        };
+        result
     }
 
     // async fn get_or_create_circuit(
