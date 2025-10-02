@@ -195,24 +195,7 @@ impl Circuit {
         // Note: Because spawning, we cannot do this whilst holding &self. So do it by
         // communicating via completely cloneable channels.
         tokio::spawn(async move {
-            // Get the channel first
-            let (tx, rx) = oneshot::channel();
-            // Send the GetChannel request, with a reply oneshot
-            if requests_tx
-                .send(CircuitRequest::GetChannel(name, tx))
-                .await
-                .is_err()
-            {
-                let _ = read_tx.send(Err(ClientError::ClientClosed));
-                return;
-            }
-            // Wait for a response on this oneshot
-            let Ok(channel_result) = rx.await else {
-                let _ = read_tx.send(Err(ClientError::ClientClosed));
-                return;
-            };
-            // Pull the result, or error, out of this oneshot
-            let channel = match channel_result {
+            let channel = match Self::get_channel_from(&requests_tx, &name).await {
                 Ok(c) => c,
                 Err(e) => {
                     let _ = read_tx.send(Err(e));
@@ -258,6 +241,66 @@ impl Circuit {
             .await
             .map_err(|_| ClientError::ClientClosed)?;
         rx.await.unwrap_or(Err(ClientError::ChannelClosed))
+    }
+
+    /// Async-handle fetching a channel, given only a handle to the circuit request queue
+    ///
+    /// This means that we can run channel-request flows without holding a mutable handle
+    /// to self.
+    async fn get_channel_from(
+        requests: &mpsc::Sender<CircuitRequest>,
+        name: &str,
+    ) -> Result<ChannelInfo, ClientError> {
+        // Get the channel first
+        let (tx, rx) = oneshot::channel();
+        // Send the GetChannel request, with a reply oneshot
+        requests
+            .send(CircuitRequest::GetChannel(name.to_string(), tx))
+            .await
+            .map_err(|_| ClientError::ClientClosed)?;
+
+        // Wait for a response on this oneshot
+        rx.await.map_err(|_| ClientError::ClientClosed)?
+    }
+
+    fn write_spawn(
+        &self,
+        name: &str,
+        value: DbrValue,
+    ) -> oneshot::Receiver<Result<(), ClientError>> {
+        let (write_tx, write_rx) = oneshot::channel();
+        let name = name.to_string();
+        let requests_tx = self.requests_tx.clone();
+        // Note: Because spawning, we cannot do this whilst holding &self. So do it by
+        // communicating via completely cloneable channels.
+        tokio::spawn(async move {
+            let channel = match Self::get_channel_from(&requests_tx, &name).await {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = write_tx.send(Err(e));
+                    return;
+                }
+            };
+
+            // We have a channel! Request the write...
+            trace!("Circuit write_pv got channel: {channel:?}");
+            let (tx, rx) = oneshot::channel();
+            let _ = requests_tx
+                .send(CircuitRequest::Write {
+                    channel: channel.cid,
+                    reply: tx,
+                    value,
+                    notify: true,
+                })
+                .await;
+            let Ok(res) = rx.await else {
+                let _ = write_tx.send(Err(ClientError::ClientClosed));
+                return;
+            };
+            trace!("Circuit write got result: {res:?}");
+            let _ = write_tx.send(res);
+        });
+        write_rx
     }
 
     async fn subscribe(&self, name: &str) -> Result<(broadcast::Receiver<Dbr>, u32), ClientError> {
@@ -780,7 +823,9 @@ enum ClientInternalRequest {
     DeterminedPV(String, Option<SocketAddr>),
     OpenedCircuit(Circuit),
     CircuitOpenFailed(SocketAddr),
-    ReadAvailable(String, Result<Dbr, ClientError>),
+    ReadAvailable(Ioid, Result<Dbr, ClientError>),
+    /// A write was completed, along with the result
+    WriteComplete(Ioid, Result<(), ClientError>),
 }
 
 #[derive(Debug)]
@@ -815,14 +860,26 @@ struct ClientInternal {
     internal_requests: mpsc::UnboundedSender<ClientInternalRequest>,
     subtasks: JoinSet<()>,
     read_requests: Vec<ReadRequest>,
+    pending_writes: Vec<WriteRequest>,
+    next_internal_id: Ioid,
 }
-
 #[derive(Debug)]
 struct ReadRequest {
     name: String,
     kind: DbrCategory,
     length: usize,
     response: oneshot::Sender<Result<Dbr, GetError>>,
+    ioc: Option<SocketAddr>,
+    ioid: Option<Ioid>,
+}
+
+#[derive(Debug)]
+struct WriteRequest {
+    name: String,
+    value: DbrValue,
+    response: oneshot::Sender<Result<(), PutError>>,
+    ioc: Option<SocketAddr>,
+    ioid: Option<Ioid>,
 }
 
 impl ClientInternal {
@@ -859,6 +916,8 @@ impl ClientInternal {
             known_ioc: Default::default(),
             internal_requests: tx_i,
             read_requests: Default::default(),
+            pending_writes: Default::default(),
+            next_internal_id: 0,
         };
         if let Err(err) = internal.watch_broadcasts(beacon_port).await {
             warn!(
@@ -945,36 +1004,31 @@ impl ClientInternal {
                 result,
             } => {
                 debug!("Got CA read request for {name}");
+                let ioc = self.handle_ioc_search_spawn(&name);
                 self.read_requests.push(ReadRequest {
                     name: name.clone(),
                     kind,
                     length,
                     response: result,
+                    ioc,
+                    ioid: None,
                 });
-                if let Some(addr) = self.known_ioc.get(&name) {
-                    debug!("  Known IOC: {addr}");
-                    // We already have it, send ourselves a message to proceed
-                    let _ = self
-                        .internal_requests
-                        .send(ClientInternalRequest::DeterminedPV(name, Some(*addr)));
-                } else {
-                    debug!("  Unknown IOC, searching");
-                    // We don't know this IOC, we have to search for it.
-                    let handle = self.searcher.search_spawn(name.clone());
-                    let req = self.internal_requests.clone();
-                    self.subtasks.spawn(async move {
-                        let _ = req.send(ClientInternalRequest::DeterminedPV(
-                            name,
-                            handle.await.ok().flatten(),
-                        ));
-                    });
-                };
             }
             ClientRequest::Put {
-                name: _,
-                value: _,
-                result: _,
-            } => todo!(),
+                name,
+                value,
+                result,
+            } => {
+                debug!("Got CA write request for {name}");
+                let ioc = self.handle_ioc_search_spawn(&name);
+                self.pending_writes.push(WriteRequest {
+                    name,
+                    value,
+                    response: result,
+                    ioc,
+                    ioid: None,
+                });
+            }
             ClientRequest::Subscribe {
                 name: _,
                 kind: _,
@@ -984,6 +1038,42 @@ impl ClientInternal {
             } => todo!(),
         }
     }
+
+    /// Do logic for searching for IOC
+    ///
+    /// If necessary, this will spawn a new search task, and then when an IOC has been
+    /// searched for (with success or failure), post a message back to our internal
+    /// event loop with the results.
+    ///
+    /// If the IOC is already known, then it is returned (although the internal
+    /// message saying that it is available is also posted).
+    fn handle_ioc_search_spawn(&mut self, name: &str) -> Option<SocketAddr> {
+        if let Some(addr) = self.known_ioc.get(name) {
+            debug!("  Known IOC: {addr}");
+            // We already have it, send ourselves a message to proceed
+            let _ = self
+                .internal_requests
+                .send(ClientInternalRequest::DeterminedPV(
+                    name.to_string(),
+                    Some(*addr),
+                ));
+            Some(*addr)
+        } else {
+            debug!("Doing IOC search for unrecognised PV: {name}");
+            // We don't know this IOC, we have to search for it.
+            let handle = self.searcher.search_spawn(name.to_string());
+            let req = self.internal_requests.clone();
+            let name = name.to_string();
+            self.subtasks.spawn(async move {
+                let _ = req.send(ClientInternalRequest::DeterminedPV(
+                    name,
+                    handle.await.ok().flatten(),
+                ));
+            });
+            None
+        }
+    }
+
     /// Handle internal operations messages
     ///
     /// We need this because we don't want to block, especially while
@@ -995,15 +1085,16 @@ impl ClientInternal {
             ClientInternalRequest::DeterminedPV(name, socket_addr) => {
                 debug!("Got notification of PV {name} determined: {socket_addr:?}");
 
-                trace!("Outstanding requests: {:?}", self.read_requests);
                 let Some(addr) = socket_addr else {
                     // Send responses to anyone waiting for this to say it couldn't be found
                     for req in self.read_requests.extract_if(.., |k| k.name == name) {
                         let _ = req.response.send(Err(GetError::CouldNotFindIOC));
                     }
+                    for req in self.pending_writes.extract_if(.., |k| k.name == name) {
+                        let _ = req.response.send(Err(PutError::CouldNotFindIOC));
+                    }
                     return;
                 };
-                debug!("Known circuits: {:?}", self.circuits);
                 self.known_ioc.insert(name, addr);
 
                 // Temporarily remove the circuit to avoid mutable borrow of self
@@ -1057,33 +1148,50 @@ impl ClientInternal {
                     let _ = request.response.send(Err(GetError::InternalClientError));
                 }
             }
-            ClientInternalRequest::ReadAvailable(name, dbr) => {
-                debug!("Got read of {name} from circuit");
-                let dbr = dbr.map_err(|_| GetError::InternalClientError);
-                for request in self.read_requests.extract_if(.., |r| r.name == name) {
-                    let _ = request.response.send(dbr.clone());
+            ClientInternalRequest::ReadAvailable(ioid, result) => {
+                trace!("Got read {ioid} from circuit");
+                let dbr = result.map_err(|_| GetError::InternalClientError);
+                if let Some(index) = self.read_requests.iter().position(|r| r.ioid == Some(ioid)) {
+                    let _ = self.read_requests.swap_remove(index).response.send(dbr);
                 }
             }
+            ClientInternalRequest::WriteComplete(ioid, result) => {}
         }
     }
 
     fn send_outstanding_requests_for(&mut self, circuit: &Circuit) {
-        // Go through all open read requests, then dispatch the request if for
-        // this circuit ... at the moment this is rather indirect but wary about
-        // introducing more state caches
-        for request in self.read_requests.iter().filter(|r| {
-            self.known_ioc
-                .get(&r.name)
-                .map(|addr| *addr == circuit.address)
-                .is_some()
-        }) {
+        let mut internal_ioid = self.next_internal_id;
+        // Go through all open read requests
+        for request in self
+            .read_requests
+            .iter_mut()
+            .filter(|r| r.ioc == Some(circuit.address))
+        {
+            let ioid = wrapping_inplace_add(&mut internal_ioid);
+            request.ioid = Some(ioid);
             let result = circuit.read_spawn(&request.name, request.kind, Some(request.length));
             let mq = self.internal_requests.clone();
-            let name = request.name.clone();
             self.subtasks.spawn(async move {
                 // request.response.send()
                 if let Ok(response) = result.await {
-                    let _ = mq.send(ClientInternalRequest::ReadAvailable(name, response));
+                    let _ = mq.send(ClientInternalRequest::ReadAvailable(ioid, response));
+                }
+            });
+        }
+        // Go through all open write requests
+        for request in self
+            .pending_writes
+            .iter_mut()
+            .filter(|r| r.ioc == Some(circuit.address))
+        {
+            let result = circuit.write_spawn(&request.name, request.value.clone());
+            let ioid = wrapping_inplace_add(&mut internal_ioid);
+            request.ioid = Some(ioid);
+            let mq = self.internal_requests.clone();
+            self.subtasks.spawn(async move {
+                // request.response.send()
+                if let Ok(response) = result.await {
+                    let _ = mq.send(ClientInternalRequest::WriteComplete(ioid, response));
                 }
             });
         }
@@ -1113,6 +1221,13 @@ impl ClientInternal {
     //     };
     //     Ok(addr)
     // }
+
+    /// Get an internal IOID for matching responses
+    fn get_next_id(&mut self) -> Ioid {
+        let id = self.next_internal_id;
+        self.next_internal_id = self.next_internal_id.wrapping_add(1);
+        id
+    }
 }
 
 #[derive(thiserror::Error, Debug, Clone)]
@@ -1136,6 +1251,8 @@ impl From<CouldNotFindError> for GetError {
 pub enum PutError {
     #[error("The internal client has closed")]
     Closed,
+    #[error("Could not find a source IOC for this PV name")]
+    CouldNotFindIOC,
 }
 
 #[derive(thiserror::Error, Debug)]
