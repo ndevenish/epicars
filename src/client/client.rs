@@ -1133,7 +1133,11 @@ impl From<CouldNotFindError> for GetError {
 }
 
 #[derive(thiserror::Error, Debug)]
-enum PutError {}
+pub enum PutError {
+    #[error("The internal client has closed")]
+    Closed,
+}
+
 #[derive(thiserror::Error, Debug)]
 enum SubscribeError {}
 
@@ -1253,8 +1257,7 @@ impl Client {
     /// Read a named PV, with a specific metadata payload
     pub async fn get_kind(&self, name: &str, kind: DbrCategory) -> Result<Dbr, GetError> {
         let (tx, rx) = oneshot::channel();
-        if self
-            .internal_requests
+        self.internal_requests
             .send(ClientRequest::Get {
                 name: name.to_string(),
                 kind,
@@ -1262,11 +1265,8 @@ impl Client {
                 result: tx,
             })
             .await
-            .is_err()
-        {
-            // The other end of the oneshot was closed
-            return Err(GetError::Closed);
-        }
+            .map_err(|_| GetError::Closed)?;
+
         // Wait for some response
         let Ok(result) = rx.await else {
             // The other end of the oneshot was closed
@@ -1275,50 +1275,18 @@ impl Client {
         result
     }
 
-    // async fn get_or_create_circuit(
-    //     circuits: &mut HashMap<SocketAddr, Circuit>,
-    //     addr: SocketAddr,
-    // ) -> Result<&Circuit, ClientError> {
-    //     Ok(match circuits.entry(addr) {
-    //         Entry::Occupied(entry) => entry.into_mut(),
-    //         Entry::Vacant(entry) => {
-    //             let circuit = Circuit::connect(&addr, None, None).await?;
-    //             entry.insert(circuit)
-    //         }
-    //     })
-    // }
-
-    // pub async fn read_pv(&mut self, name: &str) -> Result<DbrValue, ClientError> {
-    //     // First, find the server that holds this name
-    //     let ioc = self.searcher.search_for(name).await?;
-    //     let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
-    //     // let channel = circuit
-    //     circuit.read_pv(name).await.map(|d| d.take_value())
-    // }
-    // /// Subscribe to changes for a particular PV
-    // ///
-    // /// Returns the [broadcast::Receiver] for the PV, but also a token
-    // /// that can be used to later cancel the subscription.
-    // pub async fn subscribe(
-    //     &mut self,
-    //     name: &str,
-    // ) -> Result<(broadcast::Receiver<Dbr>, SubscriptionToken), ClientError> {
-    //     let ioc = self.searcher.search_for(name).await?;
-    //     let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
-    //     let (receiver, ioid) = circuit.subscribe(name).await?;
-    //     // self.subscriptions.insert(name.to_string(), ioc);
-    //     Ok((receiver, SubscriptionToken { circuit: ioc, ioid }))
-    // }
-
-    // pub async fn write_pv(
-    //     &mut self,
-    //     name: &str,
-    //     value: impl Into<DbrValue>,
-    // ) -> Result<(), ClientError> {
-    //     let ioc = self.searcher.search_for(name).await?;
-    //     let circuit = Self::get_or_create_circuit(&mut self.circuits, ioc).await?;
-    //     circuit.write_pv(name, value.into()).await
-    // }
+    pub async fn put(&self, name: &str, value: impl Into<DbrValue>) -> Result<(), PutError> {
+        let (tx, rx) = oneshot::channel();
+        self.internal_requests
+            .send(ClientRequest::Put {
+                name: name.to_string(),
+                value: value.into(),
+                result: tx,
+            })
+            .await
+            .map_err(|_| PutError::Closed)?;
+        rx.await.unwrap_or(Err(PutError::Closed))
+    }
 
     // /// Stop receiving messages for a specific PV
     // ///
