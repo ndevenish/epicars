@@ -43,6 +43,7 @@ enum CircuitRequest {
         channel: u32,
         length: usize,
         category: DbrCategory,
+        basic_type: Option<DbrBasicType>,
         reply: oneshot::Sender<Result<Dbr, ClientError>>,
     },
     Write {
@@ -175,6 +176,7 @@ impl Circuit {
                 length: 0usize,
                 category: kind,
                 reply: tx,
+                basic_type: None,
             })
             .await
             .map_err(|_| ClientError::ClientClosed)?;
@@ -227,6 +229,7 @@ impl Circuit {
                     length: length.unwrap_or(0usize),
                     category: kind,
                     reply: tx,
+                    basic_type: None,
                 })
                 .await;
             let Ok(res) = rx.await else {
@@ -474,6 +477,7 @@ impl CircuitInternal {
                 length,
                 category,
                 reply,
+                basic_type,
             } => {
                 let Some(channel) = self.channels.get_mut(&cid) else {
                     let _ = reply.send(Err(ClientError::ChannelClosed));
@@ -490,7 +494,7 @@ impl CircuitInternal {
                 vec![
                     messages::ReadNotify {
                         data_type: DbrType {
-                            basic_type: channel.native_type.unwrap(),
+                            basic_type: basic_type.unwrap_or(channel.native_type.unwrap()),
                             category,
                         },
                         data_count: length as u32,
