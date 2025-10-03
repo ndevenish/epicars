@@ -38,6 +38,7 @@ use tokio_util::{
 use tracing::trace;
 
 use crate::dbr::{Dbr, DbrBasicType, DbrType};
+use bitflags::bitflags;
 
 const EPICS_VERSION: u16 = 13;
 
@@ -1435,23 +1436,25 @@ impl CAMessage for ClearChannel {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct MonitorMask {
-    pub value: bool,
-    pub log: bool,
-    pub alarm: bool,
-    pub property: bool,
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct MonitorMask : u16 {
+        /// Value change events are reported. Value changes take into consideration a dead band within which the value changes are not reported.
+        const VALUE = 1;
+        /// Log events are reported. Similar to DBR_VALUE, DBE_LOG defines a different dead band value that determines frequency of updates.
+        const LOG = 2;
+        /// Alarm events are reported whenever alarm value of the channel changes.
+        const ALARM = 4;
+        /// Property events are reported when some metadata value associated with the channel changes. (Introduced in EPICS Base 3.14.11).
+        const PROPERTY = 8;
+    }
 }
 impl Default for MonitorMask {
     fn default() -> Self {
-        Self {
-            value: true,
-            log: false,
-            alarm: false,
-            property: false,
-        }
+        MonitorMask::VALUE
     }
 }
+
 /// Creates a subscription on a channel, allowing the client to be notified of changes in value.
 ///
 /// A request will produce at least one response. Sent over TCP.
@@ -1484,12 +1487,7 @@ impl TryFrom<RawMessage> for EventAdd {
             data_count: value.field_2_data_count,
             server_id: value.field_3_parameter_1,
             subscription_id: value.field_4_parameter_2,
-            mask: MonitorMask {
-                value: mask & 1 == 1,
-                log: mask & 2 == 2,
-                alarm: mask & 4 == 4,
-                property: mask & 8 == 8,
-            },
+            mask: MonitorMask::from_bits_retain(mask),
         })
     }
 }
@@ -1497,10 +1495,7 @@ impl TryFrom<RawMessage> for EventAdd {
 impl CAMessage for EventAdd {
     fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         let mut payload = vec![0u8; 12];
-        let mask: u16 = if self.mask.value { 1 } else { 0 }
-            + if self.mask.log { 2 } else { 0 }
-            + if self.mask.alarm { 4 } else { 0 }
-            + if self.mask.property { 8 } else { 0 };
+        let mask: u16 = self.mask.bits();
 
         payload.extend_from_slice(&mask.to_be_bytes());
         RawMessage {
