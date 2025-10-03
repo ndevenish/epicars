@@ -21,7 +21,9 @@ use tokio_util::{codec::FramedRead, sync::CancellationToken};
 use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
-    client::{Searcher, SearcherBuilder, searcher::CouldNotFindError},
+    client::{
+        Searcher, SearcherBuilder, searcher::CouldNotFindError, subscription::SubscriptionKeeper,
+    },
     dbr::{Dbr, DbrBasicType, DbrCategory, DbrType, DbrValue},
     messages::{self, Access, CAMessage, ClientMessage, Message, MonitorMask, RsrvIsUp},
     utils::{
@@ -804,18 +806,6 @@ impl CircuitInternal {
     }
 }
 
-/// Keep track of active subscriptions, so we can carry service over disconnects
-struct SubscriptionInfo {
-    /// The PV name this subscription is for
-    name: String,
-    /// The sender, so that we can hand it out to new circuits
-    sender: broadcast::Sender<Dbr>,
-    /// The watcher, so that we can hand it out to new circuits
-    watcher: watch::Sender<Dbr>,
-    /// The last known IOC that supplied this subscription
-    circuit: Option<SocketAddr>,
-}
-
 /// Internal requests to manage state within the CircuitInternal
 #[derive(Debug)]
 enum ClientInternalRequest {
@@ -842,8 +832,8 @@ enum CircuitState {
 /// Anything related to managing reconnections should go in here.
 struct ClientInternal {
     cancellation: CancellationToken,
-    /// Record of all open subscriptions, for reconnection
-    subscriptions: Vec<SubscriptionInfo>,
+    /// Keep track of open subscriptions, independently of circuit, for reconnection
+    subscriptions: Arc<Mutex<SubscriptionKeeper>>,
     /// Currently active connections
     circuits: HashMap<SocketAddr, CircuitState>,
     /// Known and trusted resolutions to specific PV requests
@@ -856,11 +846,16 @@ struct ClientInternal {
     /// The searcher object
     searcher: Searcher,
     /// Requests coming from the Client user
-    requests: mpsc::Receiver<ClientRequest>,
+    requests: mpsc::UnboundedReceiver<ClientRequest>,
     internal_requests: mpsc::UnboundedSender<ClientInternalRequest>,
     subtasks: JoinSet<()>,
-    read_requests: Vec<ReadRequest>,
-    pending_writes: Vec<WriteRequest>,
+
+    pending_reads: Requests<ReadRequest>,
+    pending_writes: Requests<WriteRequest>,
+    pending_subs: Requests<SubscriptionRequest>,
+
+    // pending_subscriptions: Vec<SubscriptionRequest>,
+    active_subscriptions: HashMap<SocketAddr, Vec<SubscriptionRequest>>,
     next_internal_id: Ioid,
 }
 #[derive(Debug)]
@@ -869,7 +864,6 @@ struct ReadRequest {
     kind: DbrCategory,
     length: usize,
     response: oneshot::Sender<Result<Dbr, GetError>>,
-    ioc: Option<SocketAddr>,
     ioid: Option<Ioid>,
 }
 
@@ -878,17 +872,101 @@ struct WriteRequest {
     name: String,
     value: DbrValue,
     response: oneshot::Sender<Result<(), PutError>>,
-    ioc: Option<SocketAddr>,
     ioid: Option<Ioid>,
 }
 
+#[derive(Debug)]
+struct SubscriptionRequest {
+    name: String,
+    kind: DbrCategory,
+    basic_type: Option<DbrBasicType>,
+    length: usize,
+    monitor: MonitorMask,
+}
+
+struct Requests<T> {
+    searching_for_pv: Vec<T>,
+    waiting_for_circuit: HashMap<SocketAddr, Vec<T>>,
+    dispatched: HashMap<Ioid, T>,
+}
+impl<T> Default for Requests<T> {
+    fn default() -> Self {
+        Self {
+            // pending: Vec::new(),
+            searching_for_pv: Vec::new(),
+            waiting_for_circuit: HashMap::new(),
+            dispatched: HashMap::new(),
+        }
+    }
+}
+impl<T> Requests<T> {
+    fn add(&mut self, request: T, known_ioc: Option<SocketAddr>) {
+        if let Some(ioc) = known_ioc {
+            self.waiting_for_circuit
+                .entry(ioc)
+                .or_default()
+                .push(request);
+        } else {
+            self.searching_for_pv.push(request);
+        }
+    }
+    fn get_waiting_for(&mut self, address: SocketAddr) -> Vec<T> {
+        self.waiting_for_circuit
+            .remove(&address)
+            .unwrap_or_default()
+    }
+    fn dispatched(&mut self, ioid: Ioid, request: T) {
+        self.dispatched.insert(ioid, request);
+    }
+}
+impl Requests<ReadRequest> {
+    fn mark_no_pv_found(&mut self, name: &str) {
+        for req in self.searching_for_pv.extract_if(.., |k| k.name == name) {
+            let _ = req.response.send(Err(GetError::CouldNotFindIOC));
+        }
+    }
+    fn mark_circuit_failed(&mut self, ioc: SocketAddr, error: GetError) {
+        if let Some(tasks) = self.waiting_for_circuit.remove(&ioc) {
+            for task in tasks {
+                let _ = task.response.send(Err(error.clone()));
+            }
+        }
+    }
+    fn fulfill(&mut self, ioid: Ioid, result: Result<Dbr, ClientError>) {
+        if let Some(req) = self.dispatched.remove(&ioid) {
+            let dbr = result.map_err(|_| GetError::InternalClientError);
+            let _ = req.response.send(dbr);
+        }
+    }
+}
+impl Requests<WriteRequest> {
+    fn mark_no_pv_found(&mut self, name: &str) {
+        for req in self.searching_for_pv.extract_if(.., |k| k.name == name) {
+            let _ = req.response.send(Err(PutError::CouldNotFindIOC));
+        }
+    }
+    fn mark_circuit_failed(&mut self, ioc: SocketAddr, error: PutError) {
+        if let Some(tasks) = self.waiting_for_circuit.remove(&ioc) {
+            for task in tasks {
+                let _ = task.response.send(Err(error.clone()));
+            }
+        }
+    }
+    fn fulfill(&mut self, ioid: Ioid, result: Result<(), ClientError>) {
+        if let Some(req) = self.dispatched.remove(&ioid) {
+            let dbr = result.map_err(|_| PutError::InternalClientError);
+            let _ = req.response.send(dbr);
+        }
+    }
+}
 impl ClientInternal {
     async fn start(
         cancel_token: CancellationToken,
         search_port: u16,
         beacon_port: u16,
         broadcast_addresses: Option<Vec<SocketAddr>>,
-        started: oneshot::Sender<Result<mpsc::Sender<ClientRequest>, io::Error>>,
+        subscriptions: Arc<Mutex<SubscriptionKeeper>>,
+        started: oneshot::Sender<Result<mpsc::UnboundedSender<ClientRequest>, io::Error>>,
     ) {
         let searcher = match Self::start_searcher(
             search_port,
@@ -903,11 +981,11 @@ impl ClientInternal {
                 return;
             }
         };
-        let (tx, rx) = mpsc::channel(32);
+        let (tx, rx) = mpsc::unbounded_channel();
         let (tx_i, mut rx_i) = mpsc::unbounded_channel();
         let mut internal = ClientInternal {
             cancellation: cancel_token,
-            subscriptions: Vec::new(),
+            subscriptions,
             circuits: HashMap::new(),
             observed_beacons: Default::default(),
             searcher,
@@ -915,9 +993,14 @@ impl ClientInternal {
             subtasks: Default::default(),
             known_ioc: Default::default(),
             internal_requests: tx_i,
-            read_requests: Default::default(),
-            pending_writes: Default::default(),
             next_internal_id: 0,
+            pending_reads: Default::default(),
+            pending_writes: Default::default(),
+            pending_subs: Default::default(),
+            // read_requests: Default::default(),
+            // pending_writes: Default::default(),
+            // pending_subscriptions: Default::default(),
+            active_subscriptions: Default::default(),
         };
         if let Err(err) = internal.watch_broadcasts(beacon_port).await {
             warn!(
@@ -1004,15 +1087,17 @@ impl ClientInternal {
                 result,
             } => {
                 debug!("Got CA read request for {name}");
-                let ioc = self.handle_ioc_search_spawn(&name);
-                self.read_requests.push(ReadRequest {
-                    name: name.clone(),
-                    kind,
-                    length,
-                    response: result,
+                let ioc: Option<SocketAddr> = self.handle_ioc_search_spawn(&name);
+                self.pending_reads.add(
+                    ReadRequest {
+                        name: name.clone(),
+                        kind,
+                        length,
+                        response: result,
+                        ioid: None,
+                    },
                     ioc,
-                    ioid: None,
-                });
+                );
             }
             ClientRequest::Put {
                 name,
@@ -1021,21 +1106,20 @@ impl ClientInternal {
             } => {
                 debug!("Got CA write request for {name}");
                 let ioc = self.handle_ioc_search_spawn(&name);
-                self.pending_writes.push(WriteRequest {
-                    name,
-                    value,
-                    response: result,
+                self.pending_writes.add(
+                    WriteRequest {
+                        name,
+                        value,
+                        response: result,
+                        ioid: None,
+                    },
                     ioc,
-                    ioid: None,
-                });
+                );
             }
-            ClientRequest::Subscribe {
-                name: _,
-                kind: _,
-                length: _,
-                monitor: _,
-                result: _,
-            } => todo!(),
+            ClientRequest::Subscribe(request) => {
+                let ioc = self.handle_ioc_search_spawn(&request.name);
+                self.pending_subs.add(request, ioc);
+            }
         }
     }
 
@@ -1086,13 +1170,8 @@ impl ClientInternal {
                 debug!("Got notification of PV {name} determined: {socket_addr:?}");
 
                 let Some(addr) = socket_addr else {
-                    // Send responses to anyone waiting for this to say it couldn't be found
-                    for req in self.read_requests.extract_if(.., |k| k.name == name) {
-                        let _ = req.response.send(Err(GetError::CouldNotFindIOC));
-                    }
-                    for req in self.pending_writes.extract_if(.., |k| k.name == name) {
-                        let _ = req.response.send(Err(PutError::CouldNotFindIOC));
-                    }
+                    self.pending_reads.mark_no_pv_found(&name);
+                    self.pending_writes.mark_no_pv_found(&name);
                     return;
                 };
                 self.known_ioc.insert(name, addr);
@@ -1139,63 +1218,57 @@ impl ClientInternal {
             }
             ClientInternalRequest::CircuitOpenFailed(socket_addr) => {
                 warn!("Circuit {socket_addr} open failed, failing reads");
-                for request in self.read_requests.extract_if(.., |r| {
-                    self.known_ioc
-                        .get(&r.name)
-                        .map(|addr| *addr == socket_addr)
-                        .is_some()
-                }) {
-                    let _ = request.response.send(Err(GetError::InternalClientError));
-                }
+                self.pending_reads
+                    .mark_circuit_failed(socket_addr, GetError::InternalClientError);
+                self.pending_writes
+                    .mark_circuit_failed(socket_addr, PutError::InternalClientError);
             }
             ClientInternalRequest::ReadAvailable(ioid, result) => {
                 trace!("Got read {ioid} from circuit");
-                let dbr = result.map_err(|_| GetError::InternalClientError);
-                if let Some(index) = self.read_requests.iter().position(|r| r.ioid == Some(ioid)) {
-                    let _ = self.read_requests.swap_remove(index).response.send(dbr);
-                }
+                self.pending_reads.fulfill(ioid, result);
             }
-            ClientInternalRequest::WriteComplete(ioid, result) => {}
+            ClientInternalRequest::WriteComplete(ioid, result) => {
+                trace!("Got write {ioid} from circuit");
+                self.pending_writes.fulfill(ioid, result);
+            }
         }
     }
 
     fn send_outstanding_requests_for(&mut self, circuit: &Circuit) {
         let mut internal_ioid = self.next_internal_id;
-        // Go through all open read requests
-        for request in self
-            .read_requests
-            .iter_mut()
-            .filter(|r| r.ioc == Some(circuit.address))
-        {
+
+        // Dispatch any read requests waiting for this
+        for request in self.pending_reads.get_waiting_for(circuit.address) {
             let ioid = wrapping_inplace_add(&mut internal_ioid);
-            request.ioid = Some(ioid);
+
             let result = circuit.read_spawn(&request.name, request.kind, Some(request.length));
             let mq = self.internal_requests.clone();
             self.subtasks.spawn(async move {
-                // request.response.send()
                 if let Ok(response) = result.await {
                     let _ = mq.send(ClientInternalRequest::ReadAvailable(ioid, response));
                 }
             });
+            self.pending_reads.dispatched(ioid, request);
         }
+
         // Go through all open write requests
-        for request in self
-            .pending_writes
-            .iter_mut()
-            .filter(|r| r.ioc == Some(circuit.address))
-        {
+        for request in self.pending_writes.get_waiting_for(circuit.address) {
             let result = circuit.write_spawn(&request.name, request.value.clone());
             let ioid = wrapping_inplace_add(&mut internal_ioid);
-            request.ioid = Some(ioid);
+            // request.ioid = Some(ioid);
             let mq = self.internal_requests.clone();
             self.subtasks.spawn(async move {
-                // request.response.send()
                 if let Ok(response) = result.await {
                     let _ = mq.send(ClientInternalRequest::WriteComplete(ioid, response));
                 }
             });
+            self.pending_writes.dispatched(ioid, request);
         }
+
+        // Go through all open subscription requests
+        todo!();
     }
+
     // async fn get_or_create_circuit(
     //     circuits: &mut HashMap<SocketAddr, Circuit>,
     //     addr: SocketAddr,
@@ -1247,12 +1320,14 @@ impl From<CouldNotFindError> for GetError {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum PutError {
     #[error("The internal client has closed")]
     Closed,
     #[error("Could not find a source IOC for this PV name")]
     CouldNotFindIOC,
+    #[error("Internal client error")]
+    InternalClientError,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -1276,22 +1351,20 @@ enum ClientRequest {
         value: DbrValue,
         result: oneshot::Sender<Result<(), PutError>>,
     },
-    /// Request a subscription
-    Subscribe {
-        name: String,
-        kind: DbrType,
-        length: usize,
-        monitor: u8,
-        result: oneshot::Sender<Result<SubscriptionObjects, SubscribeError>>,
-    },
+    /// Request a subscription.
+    ///
+    /// This assumes you have already obtained the subscription Receiver.
+    Subscribe(SubscriptionRequest),
 }
 pub struct Client {
     /// The central cancellation token, to completely shut down the client
     cancellation: CancellationToken,
     /// Communication with the internal processing loop
-    internal_requests: mpsc::Sender<ClientRequest>,
+    internal_requests: mpsc::UnboundedSender<ClientRequest>,
     /// Handle to know when the internal loop has finished
     handle: Option<JoinHandle<()>>,
+    /// Access and modify the open subscriptions objects
+    subscriptions: Arc<Mutex<SubscriptionKeeper>>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -1329,13 +1402,17 @@ impl Client {
         // A way to get the "Launched OK" message back
         let (result_tx, result_rx) = oneshot::channel();
 
+        let subscriptions = Arc::new(Mutex::new(SubscriptionKeeper::new()));
+
         let internal_cancel = cancel.clone();
+        let inner_subscriptions = subscriptions.clone();
         let handle = tokio::spawn(async move {
             ClientInternal::start(
                 internal_cancel,
                 search_port,
                 beacon_port,
                 broadcast_addresses,
+                inner_subscriptions,
                 result_tx,
             )
             .await;
@@ -1348,6 +1425,7 @@ impl Client {
             cancellation: cancel,
             internal_requests: internal_tx,
             handle: Some(handle),
+            subscriptions,
         })
     }
 
@@ -1381,7 +1459,6 @@ impl Client {
                 length: 0,
                 result: tx,
             })
-            .await
             .map_err(|_| GetError::Closed)?;
 
         // Wait for some response
@@ -1400,26 +1477,40 @@ impl Client {
                 value: value.into(),
                 result: tx,
             })
-            .await
             .map_err(|_| PutError::Closed)?;
         rx.await.unwrap_or(Err(PutError::Closed))
     }
 
-    // /// Stop receiving messages for a specific PV
-    // ///
-    // /// > [!NOTE]
-    // /// > It is still possible to get updated messages returned after
-    // /// > calling this function, because there may have been messages
-    // /// > in-flight before the termination request gets through.
-    // pub async fn unsubscribe(&mut self, subscription: SubscriptionToken) {
-    //     // let Some(ioc) = self.subscriptions.remove(name) else {
-    //     //     return;
-    //     // };
-    //     let Some(circuit) = self.circuits.get(&subscription.circuit) else {
-    //         return;
-    //     };
-    //     circuit.unsubscribe(subscription.ioid).await;
-    // }
+    /// Request subscription to a specific PV by name
+    ///
+    /// This will return immediately with the receiver that events will
+    /// arrive on. This is because connection will be retried until a
+    /// suitable connection has been found, and if connection is lost
+    /// then reconnect will be attempted.
+    ///
+    /// Events will arrive once a connection is made.
+    ///
+    /// If the connection is closed, then a message with the inner
+    /// [Option<Dbr>] of `None` will be sent. No further messages will
+    /// be sent until reconnection, unless the client object itself is
+    /// closed (at which point the outer [broadcast::Receiver] will
+    /// return it's [broadcast::error::RecvError]).
+    ///
+    /// If the subscription is explicitly ended, then `None` will be
+    /// sent as a payload and then the channel will be closed.
+    pub fn subscribe(&self, name: &str, kind: DbrCategory) -> broadcast::Receiver<Option<Dbr>> {
+        let (rec, _) = self.subscriptions.lock().unwrap().get_receivers(name);
+        let _ = self
+            .internal_requests
+            .send(ClientRequest::Subscribe(SubscriptionRequest {
+                name: name.to_string(),
+                kind,
+                basic_type: None,
+                length: 0,
+                monitor: MonitorMask::VALUE,
+            }));
+        rec
+    }
 }
 
 impl Drop for Client {
