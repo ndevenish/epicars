@@ -13,7 +13,11 @@ use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, split},
     net::TcpStream,
     select,
-    sync::{broadcast, mpsc, oneshot, watch},
+    sync::{
+        broadcast,
+        mpsc::{self, UnboundedSender},
+        oneshot, watch,
+    },
     task::{JoinHandle, JoinSet},
 };
 use tokio_stream::StreamExt;
@@ -78,6 +82,7 @@ impl Circuit {
         address: &SocketAddr,
         client_name: Option<&str>,
         host_name: Option<&str>,
+        client_messages: UnboundedSender<ClientInternalRequest>,
     ) -> Result<Self, ClientError> {
         debug!("Connecting new Circuit to {address}");
         let mut tcp = TcpStream::connect(address).await?;
@@ -124,6 +129,7 @@ impl Circuit {
                 last_echo_sent_at: Instant::now(),
                 last_received_message_at: Instant::now(),
                 monitors: Default::default(),
+                client_messages,
             }
             .circuit_lifecycle(tcp)
             .await;
@@ -417,6 +423,8 @@ struct CircuitInternal {
     pending_writes: HashMap<u32, (Instant, oneshot::Sender<Result<(), ClientError>>)>,
     /// Active subscriptions to updates
     monitors: HashMap<Ioid, Monitor>,
+    /// For sending messages back to the client
+    client_messages: UnboundedSender<ClientInternalRequest>,
 }
 
 impl CircuitInternal {
@@ -425,7 +433,7 @@ impl CircuitInternal {
         let (tcp_rx, mut tcp_tx) = split(tcp);
         let mut framed = FramedRead::with_capacity(tcp_rx, ClientMessage::default(), 16384usize);
         let activity_period = Duration::from_secs_f32(get_default_connection_timeout() / 2.0);
-        loop {
+        let remote_exit = loop {
             let next_timing_stop =
                 max(self.last_echo_sent_at, self.last_received_message_at) + activity_period;
             trace!(
@@ -433,7 +441,7 @@ impl CircuitInternal {
                 (next_timing_stop - Instant::now()).as_secs_f32()
             );
             let messages_out = select! {
-                _ = self.cancel.cancelled() => break,
+                _ = self.cancel.cancelled() => break false,
                 incoming = framed.next() => match incoming {
                     Some(message) => match message {
                         Ok(message) => Some(self.handle_message(message)),
@@ -442,11 +450,12 @@ impl CircuitInternal {
                             continue;
                         }
                     },
-                    None => break,
+                    None => break true,
                 },
                 request = self.requests_rx.recv() => match request {
-                    None => break,
-                    Some(req) => Some(self.handle_request(req).await)
+                    Some(req) => Some(self.handle_request(req).await),
+                    // The channel letting the client control this circuit was closed
+                    None => break false,
                 },
                 _ = tokio::time::sleep_until(next_timing_stop.into()) => {
                     if self.last_echo_sent_at < self.last_received_message_at {
@@ -455,7 +464,7 @@ impl CircuitInternal {
                     } else {
                         // We sent an echo already, this is the termination time
                         error!("Received no reply from server, assuming connection dead");
-                        break
+                        break true;
                     }
                 },
             };
@@ -472,7 +481,14 @@ impl CircuitInternal {
                     error!("Failed to write messages to io stream, aborting");
                 }
             }
-        }
+        };
+        trace!("Circuit closing");
+        let _ = self
+            .client_messages
+            .send(ClientInternalRequest::CircuitClosed(
+                self.address,
+                remote_exit,
+            ));
         self.cancel.cancel();
         let _ = tcp_tx.shutdown().await;
     }
@@ -804,18 +820,6 @@ impl CircuitInternal {
     }
 }
 
-/// Internal requests to manage state within the CircuitInternal
-#[derive(Debug)]
-enum ClientInternalRequest {
-    /// A search for a PV has concluded, either positively or negatively
-    DeterminedPV(String, Option<SocketAddr>),
-    OpenedCircuit(Circuit),
-    CircuitOpenFailed(SocketAddr),
-    ReadAvailable(Ioid, Result<Dbr, ClientError>),
-    /// A write was completed, along with the result
-    WriteComplete(Ioid, Result<(), ClientError>),
-}
-
 #[derive(Debug)]
 enum CircuitState {
     Pending,
@@ -845,15 +849,16 @@ struct ClientInternal {
     searcher: Searcher,
     /// Requests coming from the Client user
     requests: mpsc::UnboundedReceiver<ClientRequest>,
+    /// Internal lifecycle messages
     internal_requests: mpsc::UnboundedSender<ClientInternalRequest>,
+    /// Tasks we've launched
     subtasks: JoinSet<()>,
 
     pending_reads: Requests<ReadRequest>,
     pending_writes: Requests<WriteRequest>,
     pending_subs: Requests<SubscriptionRequest>,
-
-    // pending_subscriptions: Vec<SubscriptionRequest>,
-    active_subscriptions: HashMap<SocketAddr, Vec<SubscriptionRequest>>,
+    // Keep track of which active subscriptions are associated with each IOC
+    active_subs: HashMap<SocketAddr, Vec<Ioid>>,
     next_internal_id: Ioid,
 }
 
@@ -907,8 +912,11 @@ impl RequestInfo for SubscriptionRequest {
 }
 #[derive(Debug)]
 struct Requests<T> {
+    /// Requests that we don't even know the IOC for
     searching_for_pv: Vec<T>,
+    /// Requests that we've determined IOC, and are waiting for connection
     waiting_for_circuit: HashMap<SocketAddr, Vec<T>>,
+    /// Requests that have been sent to the IOC
     dispatched: HashMap<Ioid, T>,
 }
 impl<T> Default for Requests<T> {
@@ -1037,10 +1045,7 @@ impl ClientInternal {
             pending_reads: Default::default(),
             pending_writes: Default::default(),
             pending_subs: Default::default(),
-            // read_requests: Default::default(),
-            // pending_writes: Default::default(),
-            // pending_subscriptions: Default::default(),
-            active_subscriptions: Default::default(),
+            active_subs: Default::default(),
         };
         if let Err(err) = internal.watch_broadcasts(beacon_port).await {
             warn!(
@@ -1240,7 +1245,7 @@ impl ClientInternal {
                         self.circuits.insert(addr, CircuitState::Pending);
                         let req = self.internal_requests.clone();
                         self.subtasks.spawn(async move {
-                            match Circuit::connect(&addr, None, None).await {
+                            match Circuit::connect(&addr, None, None, req.clone()).await {
                                 Ok(circuit) => {
                                     let _ = req.send(ClientInternalRequest::OpenedCircuit(circuit));
                                 }
@@ -1275,6 +1280,33 @@ impl ClientInternal {
             ClientInternalRequest::WriteComplete(ioid, result) => {
                 trace!("Got write {ioid} from circuit");
                 self.pending_writes.fulfill(ioid, result);
+            }
+            ClientInternalRequest::CircuitClosed(socket_addr, remote_exit) => {
+                // If we didn't initiate the closure, then drop any associated PV
+                if remote_exit {
+                    trace!(
+                        "Remote {socket_addr} closed connection, dropping any known PV associations"
+                    );
+                    self.known_ioc.retain(|_, v| *v != socket_addr);
+                }
+                self.circuits.remove(&socket_addr);
+                // Handle any outstanding interactions
+                // Easy: mark any in-flight reads or writes as failed
+                self.pending_reads
+                    .mark_circuit_failed(socket_addr, GetError::Closed);
+                self.pending_writes
+                    .mark_circuit_failed(socket_addr, PutError::Closed);
+                // Subscriptions go back to searching for PV
+                if let Some(active_subs) = self.active_subs.remove(&socket_addr) {
+                    for ioid in active_subs {
+                        if let Some(request) = self.pending_subs.dispatched.remove(&ioid) {
+                            // Retry this subscription
+                            debug!("Resubmitting subscription to {}", request.name);
+                            let ioc = self.handle_ioc_search_spawn(&request.name);
+                            self.pending_subs.add(request, ioc);
+                        }
+                    }
+                };
             }
         }
     }
@@ -1324,6 +1356,10 @@ impl ClientInternal {
 
             circuit.subscribe_spawn(request.clone(), senders.0, senders.1);
             self.pending_subs.dispatched(ioid, request);
+            self.active_subs
+                .entry(circuit.address)
+                .or_default()
+                .push(ioid);
         }
         self.next_internal_id = internal_ioid;
     }
@@ -1389,6 +1425,21 @@ enum ClientRequest {
     /// This assumes you have already obtained the subscription Receiver.
     Subscribe(SubscriptionRequest),
 }
+
+/// Internal requests to manage state within the CircuitInternal
+#[derive(Debug)]
+enum ClientInternalRequest {
+    /// A search for a PV has concluded, either positively or negatively
+    DeterminedPV(String, Option<SocketAddr>),
+    OpenedCircuit(Circuit),
+    /// Sent to mark a circuit as closed
+    CircuitClosed(SocketAddr, bool),
+    CircuitOpenFailed(SocketAddr),
+    ReadAvailable(Ioid, Result<Dbr, ClientError>),
+    /// A write was completed, along with the result
+    WriteComplete(Ioid, Result<(), ClientError>),
+}
+
 pub struct Client {
     /// The central cancellation token, to completely shut down the client
     cancellation: CancellationToken,
