@@ -59,7 +59,9 @@ enum CircuitRequest {
         channel: u32,
         length: usize,
         dbr_type: DbrType,
-        reply: oneshot::Sender<Result<(broadcast::Receiver<Dbr>, u32), ClientError>>,
+        mask: MonitorMask,
+        send_broadcast: broadcast::Sender<Option<Dbr>>,
+        send_watch: watch::Sender<Option<Dbr>>,
     },
     Unsubscribe(u32),
 }
@@ -121,9 +123,7 @@ impl Circuit {
                 pending_writes: Default::default(),
                 last_echo_sent_at: Instant::now(),
                 last_received_message_at: Instant::now(),
-                pending_monitors: Default::default(),
-                monitor_receivers: Default::default(),
-                monitor_channels: Default::default(),
+                monitors: Default::default(),
             }
             .circuit_lifecycle(tcp)
             .await;
@@ -305,29 +305,39 @@ impl Circuit {
         write_rx
     }
 
-    async fn subscribe(&self, name: &str) -> Result<(broadcast::Receiver<Dbr>, u32), ClientError> {
-        let channel = self.get_channel(name.to_string()).await?;
-        debug!("Circuit subscribe got channel: {channel:?}");
-        let (tx, rx) = oneshot::channel();
-        self.requests_tx
-            .send(CircuitRequest::Subscribe {
-                channel: channel.cid,
-                length: 0,
-                dbr_type: DbrType {
-                    basic_type: channel.native_type,
-                    category: DbrCategory::Time,
-                },
-                reply: tx,
-            })
-            .await
-            .map_err(|_| ClientError::ClientClosed)?;
-        rx.await.map_err(|_| ClientError::ChannelCreateFailed)?
-    }
     async fn unsubscribe(&self, subscription_id: u32) {
         let _ = self
             .requests_tx
             .send(CircuitRequest::Unsubscribe(subscription_id))
             .await;
+    }
+    fn subscribe_spawn(
+        &self,
+        request: SubscriptionRequest,
+        sender_m: broadcast::Sender<Option<Dbr>>,
+        sender_w: watch::Sender<Option<Dbr>>,
+    ) {
+        let name = request.name.to_string();
+        let requests_tx = self.requests_tx.clone();
+        tokio::spawn(async move {
+            let channel = Self::get_channel_from(&requests_tx, &name)
+                .await
+                .expect("Don't currently handle circuits refusing knowledge of subscribing PV");
+            trace!("Circuit subscription got channel: {channel:?}");
+            let _ = requests_tx
+                .send(CircuitRequest::Subscribe {
+                    channel: channel.cid,
+                    length: request.length,
+                    dbr_type: DbrType {
+                        basic_type: request.basic_type.unwrap_or(channel.native_type),
+                        category: request.kind,
+                    },
+                    mask: request.monitor,
+                    send_broadcast: sender_m,
+                    send_watch: sender_w,
+                })
+                .await;
+        });
     }
 }
 
@@ -361,7 +371,8 @@ struct Channel {
     /// Watchers waiting for this channel to be open
     pending_open: Vec<oneshot::Sender<Result<ChannelInfo, ClientError>>>,
     next_ioid: u32,
-    broadcast_receivers: Vec<u32>,
+    /// A list of all Ioid of open subscriptions
+    subscribers: Vec<Ioid>,
 }
 
 impl Channel {
@@ -377,7 +388,16 @@ impl Channel {
 }
 
 type Ioid = u32;
+type ChannelId = u32;
 
+struct Monitor {
+    channel_id: ChannelId,
+    last_update: Instant,
+    length: u32,
+    dbr_type: DbrType,
+    sender_b: broadcast::Sender<Option<Dbr>>,
+    sender_w: watch::Sender<Option<Dbr>>,
+}
 // Inner circuit state, used to hold async management data
 struct CircuitInternal {
     /// A copy of the address we are connected to
@@ -388,30 +408,15 @@ struct CircuitInternal {
     // requests_tx: mpsc::Sender<CircuitRequest>,
     requests_rx: mpsc::Receiver<CircuitRequest>,
     cancel: CancellationToken,
-    next_cid: u32,
-    channels: HashMap<u32, Channel>,
-    channel_lookup: HashMap<String, u32>,
+    next_cid: ChannelId,
+    channels: HashMap<ChannelId, Channel>,
+    channel_lookup: HashMap<String, ChannelId>,
     /// Watchers waiting for specific reads
     pending_reads: HashMap<u32, (Instant, oneshot::Sender<Result<Dbr, ClientError>>)>,
     /// Watchers waiting for write notifications
     pending_writes: HashMap<u32, (Instant, oneshot::Sender<Result<(), ClientError>>)>,
-    /// Broadcast subscriptions we have not had confirmed yet
-    #[allow(clippy::type_complexity)] // TODO: Actually follow Clippy's advice here
-    pending_monitors: HashMap<
-        u32,
-        (
-            Instant,
-            (
-                usize,
-                DbrType,
-                oneshot::Sender<Result<(broadcast::Receiver<Dbr>, u32), ClientError>>,
-            ),
-        ),
-    >,
-    /// Lookup subscription info from an IOID to the subscription info§
-    monitor_receivers: HashMap<u32, (usize, DbrType, broadcast::Sender<Dbr>)>,
-    /// The ioid->channel ID lookup table. IOID is unique across the whole circuit.
-    monitor_channels: HashMap<u32, u32>,
+    /// Active subscriptions to updates
+    monitors: HashMap<Ioid, Monitor>,
 }
 
 impl CircuitInternal {
@@ -601,53 +606,58 @@ impl CircuitInternal {
                 channel: cid,
                 length,
                 dbr_type,
-                reply,
+                send_broadcast,
+                send_watch,
+                mask,
             } => {
+                // Since the caller should have verified that the channel was open,
+                // it is an error to get here and not have one.
                 let Some(channel) = self.channels.get_mut(&cid) else {
-                    let _ = reply.send(Err(ClientError::ChannelClosed));
                     return Vec::new();
                 };
                 let _span = debug_span!("handle_request", cid = cid).entered();
                 let ioid = wrapping_inplace_add(&mut channel.next_ioid);
-                self.pending_monitors
-                    .insert(ioid, (Instant::now(), (length, dbr_type, reply)));
-                self.monitor_channels.insert(ioid, channel.cid);
-                channel.broadcast_receivers.push(ioid);
+                self.monitors.insert(
+                    ioid,
+                    Monitor {
+                        last_update: Instant::now(),
+                        length: length as u32,
+                        dbr_type,
+                        sender_b: send_broadcast,
+                        sender_w: send_watch,
+                        channel_id: cid,
+                    },
+                );
+                channel.subscribers.push(ioid);
                 vec![
                     messages::EventAdd {
                         data_type: dbr_type,
                         data_count: length as u32,
                         server_id: channel.sid,
                         subscription_id: ioid,
-                        mask: MonitorMask::default(),
+                        mask,
                     }
                     .into(),
                 ]
             }
             CircuitRequest::Unsubscribe(ioid) => {
                 debug!("Got unsubscribe request for: {ioid}");
-                // Any pending should just be removed now
-                self.pending_monitors.remove(&ioid);
-
-                // Remove from lookup tables if not already partially
-                // cleared. Only if we have all tables present can we
-                // send a cancel message, the otherwise assumption is
-                // that e.g. we have a partially closed circuit.
-                if let (Some(cid), Some((count, dbr_type, _))) = (
-                    self.monitor_channels.remove(&ioid),
-                    self.monitor_receivers.remove(&ioid),
-                ) && let Some(channel) = self.channels.get(&cid)
+                // Remove entries for this subscription. If it isn't present
+                // in all of the tracking tables, then assume we're in the middle
+                // of shutdown and don't send an explicit EventCancel.
+                if let Some(monitor) = self.monitors.remove(&ioid)
+                    && let Some(channel) = self.channels.get(&monitor.channel_id)
                 {
                     return vec![
                         messages::EventCancel {
-                            data_type: dbr_type,
-                            data_count: count as u32,
+                            data_type: monitor.dbr_type,
+                            data_count: monitor.length,
                             server_id: channel.sid,
                             subscription_id: ioid,
                         }
                         .into(),
                     ];
-                }
+                };
                 Vec::new()
             }
         }
@@ -718,32 +728,23 @@ impl CircuitInternal {
                 Vec::new()
             }
             ClientMessage::EventAddResponse(msg) => {
-                let Some(channel_id) = self.monitor_channels.get(&msg.subscription_id) else {
+                let Some(monitor) = self.monitors.get(&msg.subscription_id) else {
                     warn!(
                         "Got subscription message without associated channel: {}",
                         msg.subscription_id
                     );
                     return Vec::new();
                 };
-                let _span = debug_span!("handle_message", cid = channel_id).entered();
+                let _span = debug_span!("handle_message", cid = monitor.channel_id).entered();
                 if msg.data.is_empty() {
+                    // This is a special case: The server is requesting termination
+                    // of the subscription (possibly because we asked it to). Shut down
+                    // the channel monitors.
                     debug!(
                         "Got empty EventAddResponse: Purging subscription {}",
                         msg.subscription_id
                     );
-                    // This is a special case: The server is requesting termination
-                    // of the subscription (possibly because we asked it to). Shut down
-                    // the channel monitors.
-                    if let Some(cid) = self.monitor_channels.get(&msg.subscription_id) {
-                        self.channels
-                            .get_mut(cid)
-                            .unwrap()
-                            .broadcast_receivers
-                            .retain(|s| *s != msg.subscription_id);
-                    }
-                    self.monitor_channels.remove(&msg.subscription_id);
-                    self.monitor_receivers.remove(&msg.subscription_id);
-                    self.pending_monitors.remove(&msg.subscription_id);
+                    self.discard_subscription(msg.subscription_id);
                     return Vec::new();
                 }
                 let Ok(dbr) = Dbr::from_bytes(msg.data_type, msg.data_count as usize, &msg.data)
@@ -755,33 +756,14 @@ impl CircuitInternal {
                     "Got subscription {} response: {:?}",
                     msg.subscription_id, dbr
                 );
-                // Check - this might be the first
-                if let Some((_, (length, dbrtype, reply))) =
-                    self.pending_monitors.remove(&msg.subscription_id)
-                {
-                    // This is the first EventAdd response, tell waiting clients that opening was successful
-                    // TODO: Make this capacity configurable.
-                    let (tx, rx) = broadcast::channel(32);
-                    self.monitor_receivers
-                        .insert(msg.subscription_id, (length, dbrtype, tx));
-                    // Send the receiver to the waiting client
-                    let _ = reply.send(Ok((rx, msg.subscription_id)));
-                }
                 let transmitter = &self
-                    .monitor_receivers
+                    .monitors
                     .get(&msg.subscription_id)
-                    .expect("Should have just created this")
-                    .2;
-                match transmitter.send(dbr) {
-                    Ok(0) | Err(_) => {
-                        // We have no receivers left; cancel this subscription
-                        debug!("No more receivers for {}: Cancelling", msg.subscription_id);
-
-                        let sid = self.channels.get(channel_id).unwrap().sid;
-                        return vec![msg.cancel(sid).into()];
-                    }
-                    Ok(_) => (),
-                };
+                    .expect("Should not have been removed anywhere except here");
+                // Send the update... don't check for failure as the client should
+                // manage subscription lifecycles itself
+                let _ = transmitter.sender_b.send(Some(dbr.clone()));
+                let _ = transmitter.sender_w.send(Some(dbr.clone()));
                 Vec::new()
             }
             ClientMessage::WriteNotifyResponse(msg) => {
@@ -799,9 +781,21 @@ impl CircuitInternal {
             msg => {
                 debug!("Got unhandled message from server: {msg:?}");
                 Vec::new()
-            } // ClientMessage::SearchResponse(msg) => todo!(),
-              // ClientMessage::ServerDisconnect(msg) => todo!(),
-              // ClientMessage::ECAError(msg) => todo!(),
+            }
+        }
+    }
+
+    /// Discard any internal state tracking subscriptions
+    ///
+    /// Used when the event stream has already been closed (or you are about to close it)
+    fn discard_subscription(&mut self, ioid: Ioid) {
+        if let Some(monitor) = self.monitors.remove(&ioid) {
+            // Remove this Ioid from the channel subscriptions
+            if let Some(channel) = self.channels.get_mut(&monitor.channel_id)
+                && let Some(position) = channel.subscribers.iter().position(|v| v == &ioid)
+            {
+                channel.subscribers.swap_remove(position);
+            }
         }
     }
 }
@@ -875,7 +869,7 @@ struct WriteRequest {
     ioid: Option<Ioid>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SubscriptionRequest {
     name: String,
     kind: DbrCategory,
@@ -956,6 +950,13 @@ impl Requests<WriteRequest> {
         if let Some(req) = self.dispatched.remove(&ioid) {
             let dbr = result.map_err(|_| PutError::InternalClientError);
             let _ = req.response.send(dbr);
+        }
+    }
+}
+impl Requests<SubscriptionRequest> {
+    fn mark_circuit_failed(&mut self, ioc: SocketAddr) {
+        if let Some(tasks) = self.waiting_for_circuit.remove(&ioc) {
+            self.searching_for_pv.extend(tasks);
         }
     }
 }
@@ -1222,6 +1223,7 @@ impl ClientInternal {
                     .mark_circuit_failed(socket_addr, GetError::InternalClientError);
                 self.pending_writes
                     .mark_circuit_failed(socket_addr, PutError::InternalClientError);
+                self.pending_subs.mark_circuit_failed(socket_addr);
             }
             ClientInternalRequest::ReadAvailable(ioid, result) => {
                 trace!("Got read {ioid} from circuit");
@@ -1266,34 +1268,20 @@ impl ClientInternal {
         }
 
         // Go through all open subscription requests
-        todo!();
+        for request in self.pending_subs.get_waiting_for(circuit.address) {
+            let ioid = wrapping_inplace_add(&mut internal_ioid);
+            // Get the senders for this
+            let senders = self
+                .subscriptions
+                .lock()
+                .unwrap()
+                .get_senders(&request.name);
+
+            circuit.subscribe_spawn(request.clone(), senders.0, senders.1);
+            self.pending_subs.dispatched(ioid, request);
+        }
+        self.next_internal_id = internal_ioid;
     }
-
-    // async fn get_or_create_circuit(
-    //     circuits: &mut HashMap<SocketAddr, Circuit>,
-    //     addr: SocketAddr,
-    // ) -> Result<&Circuit, ClientError> {
-    //     Ok(match circuits.entry(addr) {
-    //         Entry::Occupied(entry) => entry.into_mut(),
-    //         Entry::Vacant(entry) => {
-    //             let circuit = Circuit::connect(&addr, None, None).await?;
-    //             entry.insert(circuit)
-    //         }
-    //     })
-    // }
-
-    // // fn get_known_ioc(&self, pv_name: &str) -> Option<SocketAddr> {}
-    // async fn find_ioc(&mut self, pv_name: &str) -> Result<SocketAddr, CouldNotFindError> {
-    //     let addr = if let Some(addr) = self.known_ioc.get(pv_name) {
-    //         *addr
-    //     } else {
-    //         // We need to search for this
-    //         let addr = self.searcher.search_for(pv_name).await?;
-    //         self.known_ioc.insert(pv_name.to_string(), addr);
-    //         addr
-    //     };
-    //     Ok(addr)
-    // }
 
     /// Get an internal IOID for matching responses
     fn get_next_id(&mut self) -> Ioid {
