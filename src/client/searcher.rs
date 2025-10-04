@@ -36,6 +36,8 @@ pub struct SearcherBuilder {
     timeout: Option<Duration>,
     /// The socket that is UDP bound to receive replies
     bind_address: SocketAddr,
+    /// Where results should be sent - positive or negative
+    report_to: Option<mpsc::UnboundedSender<(String, Option<SocketAddr>)>>,
 }
 
 impl Default for SearcherBuilder {
@@ -46,6 +48,7 @@ impl Default for SearcherBuilder {
             broadcast_addresses: None,
             timeout: Some(Duration::from_secs(1)),
             bind_address: "0.0.0.0:0".parse().unwrap(),
+            report_to: None,
         }
     }
 }
@@ -65,7 +68,7 @@ impl SearcherBuilder {
             bind_address: self.bind_address,
         };
         searcher
-            .start_searching(request_recv)
+            .start_searching(request_recv, self.report_to)
             .await
             .and(Ok(searcher))
     }
@@ -81,6 +84,13 @@ impl SearcherBuilder {
         self.timeout = timeout;
         self
     }
+    pub fn report_to(
+        mut self,
+        receiver: mpsc::UnboundedSender<(String, Option<SocketAddr>)>,
+    ) -> Self {
+        self.report_to = Some(receiver);
+        self
+    }
     /// Specify addresses to broadcast search packets to
     ///
     /// Will replace any default addresses
@@ -92,9 +102,11 @@ impl SearcherBuilder {
 
 #[derive(Debug)]
 struct SearchRequest {
+    /// The PV being searched for
     name: String,
-    one_sender: Option<oneshot::Sender<Option<SocketAddr>>>,
-    many_sender: Option<mpsc::UnboundedSender<(String, SocketAddr)>>,
+    /// If present, a oneshot channel to report results for this request
+    single_report_to: Option<oneshot::Sender<Option<SocketAddr>>>,
+    /// Should this search enquiry remain open until fulfilled?
     eternal: bool,
 }
 
@@ -120,6 +132,7 @@ impl Searcher {
     async fn start_searching(
         &mut self,
         mut incoming_requests: mpsc::UnboundedReceiver<SearchRequest>,
+        report_to: Option<mpsc::UnboundedSender<(String, Option<SocketAddr>)>>,
     ) -> Result<(), io::Error> {
         let send_socket = UdpSocket::bind(self.bind_address).await?;
         send_socket.set_broadcast(true).unwrap();
@@ -128,6 +141,7 @@ impl Searcher {
             broadcast_addresses: self.broadcast_addresses.clone(),
             stop_token: self.stop_token.clone(),
             timeout: self.timeout,
+            report_to,
             ..Default::default()
         };
 
@@ -163,34 +177,40 @@ impl Searcher {
         Ok(())
     }
 
-    /// Get the SocketAddr for the server serving a specific PV
+    /// Search for the IOC address of a single PV
     pub async fn search_for(&self, name: &str) -> Option<SocketAddr> {
-        let rec = self.search_spawn(name.to_string());
-        rec.await.ok().flatten()
+        self.queue_search(name.to_string()).await.ok().flatten()
     }
 
-    pub fn search_spawn(&self, name: String) -> oneshot::Receiver<Option<SocketAddr>> {
+    /// Queue a search for the IOC controlling a single PV
+    ///
+    /// This function will return immediately, with a oneshot receiver
+    /// that will be called when the PV has either been found, or the
+    /// search timed out.
+    ///
+    /// PV found through this request will also be sent through to the
+    /// [`Searcher::report_to`] queue, in addition to the receiver.
+    pub fn queue_search(&self, name: String) -> oneshot::Receiver<Option<SocketAddr>> {
         let (ret_send, ret_recv) = oneshot::channel();
         // Send the request into our async search loop
         let _ = self.pending_requests.send(SearchRequest {
             name,
-            one_sender: Some(ret_send),
-            many_sender: None,
+            single_report_to: Some(ret_send),
             eternal: false,
         });
         ret_recv
     }
 
-    pub fn search_until_found(
-        &self,
-        name: String,
-        report_to: mpsc::UnboundedSender<(String, SocketAddr)>,
-    ) {
+    /// Queue a search for a specific PV, never expiring until found
+    ///
+    /// Results will only be sent back through the [`Searcher::report_to`]
+    /// channel. Negative search results will never be sent for anything
+    /// requested this way.
+    pub fn queue_search_until_found(&self, name: String) {
         let _ = self.pending_requests.send(SearchRequest {
             name,
-            one_sender: None,
-            many_sender: Some(report_to),
             eternal: true,
+            single_report_to: None,
         });
     }
 
@@ -226,9 +246,8 @@ struct SearchAttempt {
     search_expires_at: Option<Instant>,
     active_searches: Vec<u32>,
     next_search_at: Instant,
-    /// How are results reported back to the requesters?
+    /// A list of explicit channels waiting for this result
     requesters: Vec<oneshot::Sender<Option<SocketAddr>>>,
-    requesters_many: Vec<mpsc::UnboundedSender<(String, SocketAddr)>>,
 }
 
 impl SearchAttempt {
@@ -253,7 +272,6 @@ impl Default for SearchAttempt {
             active_searches: Vec::new(),
             next_search_at: Instant::now(),
             requesters: Vec::new(),
-            requesters_many: Vec::new(),
         }
     }
 }
@@ -271,6 +289,8 @@ struct SearcherInternal {
     /// The next search ID to send
     search_id: u32,
     timeout: Option<Duration>,
+    /// Where results should be sent to (in addition to any per-search oneshot)
+    report_to: Option<mpsc::UnboundedSender<(String, Option<SocketAddr>)>>,
 }
 impl SearcherInternal {
     /// Wait until it's time for the next tracked attempt
@@ -315,11 +335,8 @@ impl SearcherInternal {
                     ..Default::default()
                 });
             // Give the requester a place to wait for replies
-            if let Some(one) = request.one_sender {
+            if let Some(one) = request.single_report_to {
                 info.requesters.push(one);
-            }
-            if let Some(many) = request.many_sender {
-                info.requesters_many.push(many);
             }
             let search_id = wrapping_add(&mut self.search_id);
             // Register this search attempt
@@ -377,8 +394,8 @@ impl SearcherInternal {
             for requester in info.requesters.drain(..) {
                 let _ = requester.send(Some(server_origin));
             }
-            for requester in info.requesters_many.drain(..) {
-                let _ = requester.send((pv_name.clone(), server_origin));
+            if let Some(ref sender) = self.report_to {
+                let _ = sender.send((pv_name, Some(server_origin)));
             }
         }
     }
@@ -394,6 +411,9 @@ impl SearcherInternal {
                     // We are discarding this. Send the termination signal,
                     for r in v.requesters.drain(..) {
                         let _ = r.send(None);
+                    }
+                    if let Some(ref channel) = self.report_to {
+                        let _ = channel.send((v.name.clone(), None));
                     }
                     // And then remove from the in-flight register
                     for id in v.active_searches.iter() {
