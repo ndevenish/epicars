@@ -177,7 +177,7 @@ async fn main() {
         };
 
         let v2 = value.load() + 1;
-        info!("Updating value to {v2}");
+        info!("Updating NUMERIC_VALUE to {v2}");
         value.store(v2);
     }
     // Wait for shutdown, unless another ctrl-c

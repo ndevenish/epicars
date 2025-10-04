@@ -428,6 +428,10 @@ impl CircuitInternal {
         loop {
             let next_timing_stop =
                 max(self.last_echo_sent_at, self.last_received_message_at) + activity_period;
+            trace!(
+                "Next timing stop: {}",
+                (next_timing_stop - Instant::now()).as_secs_f32()
+            );
             let messages_out = select! {
                 _ = self.cancel.cancelled() => break,
                 incoming = framed.next() => match incoming {
@@ -852,6 +856,12 @@ struct ClientInternal {
     active_subscriptions: HashMap<SocketAddr, Vec<SubscriptionRequest>>,
     next_internal_id: Ioid,
 }
+
+trait RequestInfo {
+    type Error: Clone;
+    fn name(&self) -> &str;
+}
+
 #[derive(Debug)]
 struct ReadRequest {
     name: String,
@@ -859,6 +869,13 @@ struct ReadRequest {
     length: usize,
     response: oneshot::Sender<Result<Dbr, GetError>>,
     ioid: Option<Ioid>,
+}
+impl RequestInfo for ReadRequest {
+    type Error = GetError;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 #[derive(Debug)]
@@ -868,7 +885,12 @@ struct WriteRequest {
     response: oneshot::Sender<Result<(), PutError>>,
     ioid: Option<Ioid>,
 }
-
+impl RequestInfo for WriteRequest {
+    type Error = PutError;
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
 #[derive(Debug, Clone)]
 struct SubscriptionRequest {
     name: String,
@@ -877,7 +899,13 @@ struct SubscriptionRequest {
     length: usize,
     monitor: MonitorMask,
 }
-
+impl RequestInfo for SubscriptionRequest {
+    type Error = ();
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+#[derive(Debug)]
 struct Requests<T> {
     searching_for_pv: Vec<T>,
     waiting_for_circuit: HashMap<SocketAddr, Vec<T>>,
@@ -893,7 +921,10 @@ impl<T> Default for Requests<T> {
         }
     }
 }
-impl<T> Requests<T> {
+impl<T> Requests<T>
+where
+    T: RequestInfo,
+{
     fn add(&mut self, request: T, known_ioc: Option<SocketAddr>) {
         if let Some(ioc) = known_ioc {
             self.waiting_for_circuit
@@ -912,7 +943,15 @@ impl<T> Requests<T> {
     fn dispatched(&mut self, ioid: Ioid, request: T) {
         self.dispatched.insert(ioid, request);
     }
+    /// We have found an IOC serving a specific PV name
+    fn found_pv(&mut self, name: &str, address: SocketAddr) {
+        self.waiting_for_circuit
+            .entry(address)
+            .or_default()
+            .extend(self.searching_for_pv.extract_if(.., |r| r.name() == name));
+    }
 }
+
 impl Requests<ReadRequest> {
     fn mark_no_pv_found(&mut self, name: &str) {
         for req in self.searching_for_pv.extract_if(.., |k| k.name == name) {
@@ -1175,6 +1214,10 @@ impl ClientInternal {
                     self.pending_writes.mark_no_pv_found(&name);
                     return;
                 };
+                // Mark anything waiting for this as now waiting for the circuit
+                self.pending_reads.found_pv(&name, addr);
+                self.pending_writes.found_pv(&name, addr);
+                self.pending_subs.found_pv(&name, addr);
                 self.known_ioc.insert(name, addr);
 
                 // Temporarily remove the circuit to avoid mutable borrow of self
@@ -1267,8 +1310,10 @@ impl ClientInternal {
             self.pending_writes.dispatched(ioid, request);
         }
 
+        trace!("Pending subs: {:?}", self.pending_subs);
         // Go through all open subscription requests
         for request in self.pending_subs.get_waiting_for(circuit.address) {
+            trace!("Sending outstanding request {request:?}");
             let ioid = wrapping_inplace_add(&mut internal_ioid);
             // Get the senders for this
             let senders = self

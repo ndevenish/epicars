@@ -33,9 +33,14 @@ async fn main() {
         })
         .init();
 
-    let mut client = Client::new().await.unwrap();
-    let (mut monitor, _) = client.subscribe(&opts.name).await.unwrap();
+    let client = Client::new().await.unwrap();
+    let mut monitor = client.subscribe(&opts.name, epicars::dbr::DbrCategory::Basic);
+
     while let Ok(reply) = monitor.recv().await {
+        let Some(reply) = reply else {
+            println!("Lost connection to PV for monitor {}", &opts.name);
+            continue;
+        };
         let display = match reply.value() {
             DbrValue::String(s) => s.join(" "),
             DbrValue::Int(v) => v
