@@ -26,7 +26,9 @@ use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
     client::{
-        Searcher, SearcherBuilder, searcher::CouldNotFindError, subscription::SubscriptionKeeper,
+        Searcher, SearcherBuilder,
+        searcher::CouldNotFindError,
+        subscription::{SenderPair, SubscriptionKeeper},
     },
     dbr::{Dbr, DbrBasicType, DbrCategory, DbrType, DbrValue},
     messages::{self, Access, CAMessage, ClientMessage, Message, MonitorMask, RsrvIsUp},
@@ -64,8 +66,7 @@ enum CircuitRequest {
         length: usize,
         dbr_type: DbrType,
         mask: MonitorMask,
-        send_broadcast: broadcast::Sender<Option<Dbr>>,
-        send_watch: watch::Sender<Option<Dbr>>,
+        senders: SenderPair<Option<Dbr>>,
     },
     Unsubscribe(u32),
 }
@@ -317,12 +318,7 @@ impl Circuit {
             .send(CircuitRequest::Unsubscribe(subscription_id))
             .await;
     }
-    fn subscribe_spawn(
-        &self,
-        request: SubscriptionRequest,
-        sender_m: broadcast::Sender<Option<Dbr>>,
-        sender_w: watch::Sender<Option<Dbr>>,
-    ) {
+    fn subscribe_spawn(&self, request: SubscriptionRequest, senders: SenderPair<Option<Dbr>>) {
         let name = request.name.to_string();
         let requests_tx = self.requests_tx.clone();
         tokio::spawn(async move {
@@ -339,8 +335,7 @@ impl Circuit {
                         category: request.kind,
                     },
                     mask: request.monitor,
-                    send_broadcast: sender_m,
-                    send_watch: sender_w,
+                    senders,
                 })
                 .await;
         });
@@ -401,8 +396,7 @@ struct Monitor {
     last_update: Instant,
     length: u32,
     dbr_type: DbrType,
-    sender_b: broadcast::Sender<Option<Dbr>>,
-    sender_w: watch::Sender<Option<Dbr>>,
+    senders: SenderPair<Option<Dbr>>,
 }
 // Inner circuit state, used to hold async management data
 struct CircuitInternal {
@@ -626,8 +620,7 @@ impl CircuitInternal {
                 channel: cid,
                 length,
                 dbr_type,
-                send_broadcast,
-                send_watch,
+                senders,
                 mask,
             } => {
                 // Since the caller should have verified that the channel was open,
@@ -643,8 +636,7 @@ impl CircuitInternal {
                         last_update: Instant::now(),
                         length: length as u32,
                         dbr_type,
-                        sender_b: send_broadcast,
-                        sender_w: send_watch,
+                        senders,
                         channel_id: cid,
                     },
                 );
@@ -776,14 +768,15 @@ impl CircuitInternal {
                     "Got subscription {} response: {:?}",
                     msg.subscription_id, dbr
                 );
-                let transmitter = &self
+                let transmitter = &mut self
                     .monitors
-                    .get(&msg.subscription_id)
+                    .get_mut(&msg.subscription_id)
                     .expect("Should not have been removed anywhere except here");
                 // Send the update... don't check for failure as the client should
                 // manage subscription lifecycles itself
-                let _ = transmitter.sender_b.send(Some(dbr.clone()));
-                let _ = transmitter.sender_w.send(Some(dbr.clone()));
+                if transmitter.senders.send(Some(dbr)).is_none() {
+                    todo!("All receivers have been closed, we should cancel this subscription")
+                }
                 Vec::new()
             }
             ClientMessage::WriteNotifyResponse(msg) => {
@@ -1362,7 +1355,7 @@ impl ClientInternal {
                 .unwrap()
                 .get_senders(&request.name);
 
-            circuit.subscribe_spawn(request.clone(), senders.0, senders.1);
+            circuit.subscribe_spawn(request.clone(), senders);
             self.pending_subs.dispatched(ioid, request);
             self.active_subs
                 .entry(circuit.address)
@@ -1619,7 +1612,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop() {
-        let t_ = tracing_subscriber::fmt()
+        let _ = tracing_subscriber::fmt()
             .with_max_level(LevelFilter::DEBUG)
             .try_init();
 

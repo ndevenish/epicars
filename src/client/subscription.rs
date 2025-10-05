@@ -4,42 +4,69 @@ use tokio::sync::{broadcast, watch};
 
 use crate::dbr::Dbr;
 
-type SenderPair = (broadcast::Sender<Option<Dbr>>, watch::Sender<Option<Dbr>>);
 /// Generate and hold subscription connections
 #[derive(Default)]
 pub(crate) struct SubscriptionKeeper {
-    subscriptions: HashMap<String, SenderPair>,
+    subscriptions: HashMap<String, SenderPair<Option<Dbr>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SenderPair<T>
+where
+    T: Clone + Default,
+{
+    pub broadcast: broadcast::Sender<T>,
+    pub watch: watch::Sender<T>,
+}
+
+type ReceiverPair<T> = (broadcast::Receiver<T>, watch::Receiver<T>);
+
+impl<T> SenderPair<T>
+where
+    T: Clone + Default,
+{
+    /// Attempt to send a value to all receivers, and return the number of listeners
+    ///
+    /// A successful send is one where at least one Receiver was active.
+    /// An unsuccessful send was one where all receivers were closed.
+    pub fn send(&mut self, value: T) -> Option<usize> {
+        match (
+            self.broadcast.send(value.clone()),
+            self.watch.send(value.clone()),
+        ) {
+            (Ok(a), Ok(_)) => Some(a + self.watch.receiver_count()),
+            (Ok(a), Err(_)) => Some(a),
+            (Err(_), Ok(_)) => Some(self.watch.receiver_count()),
+            (Err(_), Err(_)) => None,
+        }
+    }
+
+    fn new(capacity: usize) -> Self {
+        Self {
+            broadcast: broadcast::Sender::new(capacity),
+            watch: watch::Sender::new(Default::default()),
+        }
+    }
+    fn subscribe(&mut self) -> ReceiverPair<T> {
+        (self.broadcast.subscribe(), self.watch.subscribe())
+    }
 }
 
 impl SubscriptionKeeper {
     pub fn new() -> Self {
         SubscriptionKeeper::default()
     }
-    pub fn get_receivers(
-        &mut self,
-        name: &str,
-    ) -> (
-        broadcast::Receiver<Option<Dbr>>,
-        watch::Receiver<Option<Dbr>>,
-    ) {
-        let (send_b, send_w) = self.get_internal_senders(name);
-        (send_b.subscribe(), send_w.subscribe())
+    pub fn get_receivers(&mut self, name: &str) -> ReceiverPair<Option<Dbr>> {
+        self.get_internal_senders(name).subscribe()
     }
 
-    pub fn get_senders(
-        &mut self,
-        name: &str,
-    ) -> (broadcast::Sender<Option<Dbr>>, watch::Sender<Option<Dbr>>) {
-        let (send_b, send_w) = self.get_internal_senders(name);
-        (send_b.clone(), send_w.clone())
+    pub fn get_senders(&mut self, name: &str) -> SenderPair<Option<Dbr>> {
+        self.get_internal_senders(name).clone()
     }
 
-    fn get_internal_senders(
-        &mut self,
-        name: &str,
-    ) -> &(broadcast::Sender<Option<Dbr>>, watch::Sender<Option<Dbr>>) {
+    fn get_internal_senders(&mut self, name: &str) -> &mut SenderPair<Option<Dbr>> {
         self.subscriptions
             .entry(name.to_string())
-            .or_insert_with(|| (broadcast::Sender::new(32), watch::Sender::new(None)))
+            .or_insert_with(|| SenderPair::new(32))
     }
 }
