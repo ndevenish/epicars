@@ -836,6 +836,8 @@ struct ClientInternal {
     cancellation: CancellationToken,
     /// Keep track of open subscriptions, independently of circuit, for reconnection
     subscriptions: Arc<Mutex<SubscriptionKeeper>>,
+    /// The queue to handle notifications about discovered PV IOC
+    pv_search_results: mpsc::UnboundedReceiver<(String, Option<SocketAddr>)>,
     /// Currently active connections
     circuits: HashMap<SocketAddr, CircuitState>,
     /// Known and trusted resolutions to specific PV requests
@@ -1016,10 +1018,14 @@ impl ClientInternal {
         subscriptions: Arc<Mutex<SubscriptionKeeper>>,
         started: oneshot::Sender<Result<mpsc::UnboundedSender<ClientRequest>, io::Error>>,
     ) {
+        // Make a channel for search results
+        let (search_tx, search_rx) = mpsc::unbounded_channel();
+
         let searcher = match Self::start_searcher(
             search_port,
             broadcast_addresses,
             cancel_token.clone(),
+            search_tx,
         )
         .await
         {
@@ -1031,9 +1037,11 @@ impl ClientInternal {
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let (tx_i, mut rx_i) = mpsc::unbounded_channel();
+
         let mut internal = ClientInternal {
             cancellation: cancel_token,
             subscriptions,
+            pv_search_results: search_rx,
             circuits: HashMap::new(),
             observed_beacons: Default::default(),
             searcher,
@@ -1063,6 +1071,7 @@ impl ClientInternal {
                     None => break,
                 },
                 request = rx_i.recv() => internal.handle_internal_request(request.unwrap()),
+                Some((pv, addr)) = internal.pv_search_results.recv() => internal.handle_pv_result(&pv, addr),
             }
         }
     }
@@ -1071,11 +1080,13 @@ impl ClientInternal {
         search_port: u16,
         broadcast_addresses: Option<Vec<SocketAddr>>,
         cancel_token: CancellationToken,
+        results_sender: mpsc::UnboundedSender<(String, Option<SocketAddr>)>,
     ) -> Result<Searcher, io::Error> {
         // let cancel = CancellationToken::new();
         let builder = SearcherBuilder::new()
             .search_port(search_port)
-            .stop_token(cancel_token);
+            .stop_token(cancel_token)
+            .report_to(results_sender);
         let searcher = if let Some(addr) = broadcast_addresses {
             builder.broadcast_to(addr)
         } else {
@@ -1132,7 +1143,7 @@ impl ClientInternal {
                 result,
             } => {
                 debug!("Got CA read request for {name}");
-                let ioc: Option<SocketAddr> = self.handle_ioc_search_spawn(&name);
+                let ioc: Option<SocketAddr> = self.queue_ioc_search(&name, false);
                 self.pending_reads.add(
                     ReadRequest {
                         name: name.clone(),
@@ -1150,7 +1161,7 @@ impl ClientInternal {
                 result,
             } => {
                 debug!("Got CA write request for {name}");
-                let ioc = self.handle_ioc_search_spawn(&name);
+                let ioc = self.queue_ioc_search(&name, false);
                 self.pending_writes.add(
                     WriteRequest {
                         name,
@@ -1162,7 +1173,7 @@ impl ClientInternal {
                 );
             }
             ClientRequest::Subscribe(request) => {
-                let ioc = self.handle_ioc_search_spawn(&request.name);
+                let ioc = self.queue_ioc_search(&request.name, true);
                 self.pending_subs.add(request, ioc);
             }
         }
@@ -1170,13 +1181,11 @@ impl ClientInternal {
 
     /// Do logic for searching for IOC
     ///
-    /// If necessary, this will spawn a new search task, and then when an IOC has been
-    /// searched for (with success or failure), post a message back to our internal
-    /// event loop with the results.
-    ///
     /// If the IOC is already known, then it is returned (although the internal
     /// message saying that it is available is also posted).
-    fn handle_ioc_search_spawn(&mut self, name: &str) -> Option<SocketAddr> {
+    ///
+    /// If the IOC is not known, then a search will be started.
+    fn queue_ioc_search(&mut self, name: &str, eternal: bool) -> Option<SocketAddr> {
         if let Some(addr) = self.known_ioc.get(name) {
             debug!("  Known IOC: {addr}");
             // We already have it, send ourselves a message to proceed
@@ -1190,16 +1199,60 @@ impl ClientInternal {
         } else {
             debug!("Doing IOC search for unrecognised PV: {name}");
             // We don't know this IOC, we have to search for it.
-            let handle = self.searcher.search_spawn(name.to_string());
-            let req = self.internal_requests.clone();
-            let name = name.to_string();
-            self.subtasks.spawn(async move {
-                let _ = req.send(ClientInternalRequest::DeterminedPV(
-                    name,
-                    handle.await.ok().flatten(),
-                ));
-            });
+            if eternal {
+                self.searcher.queue_search_until_found(name.to_string());
+            } else {
+                self.searcher.queue_search(name.to_string());
+            }
             None
+        }
+    }
+
+    fn handle_pv_result(&mut self, name: &str, address: Option<SocketAddr>) {
+        debug!("Got notification of PV {name} search conclusion: {address:?}");
+        // If this search failed, notify reads and writes
+        let Some(addr) = address else {
+            self.pending_reads.mark_no_pv_found(name);
+            self.pending_writes.mark_no_pv_found(name);
+            return;
+        };
+        // Mark anything waiting for this as now waiting for the circuit
+        self.pending_reads.found_pv(name, addr);
+        self.pending_writes.found_pv(name, addr);
+        self.pending_subs.found_pv(name, addr);
+        self.known_ioc.insert(name.to_string(), addr);
+
+        // Temporarily remove the circuit to avoid mutable borrow of self
+        let circuit = self.circuits.remove(&addr);
+
+        // Now we know what server a given PV is served by, check if we already have a connection
+        match circuit {
+            Some(CircuitState::Open(circuit)) => {
+                // We already have this circuit open! Send any read requests to it
+                self.send_outstanding_requests_for(&circuit);
+                self.circuits.insert(addr, CircuitState::Open(circuit));
+            }
+            Some(CircuitState::Pending) => {
+                // Nothing to do, this will open and handle requests when ready
+                // So, put the circuit back.
+                self.circuits.insert(addr, CircuitState::Pending);
+            }
+            None => {
+                // We need to open this circuit
+                self.circuits.insert(addr, CircuitState::Pending);
+                let req = self.internal_requests.clone();
+                self.subtasks.spawn(async move {
+                    match Circuit::connect(&addr, None, None, req.clone()).await {
+                        Ok(circuit) => {
+                            let _ = req.send(ClientInternalRequest::OpenedCircuit(circuit));
+                        }
+                        Err(e) => {
+                            warn!("Failed to connect to Circuit {addr}: {e}");
+                            let _ = req.send(ClientInternalRequest::CircuitOpenFailed(addr));
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -1211,53 +1264,8 @@ impl ClientInternal {
     fn handle_internal_request(&mut self, request: ClientInternalRequest) {
         trace!("Handling internal request: {request:?}");
         match request {
-            ClientInternalRequest::DeterminedPV(name, socket_addr) => {
-                debug!("Got notification of PV {name} determined: {socket_addr:?}");
-
-                let Some(addr) = socket_addr else {
-                    self.pending_reads.mark_no_pv_found(&name);
-                    self.pending_writes.mark_no_pv_found(&name);
-                    return;
-                };
-                // Mark anything waiting for this as now waiting for the circuit
-                self.pending_reads.found_pv(&name, addr);
-                self.pending_writes.found_pv(&name, addr);
-                self.pending_subs.found_pv(&name, addr);
-                self.known_ioc.insert(name, addr);
-
-                // Temporarily remove the circuit to avoid mutable borrow of self
-                let circuit = self.circuits.remove(&addr);
-
-                // Now we know what server a given PV is served by, check if we already have a connection
-                match circuit {
-                    Some(CircuitState::Open(circuit)) => {
-                        // We already have this circuit open! Send any read requests to it
-                        self.send_outstanding_requests_for(&circuit);
-                        self.circuits.insert(addr, CircuitState::Open(circuit));
-                    }
-                    Some(CircuitState::Pending) => {
-                        // Nothing to do, this will open and handle requests when ready
-                        // So, put the circuit back.
-                        self.circuits.insert(addr, CircuitState::Pending);
-                    }
-                    None => {
-                        // We need to open this circuit
-                        self.circuits.insert(addr, CircuitState::Pending);
-                        let req = self.internal_requests.clone();
-                        self.subtasks.spawn(async move {
-                            match Circuit::connect(&addr, None, None, req.clone()).await {
-                                Ok(circuit) => {
-                                    let _ = req.send(ClientInternalRequest::OpenedCircuit(circuit));
-                                }
-                                Err(e) => {
-                                    warn!("Failed to connect to Circuit {addr}: {e}");
-                                    let _ =
-                                        req.send(ClientInternalRequest::CircuitOpenFailed(addr));
-                                }
-                            }
-                        });
-                    }
-                }
+            ClientInternalRequest::DeterminedPV(name, address) => {
+                self.handle_pv_result(&name, address)
             }
             ClientInternalRequest::OpenedCircuit(circuit) => {
                 debug!("Circuit to {} opened", circuit.address);
@@ -1302,7 +1310,7 @@ impl ClientInternal {
                         if let Some(request) = self.pending_subs.dispatched.remove(&ioid) {
                             // Retry this subscription
                             debug!("Resubmitting subscription to {}", request.name);
-                            let ioc = self.handle_ioc_search_spawn(&request.name);
+                            let ioc = self.queue_ioc_search(&request.name, true);
                             self.pending_subs.add(request, ioc);
                         }
                     }
