@@ -33,8 +33,7 @@
 //! Here is an example of reading a single PV once, and subscribing to a different one:
 //!
 //! ```
-//! use epicars::Client;
-//!
+//! use epicars::{Client, dbr::{DbrCategory}};
 //! # use epicars::{ServerBuilder, providers::IntercomProvider};
 //! #
 //! #[tokio::main]
@@ -46,13 +45,13 @@
 //!     let mut client = Client::new().await.unwrap();
 //!
 //!     // Read once-off, directly
-//!     let number = client.read_pv("NUMERIC_VALUE").await.unwrap();
-//!     println!("Read NUMERIC_VALUE: {number:?}");
+//!     let number : i32 = client.get("NUMERIC_VALUE").await.unwrap();
+//!     println!("Read NUMERIC_VALUE: {number}");
 //!
 //!     // Or get a subscriber to receieve all updates
-//!     let (mut reader, _) = client.subscribe("NUMERIC_VALUE").await.unwrap();
+//!     let mut reader = client.subscribe("NUMERIC_VALUE", DbrCategory::Basic);
 //!
-//!     while let Ok(value) = reader.recv().await {
+//!     while let Ok(Some(value)) = reader.recv().await {
 //!         println!("Got update: {:?}", value.value());
 //! #       break;
 //!     }
@@ -93,6 +92,7 @@ pub mod client;
 pub use crate::client::Client;
 
 pub mod dbr;
+
 pub mod messages;
 
 pub use crate::providers::Provider;
