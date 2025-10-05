@@ -1591,8 +1591,8 @@ impl Client {
     /// closed (at which point the outer [broadcast::Receiver] will
     /// return it's [broadcast::error::RecvError]).
     ///
-    /// If the subscription is explicitly ended, then `None` will be
-    /// sent as a payload and then the channel will be closed.
+    /// To unsubscribe, drop the receiver.
+    ///
     pub fn subscribe(&self, name: &str, kind: DbrCategory) -> broadcast::Receiver<Option<Dbr>> {
         let (rec, _) = self.subscriptions.lock().unwrap().get_receivers(name);
         let _ = self
