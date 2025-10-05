@@ -15,7 +15,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     messages::{self, AsBytes, Message},
@@ -164,7 +164,7 @@ impl Searcher {
                     },
                     _ = state.next_attempt() => if let Some(buf) = state.handle_retries_and_timeouts() {
                         for addr in &state.broadcast_addresses {
-                            debug!("Sending retry to: {addr}");
+                            trace!("Sending retry to: {addr}");
                             send_socket
                                 .send_to::<SocketAddr>(&buf, *addr)
                                 .await
@@ -350,7 +350,7 @@ impl SearcherInternal {
         let buffer: Vec<_> = messages.into_iter().flat_map(|m| m.as_bytes()).collect();
         // Send it to all of our broadcast IPs
         for addr in &self.broadcast_addresses {
-            debug!("Sending search packet to: {addr}");
+            trace!("Sending search packet to: {addr}");
             socket
                 .send_to::<SocketAddr>(&buffer, *addr)
                 .await
@@ -374,7 +374,10 @@ impl SearcherInternal {
             };
             // What was this a response to?
             let Some(pv_name) = self.in_flight.remove(&response.search_id) else {
-                debug!("Received unrequested or duplicate search response");
+                debug!(
+                    "Received unrequested or duplicate search response: {:?}",
+                    response
+                );
                 continue;
             };
             // Now we know we have a response to an actual request - clear out any past
@@ -436,8 +439,10 @@ impl SearcherInternal {
             .values_mut()
             .filter(|s| s.next_search_at < now)
             .map(|s| {
-                debug!("Sending retry search for: {}", s.name);
-                Message::Search(s.new_search(wrapping_add(&mut self.search_id)))
+                let search_id = wrapping_add(&mut self.search_id);
+                self.in_flight.insert(search_id, s.name.clone());
+                debug!("Sending retry search {} for: {}", search_id, s.name);
+                Message::Search(s.new_search(search_id))
             })
             .peekable();
 
