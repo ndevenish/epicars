@@ -1,9 +1,10 @@
-use std::time::Duration;
+use std::{ops::Sub, time::Duration};
 
 use clap::Parser;
 use epicars::{client::Client, dbr::DbrValue};
 
 use tracing::{info, level_filters::LevelFilter};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt};
 
 #[derive(Parser)]
 struct Options {
@@ -25,13 +26,26 @@ async fn main() {
     }));
     let opts = Options::parse();
 
-    tracing_subscriber::fmt()
-        .with_max_level(match opts.verbose {
-            0 => LevelFilter::INFO,
-            1 => LevelFilter::DEBUG,
-            2.. => LevelFilter::TRACE,
-        })
-        .init();
+    let filter = EnvFilter::default()
+        .add_directive(
+            match opts.verbose {
+                0 => LevelFilter::INFO,
+                1 => LevelFilter::DEBUG,
+                2.. => LevelFilter::TRACE,
+            }
+            .into(),
+        )
+        .add_directive("tokio=off".parse().unwrap())
+        .add_directive("runtime=off".parse().unwrap());
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        // .with_target(false)
+        .with_level(true)
+        .with_filter(filter);
+    let console_layer = console_subscriber::spawn();
+    let subscriber = tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(console_layer);
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
 
     let client = Client::new().await.unwrap();
     let mut monitor = client.subscribe(&opts.name, epicars::dbr::DbrCategory::Basic);

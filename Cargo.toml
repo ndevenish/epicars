@@ -35,6 +35,7 @@ whoami = { version = "1.6.0", default-features = false }
 anyhow = "1.0.100"
 clap = { version = "4.5.43", features = ["derive"] }
 colored = "3.0.0"
+console-subscriber = "0.4.1"
 futures = "0.3.31"
 futures-sink = "0.3.31"
 time = { version = "0.3.43", features = ["formatting", "macros"] }
