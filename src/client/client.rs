@@ -430,10 +430,6 @@ impl CircuitInternal {
         let remote_exit = loop {
             let next_timing_stop =
                 max(self.last_echo_sent_at, self.last_received_message_at) + activity_period;
-            trace!(
-                "Next timing stop: {}",
-                (next_timing_stop - Instant::now()).as_secs_f32()
-            );
             let messages_out = select! {
                 _ = self.cancel.cancelled() => break false,
                 incoming = framed.next() => match incoming {
@@ -654,24 +650,28 @@ impl CircuitInternal {
             }
             CircuitRequest::Unsubscribe(ioid) => {
                 debug!("Got unsubscribe request for: {ioid}");
-                // Remove entries for this subscription. If it isn't present
-                // in all of the tracking tables, then assume we're in the middle
-                // of shutdown and don't send an explicit EventCancel.
-                if let Some(monitor) = self.monitors.remove(&ioid)
-                    && let Some(channel) = self.channels.get(&monitor.channel_id)
-                {
-                    return vec![
-                        messages::EventCancel {
-                            data_type: monitor.dbr_type,
-                            data_count: monitor.length,
-                            server_id: channel.sid,
-                            subscription_id: ioid,
-                        }
-                        .into(),
-                    ];
-                };
-                Vec::new()
+                self.create_unsubscribe_message(ioid).into_iter().collect()
             }
+        }
+    }
+    fn create_unsubscribe_message(&mut self, ioid: Ioid) -> Option<Message> {
+        // Remove entries for this subscription. If it isn't present
+        // in all of the tracking tables, then assume we're in the middle
+        // of shutdown and don't send an explicit EventCancel.
+        if let Some(monitor) = self.monitors.remove(&ioid)
+            && let Some(channel) = self.channels.get(&monitor.channel_id)
+        {
+            Some(
+                messages::EventCancel {
+                    data_type: monitor.dbr_type,
+                    data_count: monitor.length,
+                    server_id: channel.sid,
+                    subscription_id: ioid,
+                }
+                .into(),
+            )
+        } else {
+            None
         }
     }
     fn handle_message(&mut self, message: ClientMessage) -> Vec<Message> {
@@ -775,7 +775,13 @@ impl CircuitInternal {
                 // Send the update... don't check for failure as the client should
                 // manage subscription lifecycles itself
                 if transmitter.senders.send(Some(dbr)).is_none() {
-                    todo!("All receivers have been closed, we should cancel this subscription")
+                    debug!(
+                        "Got subscription message but all listeners have dropped. Unsubscribing."
+                    );
+                    return self
+                        .create_unsubscribe_message(msg.subscription_id)
+                        .into_iter()
+                        .collect();
                 }
                 Vec::new()
             }
@@ -789,6 +795,10 @@ impl CircuitInternal {
                 } else {
                     let _ = tx.send(Err(ClientError::WriteFailed(msg.status_code)));
                 }
+                Vec::new()
+            }
+            ClientMessage::EventCancelResponse(_) => {
+                trace!("Got confirmation of EventCancel from server");
                 Vec::new()
             }
             msg => {

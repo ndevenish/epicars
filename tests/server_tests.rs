@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use epicars::providers::intercom::Intercom;
 use epicars::{Client, Provider, ServerBuilder, ServerHandle, providers::IntercomProvider};
-use tokio::{select, sync::broadcast};
+use tokio::select;
 use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::fmt::TestWriter;
 /// Create a client and server instance, connected to each other via random port
@@ -45,27 +45,28 @@ async fn test_events() {
     // Start up a simple server
     let mut provider = IntercomProvider::new();
     let pv = provider.add_pv("TEST", 42i16).unwrap();
-    let (mut client, server) = connected_client_server(provider).await;
+    let (client, server) = connected_client_server(provider).await;
 
     // Validate this works
-    assert_eq!(client.read_pv("TEST").await.unwrap(), 42i16.into());
-    let (mut sub, sub_token) = client.subscribe("TEST").await.unwrap();
-    assert_eq!(sub.try_recv().unwrap().value(), &42i16.into());
+    assert_eq!(client.get::<i16>("TEST").await.unwrap(), 42i16);
+    let mut sub = client.subscribe("TEST", epicars::dbr::DbrCategory::Basic);
+    // Validate we get an initial message without changing
+    assert_eq!(sub.recv().await.unwrap().unwrap().value(), &42i16.into());
     pv.store(413i16);
     select! {
         _ = tokio::time::sleep(Duration::from_secs(4)) => panic!("Did not get subscription event"),
         v = sub.recv() => {
-            assert_eq!(v.unwrap().value(), &413i16.into());
+            assert_eq!(v.unwrap().unwrap().value(), &413i16.into());
         }
     }
 
-    // Now, unsubscribe
-    client.unsubscribe(sub_token).await;
-    // Make sure that if we try to listen again we fail
-    assert_eq!(
-        sub.recv().await.unwrap_err(),
-        broadcast::error::RecvError::Closed
-    );
+    // Used to test unsubscribe flow here... this is not possible now as
+    // by reconnection design it is impossible to hold a broadcast
+    // receiver that will never receive anything
+    //
+    // The following just ensures log messages mentioning this are printed
+    drop(sub);
+    pv.store(100i16);
     tokio::time::sleep(Duration::from_millis(100)).await;
     server.stop().await.unwrap();
 }
@@ -81,7 +82,7 @@ async fn test_read_written_strings() {
         .try_init();
     let mut provider = IntercomProvider::new();
     let pv: Intercom<String> = provider.add_pv("TEST", "".to_string()).unwrap();
-    let (mut client, _server) = connected_client_server(provider).await;
-    client.write_pv("TEST", "Atest".to_string()).await.unwrap();
+    let (client, _server) = connected_client_server(provider).await;
+    client.put("TEST", "Atest").await.unwrap();
     assert_eq!(pv.load(), "Atest");
 }
