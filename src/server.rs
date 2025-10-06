@@ -532,6 +532,10 @@ impl<L: Provider> Circuit<L> {
                         Err(MessageError::ErrorResponse(message)) => {
                             error!("{id}: Got reading server messages generated error response: {message}");
                             continue;
+                        },
+                        Err(MessageError::Unknown(x)) => {
+                            error!("{id}: Message error: {x}");
+                            continue;
                         }
                     };
                     match circuit.handle_message(message).await {
@@ -579,7 +583,20 @@ impl<L: Provider> Circuit<L> {
             trace!("Got monitor update for closed subscription!!");
             return Ok(Vec::new());
         };
-        let dbr = subscription.receiver.recv().await.unwrap();
+        let dbr = match subscription.receiver.recv().await {
+            Ok(v) => v,
+            Err(broadcast::error::RecvError::Closed) => {
+                return Err(MessageError::Unknown(
+                    "Receiver channel is closed".to_string(),
+                ));
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                warn!("Dropped {n} update messages on monitor channel {pv_name}");
+                return Err(MessageError::Unknown(format!(
+                    "Too many updates - dropped {n} messages"
+                )));
+            }
+        };
 
         debug!("Circuit got update notification: {dbr:?}");
         let (item_count, data) = dbr

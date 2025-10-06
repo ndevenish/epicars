@@ -751,6 +751,8 @@ pub enum MessageError {
     InvalidField(String),
     #[error("Error: {0}")]
     ErrorResponse(ErrorCondition),
+    #[error("An unknown error occured: {0}")]
+    Unknown(String),
 }
 
 impl From<nom::Err<nom::error::Error<&[u8]>>> for MessageError {

@@ -201,7 +201,7 @@ impl Default for PV {
             value: Arc::new(Mutex::new(DbrValue::Int(vec![0]))),
             minimum_length: None,
             timestamp: SystemTime::now(),
-            sender: broadcast::Sender::new(16),
+            sender: broadcast::Sender::new(256),
             triggers: Default::default(),
             epics_record_type: None,
             read_only: false,
