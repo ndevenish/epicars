@@ -137,11 +137,17 @@ pub struct Watcher<T>
 where
     T: Clone + for<'a> TryFrom<&'a DbrValue>,
 {
-    watcher: watch::Receiver<Dbr>,
+    watcher: watch::Receiver<Option<Dbr>>,
     _phantom: PhantomData<T>,
 }
 
-pub struct NoConvert {}
+#[derive(Error, Debug)]
+pub enum WatcherError {
+    #[error("Could not convert Dbr to type")]
+    NoConvert(Box<Dbr>),
+    #[error("The channel is uninitialised: Has not received it's initial value yet")]
+    Uninitialised,
+}
 
 impl<T> Watcher<T>
 where
@@ -154,11 +160,22 @@ where
     /// confusion.
     ///
     /// If the value cannot be converted into the chosen data type, then a
-    /// [`NoConvert`] error is returned.
+    /// [`WatcherError::NoConvert`] error is returned. If the watcher has not
+    /// yet received it's initial value, then [`WatcherError::Uninitialised`]
+    /// is returned.
     ///
     /// For details, see [`watch::Receiver::borrow`].
-    pub fn borrow(&self) -> Result<T, NoConvert> {
-        TryInto::<T>::try_into(self.watcher.borrow().value()).map_err(|_| NoConvert {})
+    pub fn borrow(&self) -> Result<T, WatcherError> {
+        TryInto::<T>::try_into(
+            self.watcher
+                .borrow()
+                .as_ref()
+                .ok_or(WatcherError::Uninitialised)?
+                .value(),
+        )
+        .map_err(|_| {
+            WatcherError::NoConvert(Box::new(self.watcher.borrow().as_ref().unwrap().clone()))
+        })
     }
 
     /// Fetch the most recently sent value, and mark the value as seen.
@@ -167,11 +184,21 @@ where
     /// beyond the internal conversion.
     ///
     /// If the value cannot be converted into the chosen data type, then a
-    /// [`NoConvert`] error is returned.
+    /// [`WatcherError::NoConvert`] error is returned. If the watcher has not
+    /// yet received it's initial value, then [`WatcherError::Uninitialised`]
+    /// is returned.
     ///
     /// For details, see [`watch::Receiver::borrow_and_update`].
-    pub fn borrow_and_update(&mut self) -> Result<T, NoConvert> {
-        TryInto::<T>::try_into(self.watcher.borrow_and_update().value()).map_err(|_| NoConvert {})
+    pub fn borrow_and_update(&mut self) -> Result<T, WatcherError> {
+        let dbr = self.watcher.borrow_and_update();
+        if dbr.is_none() {
+            return Err(WatcherError::Uninitialised);
+        }
+        TryInto::<T>::try_into(dbr.clone().unwrap().value())
+            .ok()
+            .ok_or(WatcherError::NoConvert(Box::new(
+                dbr.clone().unwrap().clone(),
+            )))
     }
 
     /// Wait for a change notification, then mark the newest value as seen.
@@ -249,13 +276,20 @@ where
     ) -> Result<T, watch::error::RecvError> {
         self.watcher
             .wait_for(|d| {
-                TryInto::<T>::try_into(d.value())
+                let Some(dbr) = d else {
+                    return false;
+                };
+                TryInto::<T>::try_into(dbr.value())
                     .map(|v| f(&v))
                     .unwrap_or(false)
             })
             .await
             // Note: Unwrap fine here as we already tried the conversion inside
             // the predicate and we only passed the event through if it converted
-            .map(|v| TryInto::<T>::try_into(v.value()).ok().unwrap())
+            .map(|v| {
+                TryInto::<T>::try_into(v.clone().unwrap().value())
+                    .ok()
+                    .unwrap()
+            })
     }
 }
