@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use thiserror::Error;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::dbr::{Dbr, DbrValue};
 
@@ -133,4 +133,129 @@ where
     }
 }
 
-pub struct Watcher {}
+pub struct Watcher<T>
+where
+    T: Clone + for<'a> TryFrom<&'a DbrValue>,
+{
+    watcher: watch::Receiver<Dbr>,
+    _phantom: PhantomData<T>,
+}
+
+pub struct NoConvert {}
+
+impl<T> Watcher<T>
+where
+    T: Clone + for<'a> TryFrom<&'a DbrValue>,
+{
+    /// Fetch the most recently sent value, without marking it as seen.
+    ///
+    /// Note: This does not strictly borrow, unlike the [`watch::Receiver`]
+    /// that it wraps. The naming is kept in an attempt to reduce API
+    /// confusion.
+    ///
+    /// If the value cannot be converted into the chosen data type, then a
+    /// [`NoConvert`] error is returned.
+    ///
+    /// For details, see [`watch::Receiver::borrow`].
+    pub fn borrow(&self) -> Result<T, NoConvert> {
+        TryInto::<T>::try_into(self.watcher.borrow().value()).map_err(|_| NoConvert {})
+    }
+
+    /// Fetch the most recently sent value, and mark the value as seen.
+    ///
+    /// Much like [`Watcher::borrow`], this also does not strictly borrow,
+    /// beyond the internal conversion.
+    ///
+    /// If the value cannot be converted into the chosen data type, then a
+    /// [`NoConvert`] error is returned.
+    ///
+    /// For details, see [`watch::Receiver::borrow_and_update`].
+    pub fn borrow_and_update(&mut self) -> Result<T, NoConvert> {
+        TryInto::<T>::try_into(self.watcher.borrow_and_update().value()).map_err(|_| NoConvert {})
+    }
+
+    /// Wait for a change notification, then mark the newest value as seen.
+    ///
+    /// This returns an error if and only if the [`watch::Sender`] is dropped.
+    ///
+    /// For details, see [`watch::Receiver::changed`].
+    ///
+    /// ## Cancel Safety
+    ///
+    /// This method is cancel safe.
+    ///
+    pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
+        self.watcher.changed().await
+    }
+
+    /// Check if the channel contains an unobserved message.
+    ///
+    /// Note that this will mark the message as changed, even if it compares
+    /// equal.
+    ///
+    /// An error will be returned if the Sender has been dropped. and thus the
+    /// channel is closed.
+    ///
+    /// For details, see [`watch::Receiver::has_changed`].
+    pub fn has_changed(&self) -> Result<bool, watch::error::RecvError> {
+        self.watcher.has_changed()
+    }
+
+    /// Mark the state has changed.
+    ///
+    /// This is useful for triggering an initial change notification after subscribing to synchronize new receivers.
+    ///
+    /// For details, see [`watch::Receiver::mark_changed`].
+    pub fn mark_changed(&mut self) {
+        self.watcher.mark_changed();
+    }
+
+    /// Mark the state as unchanged.
+    ///
+    /// This is useful if you are not interested in the current value visible in the receiver.
+    ///
+    /// For details, see [`watch::Receiver::mark_unchanged`].
+    pub fn mark_unchanged(&mut self) {
+        self.watcher.mark_unchanged();
+    }
+
+    /// Returns `true` if both receivers belong to the same channel.
+    pub fn same_channel(&self, other: &Self) -> bool {
+        self.watcher.same_channel(&other.watcher)
+    }
+
+    /// Wait for a value that satisfies the provided condition.
+    ///
+    /// If the condition is fulfilled already, then this will return
+    /// immediately without awaiting. Once the closure returns `true`, the
+    /// current value will be immediately returned.
+    ///
+    /// Inner values that would normally cause a `NoConvert` error because
+    /// the type cannot be converted, will not raise an error for this
+    /// method. Instead, these conditions will count as "false" for purposes
+    /// of matching.
+    ///
+    /// If the channel is closed, then [`WatcherRecvError::Closed`] will be returned.
+    ///
+    /// For details, see [`watch::Receiver::wait_for`].
+    ///
+    /// ## Cancel safety
+    ///
+    /// This method is cancel safe.
+    ///
+    pub async fn wait_for(
+        &mut self,
+        mut f: impl FnMut(&T) -> bool,
+    ) -> Result<T, watch::error::RecvError> {
+        self.watcher
+            .wait_for(|d| {
+                TryInto::<T>::try_into(d.value())
+                    .map(|v| f(&v))
+                    .unwrap_or(false)
+            })
+            .await
+            // Note: Unwrap fine here as we already tried the conversion inside
+            // the predicate and we only passed the event through if it converted
+            .map(|v| TryInto::<T>::try_into(v.value()).ok().unwrap())
+    }
+}
