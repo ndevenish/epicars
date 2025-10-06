@@ -179,7 +179,7 @@ impl Searcher {
 
     /// Search for the IOC address of a single PV
     pub async fn search_for(&self, name: &str) -> Option<SocketAddr> {
-        self.queue_search(name.to_string()).await.ok().flatten()
+        self.queue_search(name).await.ok().flatten()
     }
 
     /// Queue a search for the IOC controlling a single PV
@@ -190,11 +190,11 @@ impl Searcher {
     ///
     /// PV found through this request will also be sent through to the
     /// [`Searcher::report_to`] queue, in addition to the receiver.
-    pub fn queue_search(&self, name: String) -> oneshot::Receiver<Option<SocketAddr>> {
+    pub fn queue_search(&self, name: &str) -> oneshot::Receiver<Option<SocketAddr>> {
         let (ret_send, ret_recv) = oneshot::channel();
         // Send the request into our async search loop
         let _ = self.pending_requests.send(SearchRequest {
-            name,
+            name: name.to_string(),
             single_report_to: Some(ret_send),
             eternal: false,
         });
@@ -254,7 +254,7 @@ impl SearchAttempt {
     /// Recalculate timings and return a new search message
     fn new_search(&mut self, search_id: u32) -> messages::Search {
         let backoff =
-            Duration::from_millis(32 * 2u64.pow(min(self.active_searches.len(), 11) as u32));
+            Duration::from_millis(32 * 2u64.pow(min(self.active_searches.len(), 9) as u32));
         self.active_searches.push(search_id);
         self.next_search_at = Instant::now() + backoff;
         messages::Search {

@@ -1205,7 +1205,7 @@ impl ClientInternal {
             if eternal {
                 self.searcher.queue_search_until_found(name.to_string());
             } else {
-                self.searcher.queue_search(name.to_string());
+                self.searcher.queue_search(name);
             }
             None
         }
@@ -1619,10 +1619,14 @@ impl Drop for Client {
 
 #[cfg(test)]
 mod tests {
-    use crate::Client;
+    use std::time::Duration;
+
     use crate::providers::IntercomProvider;
     use crate::utils::connected_client_server;
+    use crate::{Client, Server, ServerBuilder};
+    use tracing::info;
     use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::fmt::TestWriter;
 
     #[tokio::test]
     async fn test_stop() {
@@ -1643,10 +1647,31 @@ mod tests {
     }
     #[tokio::test]
     async fn test_monitor() {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(LevelFilter::TRACE)
+            .with_writer(TestWriter::new())
+            .try_init();
         let mut provider = IntercomProvider::new();
         let pv = provider.add_pv("TEST", 10i8).unwrap();
-        let (client, _server) = connected_client_server(provider).await;
+        let (client, server) = connected_client_server(provider).await;
         let mut monitor = client.subscribe::<i16>("TEST");
         assert_eq!(monitor.recv().await.unwrap(), 10i16);
+        pv.store(42);
+        assert_eq!(monitor.recv().await.unwrap(), 42);
+        // Make the server disconnect
+        let search_port = server.search_port();
+        server.stop().await.unwrap();
+        info!("Starting new server");
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let mut provider = IntercomProvider::new();
+        provider.add_pv("TEST", 99i8).unwrap();
+        let server = ServerBuilder::new(provider)
+            .beacons(false)
+            .search_port(search_port)
+            .start()
+            .await
+            .unwrap();
+        assert_eq!(monitor.recv().await.unwrap(), 99);
+        server.stop().await;
     }
 }
