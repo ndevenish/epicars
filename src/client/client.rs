@@ -1662,7 +1662,7 @@ mod tests {
         let search_port = server.search_port();
         server.stop().await.unwrap();
         info!("Starting new server");
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let mut provider = IntercomProvider::new();
         provider.add_pv("TEST", 99i8).unwrap();
         let server = ServerBuilder::new(provider)
