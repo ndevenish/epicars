@@ -7,23 +7,23 @@ use crate::dbr::Dbr;
 /// Generate and hold subscription connections
 #[derive(Default)]
 pub(crate) struct SubscriptionKeeper {
-    subscriptions: HashMap<String, SenderPair<Option<Dbr>>>,
+    subscriptions: HashMap<String, SenderPair<Dbr>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SenderPair<T>
 where
-    T: Clone + Default,
+    T: Clone,
 {
     pub broadcast: broadcast::Sender<T>,
-    pub watch: watch::Sender<T>,
+    pub watch: watch::Sender<Option<T>>,
 }
 
-type ReceiverPair<T> = (broadcast::Receiver<T>, watch::Receiver<T>);
+type ReceiverPair<T> = (broadcast::Receiver<T>, watch::Receiver<Option<T>>);
 
 impl<T> SenderPair<T>
 where
-    T: Clone + Default,
+    T: Clone,
 {
     /// Attempt to send a value to all receivers, and return the number of listeners
     ///
@@ -32,7 +32,7 @@ where
     pub fn send(&mut self, value: T) -> Option<usize> {
         match (
             self.broadcast.send(value.clone()),
-            self.watch.send(value.clone()),
+            self.watch.send(Some(value.clone())),
         ) {
             (Ok(a), Ok(_)) => Some(a + self.watch.receiver_count()),
             (Ok(a), Err(_)) => Some(a),
@@ -44,7 +44,7 @@ where
     fn new(capacity: usize) -> Self {
         Self {
             broadcast: broadcast::Sender::new(capacity),
-            watch: watch::Sender::new(Default::default()),
+            watch: watch::Sender::new(None),
         }
     }
     fn subscribe(&mut self) -> ReceiverPair<T> {
@@ -56,15 +56,15 @@ impl SubscriptionKeeper {
     pub fn new() -> Self {
         SubscriptionKeeper::default()
     }
-    pub fn get_receivers(&mut self, name: &str) -> ReceiverPair<Option<Dbr>> {
+    pub fn get_receivers(&mut self, name: &str) -> ReceiverPair<Dbr> {
         self.get_internal_senders(name).subscribe()
     }
 
-    pub fn get_senders(&mut self, name: &str) -> SenderPair<Option<Dbr>> {
+    pub fn get_senders(&mut self, name: &str) -> SenderPair<Dbr> {
         self.get_internal_senders(name).clone()
     }
 
-    fn get_internal_senders(&mut self, name: &str) -> &mut SenderPair<Option<Dbr>> {
+    fn get_internal_senders(&mut self, name: &str) -> &mut SenderPair<Dbr> {
         self.subscriptions
             .entry(name.to_string())
             .or_insert_with(|| SenderPair::new(32))

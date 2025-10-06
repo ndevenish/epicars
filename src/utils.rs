@@ -9,6 +9,9 @@ use std::{
 use tokio::net::UdpSocket;
 use tracing::{debug, warn};
 
+use crate::{Client, Provider, ServerBuilder, ServerHandle};
+use tracing::info;
+
 pub(crate) fn new_reusable_udp_socket<T: ToSocketAddrs>(address: T) -> io::Result<UdpSocket> {
     let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_port(true)?;
@@ -117,6 +120,39 @@ pub fn get_default_max_search_interval() -> f32 {
         .and_then(|v| v.parse().ok())
         .unwrap_or(300.0f32)
         .max(60f32)
+}
+
+/// Create a client and server instance, connected to each other via random port
+///
+/// Useful for testing
+#[doc(hidden)]
+pub async fn connected_client_server<T>(provider: T) -> (Client, ServerHandle)
+where
+    T: Provider,
+{
+    let server = ServerBuilder::new(provider)
+        .connection_port(0)
+        .search_port(0)
+        .beacons(false)
+        .start()
+        .await
+        .unwrap();
+    info!(
+        "Server ports: {} {}",
+        server.connection_port(),
+        server.search_port()
+    );
+    let client = Client::new_with(
+        server.search_port(),
+        Some(vec![
+            format!("127.0.0.1:{}", server.search_port())
+                .parse()
+                .unwrap(),
+        ]),
+    )
+    .await
+    .unwrap();
+    (client, server)
 }
 
 /// Test utilities

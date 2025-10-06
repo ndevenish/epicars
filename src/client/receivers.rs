@@ -51,15 +51,15 @@ impl From<broadcast::error::TryRecvError> for SubscriberTryRecvError {
 /// to the internal instance.
 pub struct Subscription<T>
 where
-    T: Clone + for<'a> TryFrom<&'a DbrValue>,
+    T: for<'a> TryFrom<&'a DbrValue>,
 {
     inner: broadcast::Receiver<Dbr>,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Clone> Subscription<T>
+impl<T> Subscription<T>
 where
-    T: Clone + for<'a> TryFrom<&'a DbrValue>,
+    T: for<'a> TryFrom<&'a DbrValue>,
 {
     pub fn new(inner: broadcast::Receiver<Dbr>) -> Self {
         Self {

@@ -424,6 +424,14 @@ impl_dbrvalue_conversions_between!(Long, i32);
 impl_dbrvalue_conversions_between!(Float, f32);
 impl_dbrvalue_conversions_between!(Double, f64);
 
+impl TryFrom<&DbrValue> for DbrValue {
+    type Error = ();
+
+    fn try_from(value: &DbrValue) -> Result<Self, Self::Error> {
+        Ok(value.clone())
+    }
+}
+
 // String is special, a lone string encodes as Char
 impl From<String> for DbrValue {
     fn from(value: String) -> Self {

@@ -26,7 +26,7 @@ use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
     client::{
-        Searcher, SearcherBuilder,
+        Searcher, SearcherBuilder, Subscription,
         searcher::CouldNotFindError,
         subscription::{SenderPair, SubscriptionKeeper},
     },
@@ -66,7 +66,7 @@ enum CircuitRequest {
         length: usize,
         dbr_type: DbrType,
         mask: MonitorMask,
-        senders: SenderPair<Option<Dbr>>,
+        senders: SenderPair<Dbr>,
     },
     Unsubscribe(u32),
 }
@@ -318,7 +318,7 @@ impl Circuit {
             .send(CircuitRequest::Unsubscribe(subscription_id))
             .await;
     }
-    fn subscribe_spawn(&self, request: SubscriptionRequest, senders: SenderPair<Option<Dbr>>) {
+    fn subscribe_spawn(&self, request: SubscriptionRequest, senders: SenderPair<Dbr>) {
         let name = request.name.to_string();
         let requests_tx = self.requests_tx.clone();
         tokio::spawn(async move {
@@ -396,7 +396,7 @@ struct Monitor {
     last_update: Instant,
     length: u32,
     dbr_type: DbrType,
-    senders: SenderPair<Option<Dbr>>,
+    senders: SenderPair<Dbr>,
 }
 // Inner circuit state, used to hold async management data
 struct CircuitInternal {
@@ -774,7 +774,7 @@ impl CircuitInternal {
                     .expect("Should not have been removed anywhere except here");
                 // Send the update... don't check for failure as the client should
                 // manage subscription lifecycles itself
-                if transmitter.senders.send(Some(dbr)).is_none() {
+                if transmitter.senders.send(dbr).is_none() {
                     debug!(
                         "Got subscription message but all listeners have dropped. Unsubscribing."
                     );
@@ -1593,18 +1593,21 @@ impl Client {
     ///
     /// To unsubscribe, drop the receiver.
     ///
-    pub fn subscribe(&self, name: &str, kind: DbrCategory) -> broadcast::Receiver<Option<Dbr>> {
+    pub fn subscribe<T>(&self, name: &str) -> Subscription<T>
+    where
+        T: for<'a> TryFrom<&'a DbrValue>,
+    {
         let (rec, _) = self.subscriptions.lock().unwrap().get_receivers(name);
         let _ = self
             .internal_requests
             .send(ClientRequest::Subscribe(SubscriptionRequest {
                 name: name.to_string(),
-                kind,
+                kind: DbrCategory::Basic,
                 basic_type: None,
                 length: 0,
                 monitor: MonitorMask::VALUE,
             }));
-        rec
+        Subscription::new(rec)
     }
 }
 
@@ -1616,9 +1619,10 @@ impl Drop for Client {
 
 #[cfg(test)]
 mod tests {
-    use tracing::level_filters::LevelFilter;
-
     use crate::Client;
+    use crate::providers::IntercomProvider;
+    use crate::utils::connected_client_server;
+    use tracing::level_filters::LevelFilter;
 
     #[tokio::test]
     async fn test_stop() {
@@ -1628,5 +1632,21 @@ mod tests {
 
         let mut client = Client::new().await.unwrap();
         client.stop().await;
+    }
+
+    #[tokio::test]
+    async fn test_basic_get() {
+        let mut provider = IntercomProvider::new();
+        let _pv = provider.add_pv("TEST", 10i8).unwrap();
+        let (client, _server) = connected_client_server(provider).await;
+        assert_eq!(client.get::<i8>("TEST").await.unwrap(), 10i8);
+    }
+    #[tokio::test]
+    async fn test_monitor() {
+        let mut provider = IntercomProvider::new();
+        let pv = provider.add_pv("TEST", 10i8).unwrap();
+        let (client, _server) = connected_client_server(provider).await;
+        let mut monitor = client.subscribe::<i16>("TEST");
+        assert_eq!(monitor.recv().await.unwrap(), 10i16);
     }
 }

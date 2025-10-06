@@ -49,10 +49,10 @@
 //!     println!("Read NUMERIC_VALUE: {number}");
 //!
 //!     // Or get a subscriber to receieve all updates
-//!     let mut reader = client.subscribe("NUMERIC_VALUE", DbrCategory::Basic);
+//!     let mut reader = client.subscribe::<i32>("NUMERIC_VALUE");
 //!
-//!     while let Ok(Some(value)) = reader.recv().await {
-//!         println!("Got update: {:?}", value.value());
+//!     while let Ok(value) = reader.recv().await {
+//!         println!("Got update: {:?}", value);
 //! #       break;
 //!     }
 //! }
