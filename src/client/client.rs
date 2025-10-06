@@ -1672,6 +1672,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(monitor.recv().await.unwrap(), 99);
-        server.stop().await;
+        let _ = server.stop().await;
     }
 }
