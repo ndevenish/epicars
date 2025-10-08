@@ -26,7 +26,7 @@ use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
     client::{
-        Searcher, SearcherBuilder, Subscription,
+        Searcher, SearcherBuilder, Subscription, Watcher, WatcherError,
         searcher::CouldNotFindError,
         subscription::{SenderPair, SubscriptionKeeper},
     },
@@ -774,7 +774,9 @@ impl CircuitInternal {
                     .expect("Should not have been removed anywhere except here");
                 // Send the update... don't check for failure as the client should
                 // manage subscription lifecycles itself
-                if transmitter.senders.send(dbr).is_none() {
+                let send_result = transmitter.senders.send(dbr);
+                debug!("EventAdd Send result: {:?}", send_result);
+                if send_result.is_none() {
                     debug!(
                         "Got subscription message but all listeners have dropped. Unsubscribing."
                     );
@@ -1609,6 +1611,32 @@ impl Client {
             }));
         Subscription::new(rec)
     }
+
+    /// Request a Watcher for a specific PV, by name
+    ///
+    /// [`Watcher`] is a wrapper for [`tokio::sync::watch::Receiver`],
+    /// that converts the returned DBR to a specific basic type.
+    ///
+    /// Although this returns immediately, the reading methods
+    /// ([`Watcher::borrow`] and [`Watcher::borrow_and_update`]) will
+    /// fail with [`WatcherError::Uninitialised`] until the first value
+    /// arrives.
+    fn watch<T>(&self, name: &str) -> Watcher<T>
+    where
+        T: Clone + for<'a> TryFrom<&'a DbrValue>,
+    {
+        let (_, rec) = self.subscriptions.lock().unwrap().get_receivers(name);
+        let _ = self
+            .internal_requests
+            .send(ClientRequest::Subscribe(SubscriptionRequest {
+                name: name.to_string(),
+                kind: DbrCategory::Basic,
+                basic_type: None,
+                length: 0,
+                monitor: MonitorMask::VALUE,
+            }));
+        Watcher::new(rec)
+    }
 }
 
 impl Drop for Client {
@@ -1673,5 +1701,28 @@ mod tests {
             .unwrap();
         assert_eq!(monitor.recv().await.unwrap(), 99);
         let _ = server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn test_monitor_drop_reconnect() {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(LevelFilter::TRACE)
+            .with_writer(TestWriter::new())
+            .try_init();
+        let mut provider = IntercomProvider::new();
+        let pv = provider.add_pv("TEST", 10i8).unwrap();
+        let (client, server) = connected_client_server(provider).await;
+        let mut monitor = client.subscribe::<i16>("TEST");
+
+        assert_eq!(monitor.recv().await.unwrap(), 10i16);
+        info!("Dropping test monitor");
+        drop(monitor);
+        pv.store(42);
+        info!("Written update, sleeping");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Now, get a new one
+        let mut mon2 = client.subscribe::<i16>("TEST");
+        // assert_eq!(monitor.recv().await.unwrap(), 42i16);
+        assert_eq!(mon2.recv().await.unwrap(), 42);
     }
 }

@@ -153,6 +153,12 @@ impl<T> Watcher<T>
 where
     T: Clone + for<'a> TryFrom<&'a DbrValue>,
 {
+    pub fn new(inner: watch::Receiver<Option<Dbr>>) -> Self {
+        Self {
+            watcher: inner,
+            _phantom: PhantomData,
+        }
+    }
     /// Fetch the most recently sent value, without marking it as seen.
     ///
     /// Note: This does not strictly borrow, unlike the [`watch::Receiver`]

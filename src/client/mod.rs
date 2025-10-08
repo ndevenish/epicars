@@ -5,5 +5,5 @@ mod searcher;
 mod subscription;
 
 pub use client::Client;
-pub use receivers::{Subscription, Watcher};
+pub use receivers::{Subscription, Watcher, WatcherError};
 pub use searcher::{Searcher, SearcherBuilder};

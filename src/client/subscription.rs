@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use tokio::sync::{broadcast, watch};
+use tracing::trace;
 
 use crate::dbr::Dbr;
 
@@ -65,8 +66,14 @@ impl SubscriptionKeeper {
     }
 
     fn get_internal_senders(&mut self, name: &str) -> &mut SenderPair<Dbr> {
-        self.subscriptions
+        let r = self
+            .subscriptions
             .entry(name.to_string())
-            .or_insert_with(|| SenderPair::new(32))
+            .or_insert_with(|| SenderPair::new(32));
+        trace!(
+            "Broadcast senders in get_internal: {}",
+            r.broadcast.receiver_count()
+        );
+        r
     }
 }
