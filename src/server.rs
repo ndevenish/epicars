@@ -150,6 +150,11 @@ pub enum ServerEvent {
         circuit_id: u64,
         channel_id: u32,
     },
+    /// A client has unsubscribed from events
+    Unsubscribe {
+        circuit_id: u64,
+        channel_id: u32,
+    },
 }
 
 fn get_broadcast_ips() -> Vec<Ipv4Addr> {
@@ -661,6 +666,10 @@ impl<L: Provider> Circuit<L> {
                     msg.data_type,
                     msg.data_count as usize,
                 );
+                let _ = self.lifecycle_events.send(ServerEvent::Unsubscribe {
+                    circuit_id: self.id,
+                    channel_id: msg.server_id,
+                });
                 channel.subscription = None;
                 Ok(vec![msg.response().into()])
             }
