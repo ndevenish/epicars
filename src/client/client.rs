@@ -26,7 +26,7 @@ use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
     client::{
-        Searcher, SearcherBuilder, Subscription, Watcher, WatcherError,
+        Searcher, SearcherBuilder, Subscription, Watcher,
         searcher::CouldNotFindError,
         subscription::{SenderPair, SubscriptionKeeper},
     },
@@ -1621,7 +1621,7 @@ impl Client {
     /// ([`Watcher::borrow`] and [`Watcher::borrow_and_update`]) will
     /// fail with [`WatcherError::Uninitialised`] until the first value
     /// arrives.
-    fn watch<T>(&self, name: &str) -> Watcher<T>
+    pub fn watch<T>(&self, name: &str) -> Watcher<T>
     where
         T: Clone + for<'a> TryFrom<&'a DbrValue>,
     {
