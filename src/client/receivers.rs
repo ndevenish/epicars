@@ -299,3 +299,15 @@ where
             })
     }
 }
+
+impl<T> Clone for Watcher<T>
+where
+    T: Clone + for<'a> TryFrom<&'a DbrValue>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            watcher: self.watcher.clone(),
+            _phantom: self._phantom,
+        }
+    }
+}
