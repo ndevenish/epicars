@@ -7,7 +7,7 @@ use colored::Colorize;
 use epicars::{ServerBuilder, ServerEvent, providers::IntercomProvider};
 use time::macros::format_description;
 use tokio::{select, sync::broadcast::error::RecvError};
-use tracing::{info, level_filters::LevelFilter};
+use tracing::{debug, info, level_filters::LevelFilter};
 use tracing_subscriber::fmt::time::LocalTime;
 
 #[derive(Parser)]
@@ -17,7 +17,11 @@ struct Options {
     verbose: u8,
 }
 
-async fn watch_lifecycle(mut recv: tokio::sync::broadcast::Receiver<ServerEvent>) {
+pub async fn watch_lifecycle(
+    mut recv: tokio::sync::broadcast::Receiver<ServerEvent>,
+    read: bool,
+    write: bool,
+) {
     let mut peers = HashMap::new();
     let mut client_id: HashMap<u64, String> = HashMap::new();
     let mut channel_names = HashMap::new();
@@ -26,7 +30,7 @@ async fn watch_lifecycle(mut recv: tokio::sync::broadcast::Receiver<ServerEvent>
             Ok(event) => event,
             Err(RecvError::Closed) => break,
             Err(RecvError::Lagged(n)) => {
-                info!("Warning: Lagged behind in server event listening (missed {n} events)");
+                debug!("Warning: Lagged behind in server event listening (missed {n} events)");
                 continue;
             }
         };
@@ -36,9 +40,6 @@ async fn watch_lifecycle(mut recv: tokio::sync::broadcast::Receiver<ServerEvent>
                 peers.insert(id, peer);
             }
             ServerEvent::CircuitClose { id } => {
-                // let addr = peers[&id];
-                let user_str = &client_id[&id];
-                info!("Client {user_str} disconnected");
                 peers.remove(&id);
                 client_id.remove(&id);
                 channel_names.remove(&id);
@@ -48,12 +49,7 @@ async fn watch_lifecycle(mut recv: tokio::sync::broadcast::Receiver<ServerEvent>
                 client_hostname,
                 client_username,
             } => {
-                let addr = peers[&circuit_id];
                 let user_str = format!("{}@{}", client_username.magenta(), client_hostname.blue());
-                info!(
-                    "Client {user_str} connected from {}",
-                    addr.to_string().blue()
-                );
                 client_id.insert(circuit_id, user_str);
                 channel_names.insert(circuit_id, HashMap::new());
             }
@@ -63,61 +59,99 @@ async fn watch_lifecycle(mut recv: tokio::sync::broadcast::Receiver<ServerEvent>
                 channel_name,
             } => {
                 channel_names
-                    .get_mut(&circuit_id)
-                    .unwrap()
+                    .entry(circuit_id)
+                    .or_insert_with(HashMap::new)
                     .insert(channel_id, channel_name);
             }
             ServerEvent::ClearChannel {
                 circuit_id,
                 channel_id,
             } => {
-                // channel_names.remove(&(circuit_id, channel_id));
                 channel_names
                     .get_mut(&circuit_id)
-                    .unwrap()
-                    .remove(&channel_id);
+                    .and_then(|v| v.remove(&channel_id));
             }
             ServerEvent::Read {
                 circuit_id,
                 channel_id,
                 success,
             } => {
-                let user_str = &client_id[&circuit_id];
-                let channel_name = &channel_names[&circuit_id][&channel_id];
-                info!(
-                    "PV: {name}: {:5} by {user_str}",
-                    if success {
-                        "Read".green()
-                    } else {
-                        "Read (failed) ".red()
-                    },
-                    name = channel_name.bold(),
-                );
+                if read {
+                    let user_str = &client_id.get(&circuit_id).cloned().unwrap_or_else(|| {
+                        format!("(unknown user {}", circuit_id.to_string().green())
+                    });
+                    let channel_name = channel_names
+                        .get(&circuit_id)
+                        .and_then(|m| m.get(&channel_id))
+                        .cloned()
+                        .unwrap_or(format!("(Unknown {circuit_id}:{channel_id})"));
+                    info!(
+                        "{:5} {name} by {user_str}",
+                        if success {
+                            "Read".green()
+                        } else {
+                            "Read (failed) ".red()
+                        },
+                        name = channel_name.bold(),
+                    );
+                }
             }
             ServerEvent::Write {
                 circuit_id,
                 channel_id,
                 success,
             } => {
-                let user_str = &client_id[&circuit_id];
-                let channel_name = &channel_names[&circuit_id][&channel_id];
-                info!(
-                    "PV: {}: {:5} by {user_str}",
-                    channel_name.bold(),
-                    if success {
-                        "Write".yellow()
-                    } else {
-                        "Write (failed)".red()
-                    },
-                );
+                if write {
+                    let user_str = &client_id.get(&circuit_id).cloned().unwrap_or_else(|| {
+                        format!("(unknown user {}", circuit_id.to_string().green())
+                    });
+                    let channel_name = channel_names
+                        .get(&circuit_id)
+                        .and_then(|m| m.get(&channel_id))
+                        .cloned()
+                        .unwrap_or(format!("(Unknown {circuit_id}:{channel_id})"));
+                    info!(
+                        "{:5} {name} by {user_str}",
+                        if success {
+                            "Write".yellow()
+                        } else {
+                            "Write (failed)".red()
+                        },
+                        name = channel_name.bold(),
+                    );
+                }
             }
             ServerEvent::Subscribe {
                 circuit_id,
                 channel_id,
             } => {
-                let user_str = &client_id[&circuit_id];
-                let channel_name = &channel_names[&circuit_id][&channel_id];
-                info!("{user_str} subscribed to {}", channel_name.bold());
+                if read {
+                    let user_str = &client_id.get(&circuit_id).cloned().unwrap_or_else(|| {
+                        format!("(unknown user {}", circuit_id.to_string().green())
+                    });
+                    let channel_name = channel_names
+                        .get(&circuit_id)
+                        .and_then(|m| m.get(&channel_id))
+                        .cloned()
+                        .unwrap_or(format!("(Unknown {circuit_id}:{channel_id})"));
+                    info!("{user_str} subscribed to {}", channel_name.bold());
+                }
+            }
+            ServerEvent::Unsubscribe {
+                circuit_id,
+                channel_id,
+            } => {
+                if read {
+                    let user_str = &client_id.get(&circuit_id).cloned().unwrap_or_else(|| {
+                        format!("(unknown user {}", circuit_id.to_string().green())
+                    });
+                    let channel_name = channel_names
+                        .get(&circuit_id)
+                        .and_then(|m| m.get(&channel_id))
+                        .cloned()
+                        .unwrap_or(format!("(Unknown {circuit_id}:{channel_id})"));
+                    info!("{user_str} unsubscribed from {}", channel_name.bold());
+                }
             }
         }
     }
@@ -163,7 +197,7 @@ async fn main() {
     // Set up output so we print info about events
     let listen = server.listen_to_events();
     tokio::spawn(async move {
-        watch_lifecycle(listen).await;
+        watch_lifecycle(listen, true, true).await;
     });
 
     loop {

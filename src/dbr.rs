@@ -1312,6 +1312,11 @@ mod tests {
     }
 
     #[test]
+    fn test_string_to_char_by_parsing() {
+        let test_string = DbrValue::String(vec!["some test".to_string()]);
+        let as_char = test_string.parse_into(DbrBasicType::Char).unwrap();
+    }
+    #[test]
     fn test_dbr_string_conversions() {
         assert_eq!(
             DbrType::new(DbrBasicType::Int, DbrCategory::Basic),
