@@ -266,7 +266,17 @@ impl<L: Provider> Server<L> {
         Ok(())
     }
 
-    /// Start listening for searches. Return the port we ended up binding.
+    /// Start listening for searches, and return the bound port number.
+    ///
+    /// If a search is successful, the searcher will be sent a message
+    /// indicating that they should connect to `connection_port` on this
+    /// server.
+    ///
+    /// If the search port is successfully bound, returns the actual
+    /// port that was bound to. Unless the [`Server`] was configured
+    /// with a search port of `0`, this will always return the same
+    /// search port. If a search port of `0` _was_ configured, then a
+    /// random port will be bound and returned by this Result.
     async fn listen_for_searches(
         &mut self,
         connection_port: u16,
