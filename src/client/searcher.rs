@@ -338,7 +338,10 @@ impl SearcherInternal {
             };
             // What was this a response to?
             let Some(pv_name) = self.in_flight.remove(&response.search_id) else {
-                debug!("Received unrequested or duplicate search response");
+                debug!(
+                    "Received unrequested or duplicate search response from {sender}: {:?}",
+                    response
+                );
                 continue;
             };
             // Now we know we have a response to an actual request - clear out any past
