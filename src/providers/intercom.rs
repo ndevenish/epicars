@@ -8,11 +8,13 @@ use std::{
 use tokio::sync::{
     broadcast::{self},
     mpsc::{self, error::TrySendError},
+    watch,
 };
 use tracing::{debug, error};
 
 use crate::{
     Provider,
+    client::Watcher,
     dbr::{DBR_CLASS_NAME, Dbr, DbrBasicType, DbrType, DbrValue, DefaultEpicsClass, Status},
     messages::{self, ErrorCondition, MonitorMask},
 };
@@ -33,7 +35,7 @@ where
 
 impl<'a, T> PVBuilder<'a, T>
 where
-    T: TryFrom<DbrValue> + Clone + DefaultEpicsClass,
+    T: TryFrom<DbrValue> + for<'b> TryFrom<&'b DbrValue> + Clone + DefaultEpicsClass,
     DbrValue: From<T>,
 {
     pub fn new(provider: &'a mut IntercomProvider, name: &str, initial_value: T) -> Self {
@@ -92,6 +94,8 @@ where
             read_only: self.read_only,
             ..Default::default()
         };
+        // Set the initial value on the watcher
+        let _ = pv.watcher.send_replace(Some(pv.load_for_ca(None)));
         self.provider.register_pv(Arc::new(Mutex::new(pv)))
     }
 }
@@ -109,6 +113,12 @@ struct PV {
     timestamp: SystemTime,
     /// Channel to send updates to any interested listeners
     sender: broadcast::Sender<Dbr>,
+    /// Watch channel to send updates to listeners.
+    ///
+    /// This doesn't need to be Option<Dbr>, because we will always have
+    /// the initial value - but currently this lets us share behaviour with
+    /// client::receivers::Watcher; possible rework later.
+    watcher: watch::Sender<Option<Dbr>>,
     /// Trigger channel, to notify the server there is a new broadcast available
     triggers: HashMap<u64, mpsc::Sender<String>>,
     /// The EPICS record type, for CLASS_NAME responses
@@ -178,8 +188,10 @@ impl PV {
             // Ensure lock is dropped
         }
         self.timestamp = SystemTime::now();
+        let value = self.load_for_ca(None);
         // Now send off the new value to any listeners
-        let _ = self.sender.send(self.load_for_ca(None));
+        let _ = self.sender.send(value.clone());
+        let _ = self.watcher.send(Some(value));
         // Send the "please look at" triggers, filtering out any that are dead
         self.triggers = self
             .triggers
@@ -202,6 +214,7 @@ impl Default for PV {
             minimum_length: None,
             timestamp: SystemTime::now(),
             sender: broadcast::Sender::new(256),
+            watcher: watch::Sender::new(None),
             triggers: Default::default(),
             epics_record_type: None,
             read_only: false,
@@ -213,7 +226,7 @@ impl Default for PV {
 #[derive(Clone, Debug)]
 pub struct Intercom<T>
 where
-    T: TryFrom<DbrValue>,
+    T: TryFrom<DbrValue> + for<'a> TryFrom<&'a DbrValue> + Clone,
     DbrValue: From<T>,
 {
     pv: Arc<Mutex<PV>>,
@@ -222,7 +235,7 @@ where
 
 impl<T> Intercom<T>
 where
-    T: TryFrom<DbrValue>,
+    T: TryFrom<DbrValue> + for<'a> TryFrom<&'a DbrValue> + Clone,
     DbrValue: From<T>,
 {
     fn new(pv: Arc<Mutex<PV>>) -> Self {
@@ -261,6 +274,9 @@ where
             receiver: self.pv.lock().unwrap().sender.subscribe(),
             _phantom: PhantomData,
         }
+    }
+    pub fn watch(&self) -> Watcher<T> {
+        Watcher::new(self.pv.lock().unwrap().watcher.subscribe())
     }
 }
 
@@ -382,7 +398,7 @@ impl IntercomProvider {
 
     fn register_pv<T>(&mut self, pv: Arc<Mutex<PV>>) -> Result<Intercom<T>, PVAlreadyExists>
     where
-        T: TryFrom<DbrValue>,
+        T: TryFrom<DbrValue> + for<'a> TryFrom<&'a DbrValue> + Clone,
         DbrValue: From<T>,
     {
         let name = pv.lock().unwrap().name.clone();
@@ -401,7 +417,7 @@ impl IntercomProvider {
         initial_value: T,
     ) -> Result<Intercom<T>, PVAlreadyExists>
     where
-        T: TryFrom<DbrValue> + Clone + Default,
+        T: TryFrom<DbrValue> + for<'a> TryFrom<&'a DbrValue> + Clone + Default,
         DbrValue: From<T>,
     {
         let pv = Arc::new(Mutex::new(PV {
@@ -416,7 +432,7 @@ impl IntercomProvider {
     /// Create a [PVBuilder] for customisation
     pub fn build_pv<T>(&mut self, name: &str, initial_value: T) -> PVBuilder<'_, T>
     where
-        T: TryFrom<DbrValue> + Clone + Default,
+        T: TryFrom<DbrValue> + for<'a> TryFrom<&'a DbrValue> + Clone + Default,
         DbrValue: From<T>,
     {
         PVBuilder {
