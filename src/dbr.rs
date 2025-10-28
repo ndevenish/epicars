@@ -503,7 +503,19 @@ impl TryFrom<DbrValue> for bool {
         }
     }
 }
+impl TryFrom<&DbrValue> for bool {
+    type Error = ErrorCondition;
 
+    fn try_from(value: &DbrValue) -> Result<Self, Self::Error> {
+        match value
+            .convert_to(DbrBasicType::Char)
+            .map_err(|_| ErrorCondition::NoConvert)?
+        {
+            DbrValue::Char(items) => Ok(items.first() != Some(&0)),
+            _ => unreachable!(),
+        }
+    }
+}
 // Implement From<Vec<datatype>> for a specific DBR Kind
 macro_rules! impl_vec_dbrvalue_conversions_between {
     ($variant:ident, $typ:ty) => {
