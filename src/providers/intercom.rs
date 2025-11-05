@@ -420,10 +420,15 @@ impl IntercomProvider {
         T: TryFrom<DbrValue> + for<'a> TryFrom<&'a DbrValue> + Clone + Default,
         DbrValue: From<T>,
     {
-        let pv = Arc::new(Mutex::new(PV {
-            name: name.to_owned(),
-            value: Arc::new(Mutex::new(DbrValue::from(initial_value))),
-            ..Default::default()
+        let pv = Arc::new(Mutex::new({
+            let pv = PV {
+                name: name.to_owned(),
+                value: Arc::new(Mutex::new(DbrValue::from(initial_value))),
+                ..Default::default()
+            };
+            // Set the initial watcher value
+            pv.watcher.send_replace(Some(pv.load_for_ca(None)));
+            pv
         }));
         self.register_pv(pv.clone())?;
         Ok(Intercom::<T>::new(pv))
