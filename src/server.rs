@@ -350,7 +350,7 @@ impl<L: Provider> Server<L> {
                         match listener.send_to(&reply_buf.into_inner(), origin).await {
                             Ok(_) => (),
                             Err(e) => {
-                                panic!("Failed to send UDP socket to {origin:?}: {e}");
+                                warn!("Failed to send UDP socket to {origin:?}: {e}");
                             }
                         }
                         debug!("Sending {} search results", replies.len());
