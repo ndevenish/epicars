@@ -367,25 +367,21 @@ impl SearcherInternal {
 
         // discard any expired searches
         self.per_pv_info.retain(|_, v| match v.search_expires_at {
-            None => true,
-            Some(time) => {
-                if time < now {
-                    // We are discarding this. Send the termination signal,
-                    let _ = v.reporter.send(None);
-                    // And then remove from the in-flight register
-                    for id in v.active_searches.iter() {
-                        let _ = self.in_flight.remove(id);
-                    }
-                    debug!(
-                        "Dropping search for {} as reached search timeout {:.2} ms ago",
-                        v.name,
-                        (now - time).as_secs_f32() * 1000.0
-                    );
-                    false
-                } else {
-                    true
+            Some(time) if time < now => {
+                // We are discarding this. Send the termination signal,
+                let _ = v.reporter.send(None);
+                // And then remove from the in-flight register
+                for id in v.active_searches.iter() {
+                    let _ = self.in_flight.remove(id);
                 }
+                debug!(
+                    "Dropping search for {} as reached search timeout {:.2} ms ago",
+                    v.name,
+                    (now - time).as_secs_f32() * 1000.0
+                );
+                false
             }
+            _ => true,
         });
 
         let mut search_messages = self
