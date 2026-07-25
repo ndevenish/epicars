@@ -119,6 +119,14 @@ async fn watch_lifecycle(mut recv: tokio::sync::broadcast::Receiver<ServerEvent>
                 let channel_name = &channel_names[&circuit_id][&channel_id];
                 info!("{user_str} subscribed to {}", channel_name.bold());
             }
+            ServerEvent::Unsubscribe {
+                circuit_id,
+                channel_id,
+            } => {
+                let user_str = &client_id[&circuit_id];
+                let channel_name = &channel_names[&circuit_id][&channel_id];
+                info!("{user_str} unsubscribed from {}", channel_name.bold());
+            }
         }
     }
 }
