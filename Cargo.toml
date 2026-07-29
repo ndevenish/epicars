@@ -7,6 +7,7 @@ repository = "https://github.com/ndevenish/epicars"
 description = "Standalone, pure rust implementation of EPICS CA protocol"
 
 [dependencies]
+bitflags = "2.9.4"
 nom = "8.0.0"
 num = "0.4.3"
 num-traits = "0.2.19"

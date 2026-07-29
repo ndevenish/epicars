@@ -37,8 +37,8 @@ async fn main() {
     for arg in opts.names {
         println!("Searching for: {arg}");
         match searcher.search_for(&arg).await {
-            Ok(addr) => println!("Found: {addr:?}"),
-            Err(_) => println!(
+            Some(addr) => println!("Found: {addr:?}"),
+            None => println!(
                 "Could not find PV in search time ({:.1} s)",
                 searcher.timeout().unwrap().as_secs_f32()
             ),

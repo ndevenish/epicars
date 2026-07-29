@@ -351,7 +351,7 @@ impl<L: Provider> Server<L> {
                         match listener.send_to(&reply_buf.into_inner(), origin).await {
                             Ok(_) => (),
                             Err(e) => {
-                                panic!("Failed to send UDP socket to {origin:?}: {e}");
+                                warn!("Failed to send UDP socket to {origin:?}: {e}");
                             }
                         }
                         debug!("Sending {} search results", replies.len());
@@ -431,7 +431,7 @@ struct Channel {
     name: String,
     client_id: u32,
     server_id: u32,
-    subscription: Option<PVSubscription>,
+    subscriptions: Vec<PVSubscription>,
 }
 
 #[derive(Debug)]
@@ -594,38 +594,44 @@ impl<L: Provider> Circuit<L> {
             "{}: {}: Got update notification for PV {}",
             self.id, c.server_id, c.name
         );
-        let Some(subscription) = c.subscription.as_mut() else {
+        if c.subscriptions.is_empty() {
             // This was probably sent before closing
             trace!("Got monitor update for closed subscription!!");
             return Ok(Vec::new());
         };
-        let dbr = match subscription.receiver.recv().await {
-            Ok(v) => v,
-            Err(broadcast::error::RecvError::Closed) => {
-                return Err(MessageError::Unknown(
-                    "Receiver channel is closed".to_string(),
-                ));
-            }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                warn!("Dropped {n} update messages on monitor channel {pv_name}");
-                return Err(MessageError::Unknown(format!(
-                    "Too many updates - dropped {n} messages"
-                )));
-            }
-        };
+        let mut response = Vec::new();
+        // Multiple subscriptions, all should have an update?
+        // This might have a race condition if only some were pushed to?
+        for subscription in c.subscriptions.iter_mut() {
+            let dbr = match subscription.receiver.recv().await {
+                Ok(v) => v,
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(MessageError::Unknown(
+                        "Receiver channel is closed".to_string(),
+                    ));
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("Dropped {n} update messages on monitor channel {pv_name}");
+                    return Err(MessageError::Unknown(format!(
+                        "Too many updates - dropped {n} messages"
+                    )));
+                }
+            };
+            debug!("Circuit got update notification: {dbr:?}");
+            let (item_count, data) = dbr
+                .convert_to(subscription.data_type)
+                .unwrap()
+                .to_bytes(NonZeroUsize::new(subscription.data_count));
+            response.push(Message::EventAddResponse(EventAddResponse {
+                data_type: subscription.data_type,
+                data_count: item_count as u32,
+                subscription_id: subscription.subscription_id,
+                status_code: ErrorCondition::Normal,
+                data,
+            }));
+        }
 
-        debug!("Circuit got update notification: {dbr:?}");
-        let (item_count, data) = dbr
-            .convert_to(subscription.data_type)
-            .unwrap()
-            .to_bytes(NonZeroUsize::new(subscription.data_count));
-        Ok(vec![Message::EventAddResponse(EventAddResponse {
-            data_type: subscription.data_type,
-            data_count: item_count as u32,
-            subscription_id: subscription.subscription_id,
-            status_code: ErrorCondition::Normal,
-            data,
-        })])
+        Ok(response)
     }
 
     async fn handle_message(&mut self, message: Message) -> Result<Vec<Message>, MessageError> {
@@ -652,7 +658,7 @@ impl<L: Provider> Circuit<L> {
                     circuit_id: self.id,
                     channel_id: msg.server_id,
                 });
-                channel.subscription = Some(PVSubscription {
+                channel.subscriptions.push(PVSubscription {
                     data_type: msg.data_type,
                     data_count: msg.data_count as usize,
                     mask: msg.mask,
@@ -681,7 +687,21 @@ impl<L: Provider> Circuit<L> {
                     circuit_id: self.id,
                     channel_id: msg.server_id,
                 });
-                channel.subscription = None;
+                // channel.subscriptions = None;
+                // Find the subscription and remove it
+                match channel
+                    .subscriptions
+                    .iter()
+                    .position(|s| s.subscription_id == msg.subscription_id)
+                {
+                    Some(po) => {
+                        channel.subscriptions.swap_remove(po);
+                    }
+                    None => debug!(
+                        "Could not find matching subscription to remove: {}",
+                        msg.subscription_id
+                    ),
+                };
                 Ok(vec![msg.response().into()])
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {
@@ -864,7 +884,7 @@ impl<L: Provider> Circuit<L> {
                 name: message.channel_name,
                 server_id: id,
                 client_id: message.client_id,
-                subscription: None,
+                subscriptions: Vec::new(),
             }),
         )
     }

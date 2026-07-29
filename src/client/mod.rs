@@ -1,7 +1,9 @@
 #[allow(clippy::module_inception)]
 mod client;
+mod receivers;
 mod searcher;
-
-pub use searcher::{Searcher, SearcherBuilder};
+mod subscription;
 
 pub use client::Client;
+pub use receivers::{Subscription, Watcher, WatcherError};
+pub use searcher::{Searcher, SearcherBuilder};

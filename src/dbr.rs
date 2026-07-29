@@ -424,6 +424,14 @@ impl_dbrvalue_conversions_between!(Long, i32);
 impl_dbrvalue_conversions_between!(Float, f32);
 impl_dbrvalue_conversions_between!(Double, f64);
 
+impl TryFrom<&DbrValue> for DbrValue {
+    type Error = ();
+
+    fn try_from(value: &DbrValue) -> Result<Self, Self::Error> {
+        Ok(value.clone())
+    }
+}
+
 // String is special, a lone string encodes as Char
 impl From<String> for DbrValue {
     fn from(value: String) -> Self {
@@ -495,7 +503,19 @@ impl TryFrom<DbrValue> for bool {
         }
     }
 }
+impl TryFrom<&DbrValue> for bool {
+    type Error = ErrorCondition;
 
+    fn try_from(value: &DbrValue) -> Result<Self, Self::Error> {
+        match value
+            .convert_to(DbrBasicType::Char)
+            .map_err(|_| ErrorCondition::NoConvert)?
+        {
+            DbrValue::Char(items) => Ok(items.first() != Some(&0)),
+            _ => unreachable!(),
+        }
+    }
+}
 // Implement From<Vec<datatype>> for a specific DBR Kind
 macro_rules! impl_vec_dbrvalue_conversions_between {
     ($variant:ident, $typ:ty) => {
@@ -1303,6 +1323,11 @@ mod tests {
         assert_eq!(s, re_s);
     }
 
+    #[test]
+    fn test_string_to_char_by_parsing() {
+        let test_string = DbrValue::String(vec!["some test".to_string()]);
+        let as_char = test_string.parse_into(DbrBasicType::Char).unwrap();
+    }
     #[test]
     fn test_dbr_string_conversions() {
         assert_eq!(
