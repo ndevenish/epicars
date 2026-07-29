@@ -87,6 +87,10 @@ What this doesn't do (yet):
 - Work at all without tokio. There are ambition to make this flexible over
   async runtime, specifically [Embassy] for embedded usage, but the only evidence
   of this so far is lightly in some of the design decisions.
+- Speak PVAccess. [`docs/pvaccess-feasibility.md`] is an investigation into what
+  adding it would involve, and how the existing protocol/provider split would need
+  to change to serve both at once. Nothing is implemented, and no decision has been
+  taken to implement it.
 
 
 [EPICS CA protocol]:
@@ -95,3 +99,4 @@ What this doesn't do (yet):
 ["DBR" types]:
     https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types
 [Embassy]: https://embassy.dev/
+[`docs/pvaccess-feasibility.md`]: docs/pvaccess-feasibility.md
