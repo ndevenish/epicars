@@ -20,8 +20,10 @@
 //! decoder-is-also-the-item trick, and the peek → header-len → payload-len → reserve →
 //! advance framing pattern.
 
+pub mod encoding;
 pub mod header;
 pub mod io;
 
+pub use encoding::{BitSet, Status, StatusType};
 pub use header::{Direction, MessageKind, PvaHeader, Segmentation};
 pub use io::{ByteOrder, PvaDecode, PvaEncode, PvaError, PvaReader, PvaWriter};
