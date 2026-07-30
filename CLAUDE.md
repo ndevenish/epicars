@@ -53,3 +53,41 @@ Four layers, deliberately separated so each can be used without the ones above i
 - `Dbr::Time` is what providers normally return; the server converts to whatever category/type the client asked for.
 - Strings: CA natively uses `[u8; 40]`, but in practice this facility's PVs carry strings as `CHAR` arrays. `DbrValue::String` is `Vec<String>` and is converted at the wire boundary; there are known rough edges here (see the `test_read_written_strings` comment).
 - Tracing, not `println!`. Tests init `tracing_subscriber` with `TestWriter`; beacons are deliberately `trace!` level to avoid drowning logs.
+
+## pvAccess (in progress)
+
+`docs/pvaccess-implementation-plan.md` is the authority — numbered work items,
+each with acceptance criteria. `docs/pvaccess-feasibility.md` is the rationale it
+cites. Work one item at a time and commit per item. New code lives in `src/pva/`,
+gated on the `pva` Cargo feature; CA is `default`.
+
+**The conventions above describe the CA side. pvAccess deliberately departs from
+several of them.** Do not "fix" these back — each is a recorded decision with the
+reasoning in the plan item named:
+
+- **`src/pva/` does not use nom** (plan 1.2). pvAccess negotiates byte order per
+  connection, so parsers are written against a `PvaReader`/`PvaWriter` carrying a
+  runtime `ByteOrder`, via a `PvaDecode`/`PvaEncode` pair. nom's `be_*`/`le_*` split
+  would mean writing every parser twice. **CA keeps nom — do not migrate it**, and
+  do not apply the `CAMessage`/`TryFrom<RawMessage>` recipe above to PVA messages;
+  they are a separate, single enum (direction is a header flag bit, so there is no
+  `Message`/`ClientMessage` split).
+- **The two-channel pull model stays a pull model** (plan 2.6). It looks like an
+  indirection worth removing; it is not. pvAccess monitors have pipelined flow
+  control, so the transport must decide when to consume.
+- **`store()`'s `try_send` tolerating `TrySendError::Full` is load-bearing**, not a
+  dropped-update bug (plan 0.4, `intercom.rs:183-192`). The value is still in the
+  broadcast buffer. Do not make it `.await` — `store()` must stay callable from
+  non-async code.
+- **`Dbr` keeps its variants through Phase 0** (plan 0.3). It becomes a projection
+  of `(Value, Meta)`; decomposing the category enum changes the CA wire path and
+  cannot be behaviour-neutral. Phase 3 revisits it.
+- **New tests bind ephemeral ports and disable beacons.** The existing suite is
+  *not* a template — several tests bind real 5064/5065 and broadcast live (see the
+  plan's appendix). CI runs plain `cargo test`.
+
+Interop is the acceptance criterion for anything on the wire: test against real
+`pvget`/`pvput`/`pvmonitor`/`pvinfo` from pvxs or epics-base, not against
+self-written clients. Start this during Phase 1, not at the end of Phase 2 — the
+per-connection introspection registry is the likeliest source of "works against my
+own client, breaks against pvxs" bugs.
