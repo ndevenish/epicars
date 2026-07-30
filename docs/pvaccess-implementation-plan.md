@@ -143,9 +143,23 @@ category enum into composable optional fields": full decomposition changes the C
 wire path and cannot be behaviour-neutral. Revisit it in Phase 3, once pvAccess has
 shown what the metadata actually needs to do.
 
+**The two protocols do not share an epoch.** CA timestamps count from the EPICS
+epoch, 1990-01-01; pvAccess `time_t.secondsPastEpoch` counts from the POSIX epoch,
+1970-01-01. The offset is **631 152 000 seconds**. Confirmed against a real IOC —
+`pvxget` on an unprocessed record reports `secondsPastEpoch = 631152000`, which is
+a zero EPICS timestamp expressed in POSIX terms.
+
+`TimeStamp` must therefore be **epoch-neutral internally** — store `SystemTime`, as
+`PV.timestamp` (`intercom.rs:109`) already does, and convert *at each wire
+boundary*, not on the way in. Getting this wrong is a 20-year offset that every
+client displays without complaint, so it will not surface as an obvious failure.
+Note also that pvAccess's `secondsPastEpoch` is a signed **64-bit** value, against
+CA's 32-bit `stamp`, and carries a third field CA has no analogue for: `userTag`.
+
 **Done when:** `Dbr` can be built from and projected back to `(Value, Meta)`
-losslessly for the `Basic`, `Status` and `Time` categories, and the existing suite
-passes untouched.
+losslessly for the `Basic`, `Status` and `Time` categories; a round-trip through
+both epochs returns the original `SystemTime`; and the existing suite passes
+untouched.
 
 ### 0.4 — Move `IntercomProvider`'s storage to `Value`
 

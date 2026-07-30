@@ -1,0 +1,28 @@
+record(ai, "TEST:DOUBLE") {
+    field(VAL,  "42.5")
+    field(EGU,  "mm")
+    field(PREC, "3")
+    field(HOPR, "100")
+    field(LOPR, "-100")
+}
+
+record(longin, "TEST:LONG") {
+    field(VAL, "42")
+    field(EGU, "counts")
+}
+
+record(stringin, "TEST:STRING") {
+    field(VAL, "hello")
+}
+
+record(mbbi, "TEST:ENUM") {
+    field(ZRST, "Off")
+    field(ONST, "On")
+    field(TWST, "Fault")
+    field(VAL,  "1")
+}
+
+record(waveform, "TEST:ARRAY") {
+    field(FTVL, "DOUBLE")
+    field(NELM, "8")
+}
