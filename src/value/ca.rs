@@ -27,8 +27,18 @@
 //! original, which the provider storage move in plan item 0.4 depends on: an
 //! enum-typed PV whose storage has become a `Value` must still read back over CA as
 //! `DBR_ENUM`.
+//!
+//! ## `Dbr` as a projection
+//!
+//! [`Dbr`] keeps its variants, but gains a pair of adapters -
+//! [`Dbr::to_value_and_meta`] and [`Dbr::from_value_and_meta`] - that make the whole
+//! category enum a *projection* of `(Value, Meta)`. Keeping the variants is deliberate:
+//! decomposing the category into composable optional fields would change the CA wire
+//! path, and cannot be behaviour-neutral. That is Phase 3's job, once pvAccess has shown
+//! what the metadata actually needs to do.
 
-use crate::dbr::DbrValue;
+use crate::dbr::{Dbr, DbrCategory, DbrValue, Status};
+use crate::value::meta::{Alarm, AlarmSeverity, Meta, TimeStamp};
 use crate::value::{Scalar, ScalarArray, ScalarType, Value};
 
 /// Why a [`Value`] could not be expressed as a [`DbrValue`].
@@ -43,6 +53,10 @@ pub enum DbrConversionError {
     /// An unsigned value too large for the signed CA type it would widen into.
     #[error("{} value {value} is outside the range of any signed CA type", .source_type.name())]
     OutOfRange { source_type: ScalarType, value: u64 },
+    /// A DBR category this crate does not yet build. `Graphics` and `Control` are stubs
+    /// in [`crate::dbr`], several of whose arms are `todo!()`.
+    #[error("Cannot build a DBR of category {0:?} from neutral metadata")]
+    UnsupportedCategory(DbrCategory),
 }
 
 impl From<DbrValue> for Value {
@@ -133,10 +147,110 @@ fn array_to_dbr(array: &ScalarArray) -> Result<DbrValue, DbrConversionError> {
     })
 }
 
+/// Conversions between CA's [`Status`] pair and the neutral [`Alarm`].
+///
+/// CA has no `message` field, so that is always empty coming from CA and dropped going
+/// back. A CA `severity` outside the five defined values - which would be a protocol
+/// violation - clamps to [`AlarmSeverity::Undefined`], and a `status` outside `i16`
+/// range - which only pvAccess could produce - saturates on the way back.
+impl From<Status> for Alarm {
+    fn from(status: Status) -> Alarm {
+        Alarm {
+            severity: AlarmSeverity::try_from(i32::from(status.severity))
+                .unwrap_or(AlarmSeverity::Undefined),
+            status: status.status.into(),
+            message: String::new(),
+        }
+    }
+}
+
+impl From<&Alarm> for Status {
+    fn from(alarm: &Alarm) -> Status {
+        Status {
+            status: alarm
+                .status
+                .clamp(i16::MIN.into(), i16::MAX.into())
+                .try_into()
+                .expect("clamped to i16 range"),
+            severity: i32::from(alarm.severity) as i16,
+        }
+    }
+}
+
+impl Dbr {
+    /// Split a DBR into the neutral value and metadata it is carrying.
+    ///
+    /// Total: every category has a neutral form. `Graphics` and `Control` yield their
+    /// alarm but **not** their display or control metadata - `DbrGraphics`/`DbrControl`
+    /// are stubs whose limits are unreachable and several of whose arms are `todo!()`.
+    /// Plan item 1.10 is where those get filled in, driven by NTScalar's `display_t` and
+    /// `control_t`.
+    ///
+    /// [`Dbr::ClassName`] is a CA-only RPC riding the value channel rather than a value,
+    /// so it produces a bare string with no metadata. Plan item 3.4 replaces it with an
+    /// explicit `record_type()` on the provider trait.
+    pub fn to_value_and_meta(&self) -> (Value, Meta) {
+        let value = Value::from(self.value());
+        let meta = match self {
+            Dbr::Basic(_) | Dbr::ClassName(_) => Meta::new(),
+            Dbr::Status { status, .. } => Meta::new().with_alarm(Alarm::from(*status)),
+            Dbr::Time {
+                status, timestamp, ..
+            } => Meta::new()
+                .with_alarm(Alarm::from(*status))
+                .with_timestamp(TimeStamp::from(*timestamp)),
+            // See above: the graphics/control payloads have nowhere to go yet
+            Dbr::Graphics { status, .. } | Dbr::Control { status, .. } => {
+                Meta::new().with_alarm(Alarm::from(*status))
+            }
+        };
+        (value, meta)
+    }
+
+    /// Project a neutral value and metadata onto a DBR of the requested category.
+    ///
+    /// Partial, in the two ways the neutral model is wider than CA:
+    ///
+    /// - the value may be unrepresentable, per [`DbrValue::try_from`];
+    /// - `Graphics` and `Control` are rejected outright with
+    ///   [`DbrConversionError::UnsupportedCategory`], rather than silently producing
+    ///   defaults or reaching a `todo!()`.
+    ///
+    /// Metadata the category needs but `meta` does not carry is filled in with the same
+    /// defaults [`Dbr::convert_to`] uses: no alarm, and the current time.
+    pub fn from_value_and_meta(
+        category: DbrCategory,
+        value: &Value,
+        meta: &Meta,
+    ) -> Result<Dbr, DbrConversionError> {
+        let value = DbrValue::try_from(value)?;
+        let status = meta.alarm.as_ref().map(Status::from).unwrap_or_default();
+        Ok(match category {
+            DbrCategory::Basic => Dbr::Basic(value),
+            DbrCategory::Status => Dbr::Status { status, value },
+            DbrCategory::Time => Dbr::Time {
+                status,
+                timestamp: meta
+                    .timestamp
+                    .map(|t| t.time)
+                    .unwrap_or_else(std::time::SystemTime::now),
+                value,
+            },
+            DbrCategory::ClassName => Dbr::ClassName(value),
+            category @ (DbrCategory::Graphics | DbrCategory::Control) => {
+                return Err(DbrConversionError::UnsupportedCategory(category));
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dbr::{DbrGraphics, DbrType};
+    use crate::value::meta::{Display, EPICS_EPOCH_OFFSET};
     use crate::value::{Structure, UnionField, UnionValue};
+    use std::time::{Duration, UNIX_EPOCH};
 
     /// Every `DbrValue` variant survives the trip through `Value` unchanged.
     #[test]
@@ -307,6 +421,218 @@ mod tests {
         assert_eq!(
             DbrValue::try_from(&Value::from(vec![1u64])),
             Err(DbrConversionError::IntegerTooWide(ScalarType::ULong))
+        );
+    }
+
+    /// `Dbr` as a projection: the three categories a provider actually produces survive
+    /// a round trip through `(Value, Meta)` unchanged.
+    #[test]
+    fn basic_status_and_time_round_trip_through_value_and_meta() {
+        let timestamp = UNIX_EPOCH + Duration::new(1_753_000_000, 250_000_123);
+        let status = Status {
+            status: 3,
+            severity: 2,
+        };
+        let originals = [
+            Dbr::Basic(DbrValue::Long(vec![42])),
+            Dbr::Status {
+                status,
+                value: DbrValue::Double(vec![1.5, -1.5]),
+            },
+            Dbr::Time {
+                status,
+                timestamp,
+                value: DbrValue::Char(vec![-1, 0, 127]),
+            },
+            // The remaining variants, for completeness of the value path
+            Dbr::Time {
+                status: Status::default(),
+                timestamp,
+                value: DbrValue::Enum(7),
+            },
+            Dbr::ClassName(DbrValue::String(vec!["longout".to_string()])),
+        ];
+
+        for original in originals {
+            let (value, meta) = original.to_value_and_meta();
+            let back =
+                Dbr::from_value_and_meta(original.data_type().category, &value, &meta).unwrap();
+
+            assert_eq!(back.value(), original.value(), "value changed");
+            assert_eq!(back.data_type(), original.data_type(), "type changed");
+            if let (Dbr::Time { timestamp: a, .. }, Dbr::Time { timestamp: b, .. }) =
+                (&back, &original)
+            {
+                assert_eq!(a, b, "timestamp changed");
+            }
+            match (back.status(), original.status()) {
+                (Some(a), Some(b)) => {
+                    assert_eq!((a.status, a.severity), (b.status, b.severity));
+                }
+                (None, None) => (),
+                (a, b) => panic!("alarm presence changed: {a:?} vs {b:?}"),
+            }
+        }
+    }
+
+    /// Which metadata each category carries, and which it does not.
+    #[test]
+    fn categories_project_onto_the_expected_meta_fields() {
+        let (_, basic) = Dbr::Basic(DbrValue::Long(vec![1])).to_value_and_meta();
+        assert!(basic.is_empty(), "Basic carries no metadata at all");
+
+        let (_, status) = Dbr::Status {
+            status: Status {
+                status: 5,
+                severity: 1,
+            },
+            value: DbrValue::Long(vec![1]),
+        }
+        .to_value_and_meta();
+        assert_eq!(
+            status.alarm,
+            Some(Alarm {
+                severity: AlarmSeverity::Minor,
+                status: 5,
+                // CA has no message field
+                message: String::new(),
+            })
+        );
+        assert!(status.timestamp.is_none());
+
+        let (value, time) = Dbr::Time {
+            status: Status::default(),
+            timestamp: UNIX_EPOCH + Duration::from_secs(631_152_000),
+            value: DbrValue::Long(vec![1]),
+        }
+        .to_value_and_meta();
+        assert_eq!(value, Value::from(vec![1i32]));
+        assert_eq!(time.alarm, Some(Alarm::none()));
+        // Stored epoch-neutrally, so it reads out differently per protocol
+        let stamp = time.timestamp.unwrap();
+        assert_eq!(stamp.to_ca(), (0, 0));
+        assert_eq!(stamp.to_posix(), (EPICS_EPOCH_OFFSET, 0));
+        assert!(time.display.is_none() && time.control.is_none());
+    }
+
+    /// The stub categories: alarm comes through, the graphics payload does not, and the
+    /// reverse direction refuses rather than reaching a `todo!()`.
+    #[test]
+    fn graphics_and_control_are_one_way_for_now() {
+        let graphics = Dbr::Graphics {
+            status: Status {
+                status: 1,
+                severity: 3,
+            },
+            graphics: DbrGraphics::Long {
+                units: "counts".to_string(),
+                limits: Default::default(),
+            },
+            value: DbrValue::Long(vec![1]),
+        };
+        let (_, meta) = graphics.to_value_and_meta();
+        assert_eq!(
+            meta.alarm.as_ref().unwrap().severity,
+            AlarmSeverity::Invalid
+        );
+        assert!(
+            meta.display.is_none(),
+            "DbrGraphics limits are unreachable, so nothing to project"
+        );
+
+        // Going the other way is refused, even with display metadata to hand
+        let with_display = Meta::new().with_display(Display {
+            units: "counts".to_string(),
+            ..Display::default()
+        });
+        for category in [DbrCategory::Graphics, DbrCategory::Control] {
+            assert_eq!(
+                Dbr::from_value_and_meta(category, &Value::from(1i32), &with_display).unwrap_err(),
+                DbrConversionError::UnsupportedCategory(category)
+            );
+        }
+    }
+
+    /// Metadata the category needs but which is absent gets the same defaults
+    /// `Dbr::convert_to` uses.
+    #[test]
+    fn missing_metadata_falls_back_to_defaults() {
+        let before = std::time::SystemTime::now();
+        let dbr =
+            Dbr::from_value_and_meta(DbrCategory::Time, &Value::from(1i32), &Meta::new()).unwrap();
+        let Dbr::Time {
+            status, timestamp, ..
+        } = &dbr
+        else {
+            panic!("not a Time DBR");
+        };
+        assert_eq!((status.status, status.severity), (0, 0));
+        assert!(*timestamp >= before);
+
+        // A value the neutral model can hold but CA cannot still fails, per variant
+        assert_eq!(
+            Dbr::from_value_and_meta(DbrCategory::Time, &Value::from(1i64), &Meta::new())
+                .unwrap_err(),
+            DbrConversionError::IntegerTooWide(ScalarType::Long)
+        );
+    }
+
+    /// Alarms convert both ways, and out-of-range values are handled rather than
+    /// panicking.
+    #[test]
+    fn alarms_convert_both_ways() {
+        for severity in 0..=4i16 {
+            let alarm = Alarm::from(Status {
+                status: -7,
+                severity,
+            });
+            assert_eq!(i32::from(alarm.severity), i32::from(severity));
+            let back = Status::from(&alarm);
+            assert_eq!((back.status, back.severity), (-7, severity));
+        }
+
+        // A severity CA should never send clamps rather than panicking
+        assert_eq!(
+            Alarm::from(Status {
+                status: 0,
+                severity: 99,
+            })
+            .severity,
+            AlarmSeverity::Undefined
+        );
+
+        // A status only pvAccess could produce saturates into CA's i16
+        assert_eq!(
+            Status::from(&Alarm {
+                severity: AlarmSeverity::None,
+                status: i32::MAX,
+                message: "dropped".to_string(),
+            })
+            .status,
+            i16::MAX
+        );
+    }
+
+    /// The projection does not disturb the existing wire path: bytes out are identical
+    /// whether the DBR was built directly or via `(Value, Meta)`.
+    #[test]
+    fn projected_dbrs_encode_identically() {
+        let timestamp = UNIX_EPOCH + Duration::from_secs(1_741_731_609);
+        let direct = Dbr::Time {
+            status: Status::default(),
+            timestamp,
+            value: DbrValue::Long(vec![42]),
+        };
+        let (value, meta) = direct.to_value_and_meta();
+        let projected = Dbr::from_value_and_meta(DbrCategory::Time, &value, &meta).unwrap();
+
+        let wire_type = DbrType {
+            basic_type: crate::dbr::DbrBasicType::Long,
+            category: DbrCategory::Time,
+        };
+        assert_eq!(
+            projected.convert_to(wire_type).unwrap().to_bytes(None),
+            direct.convert_to(wire_type).unwrap().to_bytes(None)
         );
     }
 

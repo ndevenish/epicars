@@ -36,6 +36,7 @@
 //! ```
 
 pub mod ca;
+pub mod meta;
 
 /// The twelve primitive types a [`Scalar`] or [`ScalarArray`] can hold.
 ///
