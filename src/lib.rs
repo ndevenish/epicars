@@ -94,6 +94,7 @@ pub use crate::client::Client;
 
 pub mod dbr;
 pub mod messages;
+pub mod value;
 
 pub use crate::providers::Provider;
 
