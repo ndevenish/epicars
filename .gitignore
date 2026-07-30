@@ -1,3 +1,8 @@
 /target
 setup.sh
 .vscode/
+
+# Interop captures from tools/capture-pva.sh. Deliberately not committed: the
+# pvAccess auth handshake embeds the capturing user's username and hostname,
+# and this repository is published. Regenerate locally with the script.
+/tools/captures/

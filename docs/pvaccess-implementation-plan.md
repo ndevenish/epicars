@@ -409,9 +409,30 @@ It is stateful, per-connection, and **bidirectional** — the link is full-duple
 each direction caches independently, so there are **two** registries per connection,
 not one. IDs are overridable mid-connection.
 
+**The two implementations already disagree, in the first message a client sends.**
+Captured with `tools/capture-pva.sh` against one soft IOC — this is the same
+`CONNECTION_VALIDATION` response from each client, carrying the same logical
+`{ string user; string host; }` structure:
+
+| | pvAccessCPP 7.1.7 | pvxs 1.5.2 |
+|---|---|---|
+| payload | 60 bytes | 28 bytes |
+| introspection | `fd 0100 80 …` | `80 …` |
+| form | **FULL_WITH_ID** (`0xFD`), registers ID 1 | **FULL_TYPE_CODE** (`0x80`), inline, no ID |
+
+**Accept both forms on the receive side.** A server that assumes clients always
+register IDs breaks against pvxs; one that assumes they never do breaks against
+pvAccessCPP. Neither client is wrong — `0x80` is ≤ `0xDF`, so it is the legitimate
+no-ID form.
+
+Note this also means the receive-side registry can stay **empty for an entire
+connection** with pvxs, so "registry is populated" is not a usable precondition
+anywhere.
+
 **Done when:** a test drives a scripted exchange that introduces an ID, refers to it
-by `ONLY_ID`, overrides it mid-stream, and refers to it again — and the send-side
-and receive-side registries are proven independent.
+by `ONLY_ID`, overrides it mid-stream, and refers to it again — the send-side and
+receive-side registries are proven independent — and both captured handshakes in
+`tools/captures/` decode to the same logical structure.
 
 ### 1.6 — Segmentation reassembly
 
@@ -571,26 +592,58 @@ test hygiene requirement in [Verification](#verification).
 
 ### 2.5 — TCP accept and connection validation
 
-Accept on 5075. The handshake, in order:
+Accept on 5075. The handshake below is **confirmed on the wire**, not inferred —
+captured from base 7.0.8.1's `softIocPVA` with `tools/capture-pva.sh`, and identical
+against both client implementations. Byte offsets are from the start of each
+pvAccess message; the server sent messages 1 and 2 in a single TCP segment.
 
-1. Server sends **SET_BYTE_ORDER** (control `0x02`).
-2. Server sends **CONNECTION_VALIDATION** (`0x01`), listing supported auth methods.
-   This MUST be the first application message on the connection.
-3. Client responds, selecting an auth method. The client MUST NOT send anything
-   before it has received step 2.
-4. Server sends **CONNECTION_VALIDATED** (`0x09`) carrying a `Status`.
+```
+1. server -> client    ca 02 41 02  00000000
+                       SET_BYTE_ORDER, a control message (flags bit 0 set).
+
+2. server -> client    ca 02 40 01  14000000  <20 byte payload>
+                       CONNECTION_VALIDATION. MUST be the first application
+                       message on the connection.
+                         00440000        i32  server receive buffer   = 17408
+                         ff7f            i16  introspection reg max   = 32767
+                         02              size 2 - auth method count
+                         09 "anonymous"
+                         02 "ca"
+
+3. client -> server    ca 02 00 01  <size>  <payload>
+                       CONNECTION_VALIDATION response, selecting a method. The
+                       client MUST NOT send anything before receiving step 2.
+                       See 1.5 - the two implementations encode this payload's
+                       introspection differently.
+
+4. server -> client    ca 02 40 09  01000000  ff
+                       CONNECTION_VALIDATED, payload is a Status using the
+                       0xFF OK-with-no-message shortcut.
+```
+
+Four things that capture settles, all of which apply beyond this item:
+
+- **Direction is flags bit 6**, set on server→client (`0x40`, `0x41`) and clear on
+  client→server (`0x00`). This is what removes the need for CA's
+  `Message`/`ClientMessage` split.
+- **Byte order was little-endian**, flags bit 7 clear, and payload sizes read LE.
+- **Protocol version is `0x02`.**
+- **`0x09` is server→client**, resolving what this plan previously flagged as an
+  open question against ambiguous spec prose.
 
 Support `anonymous` and `ca` auth only; AUTHNZ (`0x05`) is deferred.
 
-> Verify the direction and exact payload of `0x09` against the specification when
-> implementing. The summary prose in the protocol document is ambiguous on which
-> peer sends it, and this plan asserts server→client without having confirmed it on
-> the wire.
+**Do not build policy on the client's identity.** pvAccessCPP sends real values for
+the `user` and `host` fields of its auth structure; **pvxs sends empty strings for
+both**. `get_access_right`'s `client_user_name` / `client_host_name` are already
+`Option`, so the types are right — but treat absent-or-empty as the normal case
+rather than a fallback.
 
 The TCP accept-loop skeleton at `server.rs:368-410` transfers almost entirely —
 §2.5 notes only line 395 is CA-specific.
 
-**Done when:** `pvinfo` completes a handshake against the server.
+**Done when:** both `pvinfo` and `pvxinfo` complete a handshake against the server,
+and the bytes it emits for steps 1, 2 and 4 match `tools/captures/` exactly.
 
 ### 2.6 — Circuits and channels
 
@@ -832,13 +885,26 @@ harder at the change.
 
 **Phase 1's gate is unit tests with no network**, using the specification byte
 vectors from [1.3](#13--primitive-encodings) and [1.4](#14--fielddesc-introspection-encoding)
-as fixtures.
+as fixtures, plus the real captures described below.
+
+**Both client implementations are required, not one.** `tools/capture-pva.sh` drives
+a loopback `softIocPVA` under `tcpdump` with **both** pvAccessCPP (from epics-base)
+and pvxs, writing one pcap per implementation to `tools/captures/`. Run it before
+starting item 1.4 — it is what items 1.1–1.5 and 2.5 are checked against, and it
+already found the [1.5](#15--per-connection-introspection-cache) divergence, which
+no single implementation would have revealed.
+
+> `tools/captures/` is **gitignored**. The pvAccess auth handshake carries the
+> capturing user's username and hostname, and this repository is published. The
+> script regenerates the captures on demand; do not commit them.
 
 **Phase 2's gate is interop against real tooling, not self-consistency.** Run
-`pvget`, `pvput`, `pvmonitor`, `pvinfo` and `pvlist` from pvxs or epics-base against
-`examples/simple-pva-intercom.rs`. Per §6, **start this in the first week of Phase 1**
-— the introspection registry is the likeliest source of "works against my own
-client, breaks against pvxs" bugs, and self-written clients will not find them.
+`pvget`/`pvput`/`pvmonitor`/`pvinfo`/`pvlist` **and** their pvxs counterparts
+`pvxget`/`pvxput`/`pvxmonitor`/`pvxinfo`/`pvxlist` against
+`examples/simple-pva-intercom.rs`. Passing one implementation is not passing. Per
+§6, **start this in the first week of Phase 1** — the introspection registry is the
+likeliest source of "works against my own client, breaks against pvxs" bugs, and
+self-written clients will not find them.
 
 **End-to-end acceptance for the whole plan:**
 
