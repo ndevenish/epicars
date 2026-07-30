@@ -1,3 +1,6 @@
+//! Channel Access server integration tests.
+#![cfg(feature = "ca")]
+
 use core::panic;
 use std::time::Duration;
 

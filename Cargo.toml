@@ -6,6 +6,14 @@ license = "BSD-3-Clause"
 repository = "https://github.com/ndevenish/epicars"
 description = "Standalone, pure rust implementation of EPICS CA protocol"
 
+[features]
+default = ["ca"]
+# Channel Access: the wire format, the server and the client
+ca = []
+# pvAccess. Depends on `ca` only because the `Provider` trait is still CA-typed - plan
+# items 3.1-3.4 make it neutral, at which point this becomes an independent `[]`.
+pva = ["ca"]
+
 [dependencies]
 nom = "8.0.0"
 num = "0.4.3"
@@ -38,3 +46,28 @@ futures = "0.3.31"
 futures-sink = "0.3.31"
 time = { version = "0.3.43", features = ["formatting", "macros"] }
 tracing-subscriber = { version = "=0.3.19", features=["local-time"] }
+
+# Every example is a Channel Access tool, so none of them build without the feature
+[[example]]
+name = "caget"
+required-features = ["ca"]
+
+[[example]]
+name = "camonitor"
+required-features = ["ca"]
+
+[[example]]
+name = "linear-caget"
+required-features = ["ca"]
+
+[[example]]
+name = "searcher"
+required-features = ["ca"]
+
+[[example]]
+name = "simple-intercom"
+required-features = ["ca"]
+
+[[example]]
+name = "watch-broadcasts"
+required-features = ["ca"]

@@ -35,6 +35,7 @@
 //! );
 //! ```
 
+#[cfg(feature = "ca")]
 pub mod ca;
 pub mod meta;
 

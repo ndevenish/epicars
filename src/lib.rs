@@ -89,21 +89,38 @@
 //! ["DBR" types]:
 //!     https://docs.epics-controls.org/en/latest/internal/ca_protocol.html#payload-data-types
 
+// Everything Channel Access is behind the `ca` feature, on by default. `value` and
+// `utils` are shared by both protocols and are always present; `value::ca` is itself
+// gated, since it is the CA adapter.
+#[cfg(feature = "ca")]
 pub mod client;
+#[cfg(feature = "ca")]
 pub use crate::client::Client;
 
+#[cfg(feature = "ca")]
 pub mod dbr;
+#[cfg(feature = "ca")]
 pub mod messages;
 pub mod value;
 
+#[cfg(feature = "ca")]
 pub use crate::providers::Provider;
 
+#[cfg(feature = "ca")]
 mod server;
+#[cfg(feature = "ca")]
 pub use crate::server::Server;
+#[cfg(feature = "ca")]
 pub use crate::server::ServerBuilder;
+#[cfg(feature = "ca")]
 pub use crate::server::ServerEvent;
+#[cfg(feature = "ca")]
 pub use crate::server::ServerHandle;
 
+#[cfg(feature = "ca")]
 pub mod providers;
+
+#[cfg(feature = "pva")]
+pub mod pva;
 
 pub mod utils;

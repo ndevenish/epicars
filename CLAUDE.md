@@ -15,6 +15,8 @@ cargo test --lib --tests   # unit + integration tests (fast, ~1s)
 cargo test --doc           # doctests in src/lib.rs — these bind real sockets
 cargo test                 # everything, incl. compiling examples/
 cargo test test_events     # single test by name
+cargo test --no-default-features --features ca   # CA-only build
+cargo test --features pva                        # with pvAccess
 cargo clippy --lib --tests
 cargo fmt
 cargo run --example simple-intercom -- -v   # server exposing test PVs
