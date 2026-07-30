@@ -37,7 +37,7 @@
 //! path, and cannot be behaviour-neutral. That is Phase 3's job, once pvAccess has shown
 //! what the metadata actually needs to do.
 
-use crate::dbr::{Dbr, DbrCategory, DbrValue, Status};
+use crate::dbr::{Dbr, DbrBasicType, DbrCategory, DbrValue, Status};
 use crate::value::meta::{Alarm, AlarmSeverity, Meta, TimeStamp};
 use crate::value::{Scalar, ScalarArray, ScalarType, Value};
 
@@ -100,6 +100,47 @@ impl TryFrom<Value> for DbrValue {
 
     fn try_from(value: Value) -> Result<DbrValue, DbrConversionError> {
         DbrValue::try_from(&value)
+    }
+}
+
+impl Value {
+    /// Which CA basic type this value would encode as, without encoding it.
+    ///
+    /// Useful for the "coerce a write to the type already stored" path, where converting
+    /// the whole array just to read its type off would be wasteful. Kept next to
+    /// [`DbrValue::try_from`] because the two must agree, which
+    /// `ca_basic_type_agrees_with_conversion` checks.
+    ///
+    /// Reports the *type*, so a `u32` array answers `Long` even though converting it may
+    /// still fail on an individual out-of-range element.
+    pub fn ca_basic_type(&self) -> Result<DbrBasicType, DbrConversionError> {
+        let element_type = match self {
+            Value::Scalar(scalar) => scalar.scalar_type(),
+            Value::ScalarArray(array) => array.element_type(),
+            Value::Structure(_) => return Err(DbrConversionError::Unrepresentable("structure")),
+            Value::StructureArray(_) => {
+                return Err(DbrConversionError::Unrepresentable("structure array"));
+            }
+            Value::Union(_) => return Err(DbrConversionError::Unrepresentable("union")),
+            Value::VariantUnion(_) => {
+                return Err(DbrConversionError::Unrepresentable("variant union"));
+            }
+        };
+        Ok(match element_type {
+            ScalarType::Bool | ScalarType::Byte => DbrBasicType::Char,
+            ScalarType::UByte | ScalarType::Short => DbrBasicType::Int,
+            // See the module docs: a scalar u16 is CA's enum index, an array is data
+            ScalarType::UShort => match self {
+                Value::Scalar(_) => DbrBasicType::Enum,
+                _ => DbrBasicType::Long,
+            },
+            ScalarType::Int | ScalarType::UInt => DbrBasicType::Long,
+            ScalarType::Long => return Err(DbrConversionError::IntegerTooWide(ScalarType::Long)),
+            ScalarType::ULong => return Err(DbrConversionError::IntegerTooWide(ScalarType::ULong)),
+            ScalarType::Float => DbrBasicType::Float,
+            ScalarType::Double => DbrBasicType::Double,
+            ScalarType::String => DbrBasicType::String,
+        })
     }
 }
 
@@ -551,6 +592,81 @@ mod tests {
                 DbrConversionError::UnsupportedCategory(category)
             );
         }
+    }
+
+    /// `ca_basic_type` is a shortcut for "the type `try_from` would produce", so the two
+    /// must never disagree.
+    #[test]
+    fn ca_basic_type_agrees_with_conversion() {
+        let values = [
+            Value::from(true),
+            Value::from(vec![true]),
+            Value::from(1i8),
+            Value::from(vec![1i8]),
+            Value::from(1u8),
+            Value::from(vec![1u8]),
+            Value::from(1i16),
+            Value::from(vec![1i16]),
+            // The one asymmetric case
+            Value::from(1u16),
+            Value::from(vec![1u16]),
+            Value::from(1i32),
+            Value::from(vec![1i32]),
+            Value::from(1u32),
+            Value::from(vec![1u32]),
+            Value::from(1.0f32),
+            Value::from(vec![1.0f32]),
+            Value::from(1.0f64),
+            Value::from(vec![1.0f64]),
+            Value::from("s"),
+            Value::from(vec!["s".to_string()]),
+        ];
+        for value in &values {
+            assert_eq!(
+                value.ca_basic_type().unwrap(),
+                DbrValue::try_from(value).unwrap().get_type(),
+                "disagreement for {value:?}"
+            );
+        }
+        assert_eq!(
+            Value::from(1u16).ca_basic_type().unwrap(),
+            DbrBasicType::Enum
+        );
+        assert_eq!(
+            Value::from(vec![1u16]).ca_basic_type().unwrap(),
+            DbrBasicType::Long
+        );
+
+        // ... and it rejects for the same reasons, without needing the data
+        assert_eq!(
+            Value::from(Structure::new()).ca_basic_type().unwrap_err(),
+            DbrConversionError::Unrepresentable("structure")
+        );
+        assert_eq!(
+            Value::StructureArray(Vec::new())
+                .ca_basic_type()
+                .unwrap_err(),
+            DbrConversionError::Unrepresentable("structure array")
+        );
+        assert_eq!(
+            Value::VariantUnion(None).ca_basic_type().unwrap_err(),
+            DbrConversionError::Unrepresentable("variant union")
+        );
+        assert_eq!(
+            Value::from(1i64).ca_basic_type().unwrap_err(),
+            DbrConversionError::IntegerTooWide(ScalarType::Long)
+        );
+        assert_eq!(
+            Value::from(vec![1u64]).ca_basic_type().unwrap_err(),
+            DbrConversionError::IntegerTooWide(ScalarType::ULong)
+        );
+
+        // The type is known even where a particular value would not convert
+        assert_eq!(
+            Value::from(u32::MAX).ca_basic_type().unwrap(),
+            DbrBasicType::Long
+        );
+        assert!(DbrValue::try_from(&Value::from(u32::MAX)).is_err());
     }
 
     /// Metadata the category needs but which is absent gets the same defaults

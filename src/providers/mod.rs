@@ -11,6 +11,7 @@ use tokio::sync::{
 use crate::{
     dbr::{Dbr, DbrType},
     messages::{self, ErrorCondition, MonitorMask},
+    value::{Value, meta::Meta},
 };
 
 /// Provides PV values for a CAServer
@@ -54,7 +55,14 @@ pub trait Provider: Sync + Send + Clone + Default + 'static {
 
     /// Request setting up a subscription to a PV
     ///
+    /// Half of the two-channel pull model: this returns the channel updates *arrive* on,
+    /// while `trigger` is how the provider says "there is something to read" - it carries
+    /// the PV name, and the server only reads the broadcast receiver once woken by it.
+    /// The indirection is deliberate; it is what lets the transport decide when to
+    /// consume, which pvAccess's pipelined monitor flow control requires.
     ///
+    /// The payload is protocol-neutral. Each server projects `(Value, Meta)` onto its own
+    /// wire types, so one provider can feed a CA and a pvAccess server at once.
     #[allow(unused_variables)]
     fn monitor_value(
         &mut self,
@@ -64,7 +72,7 @@ pub trait Provider: Sync + Send + Clone + Default + 'static {
         data_count: usize,
         mask: MonitorMask,
         trigger: mpsc::Sender<String>,
-    ) -> Result<broadcast::Receiver<Dbr>, ErrorCondition> {
+    ) -> Result<broadcast::Receiver<(Value, Meta)>, ErrorCondition> {
         Err(ErrorCondition::UnavailInServ)
     }
 

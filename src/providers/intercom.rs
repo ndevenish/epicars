@@ -15,7 +15,24 @@ use crate::{
     Provider,
     dbr::{DBR_CLASS_NAME, Dbr, DbrBasicType, DbrType, DbrValue, DefaultEpicsClass, Status},
     messages::{self, ErrorCondition, MonitorMask},
+    value::{
+        Value,
+        meta::{Meta, TimeStamp},
+    },
 };
+
+/// The stored value in CA's representation.
+///
+/// Infallible for anything held by a [`PV`]: values only ever enter through a
+/// [`DbrValue`] - `add_pv` and [`PVBuilder`] both require `DbrValue: From<T>`, and
+/// [`PV::store`] coerces every write to the type already stored - so the neutral value is
+/// always inside the CA subset. Storage is nonetheless a [`Value`], so that a pvAccess
+/// server can be handed the value without a round trip through CA's type system; the
+/// neutral *write* path that could break this invariant arrives with the trait rework in
+/// Phase 3.
+fn value_as_dbr(value: &Value) -> DbrValue {
+    DbrValue::try_from(value).expect("Provider logic should ensure this conversion never fails")
+}
 
 pub struct PVBuilder<'a, T>
 where
@@ -67,7 +84,9 @@ where
     }
     /// Instantiate the PV, and return an Intercom to talk to it
     pub fn build(self) -> Result<Intercom<T>, PVAlreadyExists> {
-        let value = Arc::new(Mutex::new(self.value.into()));
+        // Via DbrValue deliberately: it is the CA mapping that decides a lone String is a
+        // Char array rather than a DBR_STRING, and that has to keep holding
+        let value = Arc::new(Mutex::new(Value::from(DbrValue::from(self.value))));
         let classname = self
             .class_name
             .or(T::get_default_record_type().map(|v| v.to_string()));
@@ -99,7 +118,12 @@ where
 #[derive(Clone, Debug)]
 struct PV {
     name: String,
-    value: Arc<Mutex<DbrValue>>,
+    /// The value, in the protocol-neutral representation.
+    ///
+    /// Neutral rather than [`DbrValue`] so that neither protocol's server has to go
+    /// through the other's type system to read it - see [`value_as_dbr`] for the
+    /// invariant this currently holds to.
+    value: Arc<Mutex<Value>>,
     /// Minimum array length. If set, at least this many array items will
     /// be sent to subscribers, and if a longer value is assigned then this
     /// minimum length will be increased. If None, then only the current
@@ -108,7 +132,10 @@ struct PV {
     /// The last time this value was written
     timestamp: SystemTime,
     /// Channel to send updates to any interested listeners
-    sender: broadcast::Sender<Dbr>,
+    ///
+    /// Protocol-neutral: the CA server projects this onto a [`Dbr`] at the wire boundary
+    /// and a pvAccess server will project the same payload onto an NTScalar.
+    sender: broadcast::Sender<(Value, Meta)>,
     /// Trigger channel, to notify the server there is a new broadcast available
     triggers: HashMap<u64, mpsc::Sender<String>>,
     /// The EPICS record type, for CLASS_NAME responses
@@ -119,8 +146,33 @@ struct PV {
 
 impl PV {
     pub fn load(&self) -> DbrValue {
-        let value = self.value.lock().unwrap();
-        value.clone()
+        value_as_dbr(&self.value.lock().unwrap())
+    }
+
+    /// The stored value, padded out to `minimum_length`, in CA's representation
+    ///
+    /// The padding is applied here rather than at the wire boundary because it is a
+    /// provider policy - "always send subscribers at least this many elements" - so both
+    /// protocols should see it.
+    fn load_padded(&self) -> DbrValue {
+        let mut value = value_as_dbr(&self.value.lock().unwrap());
+        if let Some(size) = self.minimum_length
+            && value.get_count() < size
+        {
+            let _ = value.resize(size);
+        }
+        value
+    }
+
+    /// Load the value and its metadata in protocol-neutral form
+    ///
+    /// This is what subscribers receive; each protocol's server projects it onto its own
+    /// wire representation. `load_for_ca` is the CA projection of exactly this.
+    pub fn load_neutral(&self) -> (Value, Meta) {
+        (
+            Value::from(self.load_padded()),
+            Meta::timestamped(TimeStamp::from(self.timestamp)),
+        )
     }
 
     /// Load the value to a Dbr ready to send to an CA client
@@ -128,24 +180,17 @@ impl PV {
     /// This includes adjustments for minimum size, and encoding (e.g.
     /// sending a string as a Char array instead of restricting to 40-chars)
     pub fn load_for_ca(&self, requested_type: Option<DbrType>) -> Dbr {
-        let mut value = self.value.lock().unwrap().clone();
         if requested_type == Some(DBR_CLASS_NAME) {
             return Dbr::ClassName(DbrValue::String(vec![
-                self.epics_record_type
-                    .clone()
-                    .unwrap_or_else(|| value.get_default_record_type()),
+                self.epics_record_type.clone().unwrap_or_else(|| {
+                    value_as_dbr(&self.value.lock().unwrap()).get_default_record_type()
+                }),
             ]));
-        }
-        // Handle minimum length
-        if let Some(size) = self.minimum_length
-            && value.get_count() < size
-        {
-            let _ = value.resize(size);
         }
         Dbr::Time {
             status: Status::default(),
             timestamp: self.timestamp,
-            value,
+            value: self.load_padded(),
         }
     }
     /// Store a value from the CA protocol to the PV
@@ -153,7 +198,12 @@ impl PV {
     /// In this case, there are special behaviour like e.g. parsing
     /// numbers out of string data type
     fn store_from_ca(&mut self, value: &DbrValue) -> Result<(), ErrorCondition> {
-        let native_type = self.value.lock().unwrap().get_type();
+        let native_type = self
+            .value
+            .lock()
+            .unwrap()
+            .ca_basic_type()
+            .map_err(|_| ErrorCondition::NoConvert)?;
         let value = if value.get_type() == DbrBasicType::String {
             value
                 .parse_into(native_type)
@@ -168,18 +218,22 @@ impl PV {
         // Now update the shared value
         {
             let stored_value = &mut *self.value.lock().unwrap();
-            *stored_value = value.convert_to(stored_value.get_type())?;
+            let native_type = stored_value
+                .ca_basic_type()
+                .map_err(|_| ErrorCondition::NoConvert)?;
+            let converted = value.convert_to(native_type)?;
             // Update the minimum length, if we are now longer
             if let Some(size) = self.minimum_length
-                && stored_value.get_count() > size
+                && converted.get_count() > size
             {
-                self.minimum_length = Some(stored_value.get_count());
+                self.minimum_length = Some(converted.get_count());
             }
+            *stored_value = Value::from(converted);
             // Ensure lock is dropped
         }
         self.timestamp = SystemTime::now();
         // Now send off the new value to any listeners
-        let _ = self.sender.send(self.load_for_ca(None));
+        let _ = self.sender.send(self.load_neutral());
         // Send the "please look at" triggers, filtering out any that are dead
         self.triggers = self
             .triggers
@@ -198,7 +252,7 @@ impl Default for PV {
     fn default() -> Self {
         PV {
             name: String::new(),
-            value: Arc::new(Mutex::new(DbrValue::Int(vec![0]))),
+            value: Arc::new(Mutex::new(Value::from(DbrValue::Int(vec![0])))),
             minimum_length: None,
             timestamp: SystemTime::now(),
             sender: broadcast::Sender::new(256),
@@ -264,14 +318,14 @@ where
     }
 }
 
-/// Wrap a Dbr broadcast receiver into a receiver that converts to a specific type
+/// Wrap a value broadcast receiver into a receiver that converts to a specific type
 #[derive(Debug)]
 pub struct ConverterReceiver<T>
 where
     T: TryFrom<DbrValue>,
     DbrValue: From<T>,
 {
-    receiver: broadcast::Receiver<Dbr>,
+    receiver: broadcast::Receiver<(Value, Meta)>,
     _phantom: PhantomData<T>,
 }
 
@@ -319,6 +373,17 @@ impl From<broadcast::error::TryRecvError> for ConverterTryRecvError {
         }
     }
 }
+/// A broadcast update, in a receiver's static type
+///
+/// Goes via [`DbrValue`] because that is where the numeric coercion lives - `T`'s bound
+/// is `TryFrom<DbrValue>`, and generalising that to the neutral model is plan item 3.5.
+fn convert_update<T>(value: &Value) -> Option<T>
+where
+    T: TryFrom<DbrValue>,
+{
+    T::try_from(DbrValue::try_from(value).ok()?).ok()
+}
+
 impl<T> ConverterReceiver<T>
 where
     T: TryFrom<DbrValue>,
@@ -329,20 +394,16 @@ where
             .recv()
             .await
             .map_err(|e| e.into())
-            .and_then(|dbr| {
-                dbr.take_value()
-                    .try_into()
-                    .map_err(|_| ConverterRecvError::ConversionError)
+            .and_then(|(value, _meta)| {
+                convert_update(&value).ok_or(ConverterRecvError::ConversionError)
             })
     }
     pub fn try_recv(&mut self) -> Result<T, ConverterTryRecvError> {
         self.receiver
             .try_recv()
             .map_err(|e| e.into())
-            .and_then(|dbr| {
-                dbr.take_value()
-                    .try_into()
-                    .map_err(|_| ConverterTryRecvError::ConversionError)
+            .and_then(|(value, _meta)| {
+                convert_update(&value).ok_or(ConverterTryRecvError::ConversionError)
             })
     }
     pub fn resubscribe(&self) -> Self {
@@ -406,7 +467,7 @@ impl IntercomProvider {
     {
         let pv = Arc::new(Mutex::new(PV {
             name: name.to_owned(),
-            value: Arc::new(Mutex::new(DbrValue::from(initial_value))),
+            value: Arc::new(Mutex::new(Value::from(DbrValue::from(initial_value)))),
             ..Default::default()
         }));
         self.register_pv(pv.clone())?;
@@ -510,7 +571,7 @@ impl Provider for IntercomProvider {
         _data_count: usize,
         _mask: MonitorMask,
         trigger: mpsc::Sender<String>,
-    ) -> Result<broadcast::Receiver<Dbr>, ErrorCondition> {
+    ) -> Result<broadcast::Receiver<(Value, Meta)>, ErrorCondition> {
         let mut pvmap = self.pvs.lock().unwrap();
         let mut pv = pvmap
             .get_mut(self.normalize_pv_name(pv_name))
@@ -544,20 +605,59 @@ impl Provider for IntercomProvider {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use tokio::sync::mpsc;
+
+    use super::{PV, value_as_dbr};
     use crate::{
         Provider,
-        dbr::DbrBasicType,
-        providers::{
-            IntercomProvider,
-            intercom::{Intercom, PV},
+        dbr::{DBR_BASIC_INT, DbrBasicType, DbrValue},
+        messages::MonitorMask,
+        providers::{IntercomProvider, intercom::Intercom},
+        value::{
+            Value,
+            meta::{Alarm, Meta},
         },
     };
+
+    /// Register a monitor the way the server does, and hand back both ends.
+    fn monitor(
+        provider: &mut IntercomProvider,
+        pv_name: &str,
+        trigger_depth: usize,
+    ) -> (
+        mpsc::Receiver<String>,
+        tokio::sync::broadcast::Receiver<(Value, Meta)>,
+    ) {
+        let (trigger, triggers) = mpsc::channel(trigger_depth);
+        let updates = provider
+            .monitor_value(
+                pv_name,
+                1,
+                DBR_BASIC_INT,
+                1,
+                MonitorMask::default(),
+                trigger,
+            )
+            .unwrap();
+        (triggers, updates)
+    }
+
+    /// How many triggers the provider still holds for a PV.
+    fn trigger_count(provider: &IntercomProvider, pv_name: &str) -> usize {
+        provider.pvs.lock().unwrap()[pv_name]
+            .lock()
+            .unwrap()
+            .triggers
+            .len()
+    }
 
     #[test]
     fn test_string_intercom() {
         let pv = Arc::new(Mutex::new(PV {
             name: "TEST".to_owned(),
-            value: Arc::new(Mutex::new("Test String".to_string().into())),
+            value: Arc::new(Mutex::new(Value::from(DbrValue::from(
+                "Test String".to_string(),
+            )))),
             ..Default::default()
         }));
         let si = Intercom::<String>::new(pv.clone());
@@ -567,6 +667,154 @@ mod tests {
             pv.lock().unwrap().load_for_ca(None).data_type().basic_type,
             DbrBasicType::Char
         );
+    }
+
+    /// Load-bearing property 1: `store()` works from ordinary synchronous code, which is
+    /// the entire point of `Intercom<T>`, and keeps working while the server runs on
+    /// tokio.
+    #[test]
+    fn store_is_callable_from_non_async_code() {
+        let mut provider = IntercomProvider::new();
+        let value = provider.add_pv("COUNT", 0i32).unwrap();
+
+        // With no tokio runtime anywhere in sight
+        value.store(7);
+        assert_eq!(value.load(), 7);
+
+        // ... and with an async subscriber on a runtime this thread never enters
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut updates = value.subscribe();
+        let received = runtime.spawn(async move { updates.recv().await.ok() });
+        value.store(8);
+        assert_eq!(runtime.block_on(received).unwrap(), Some(8));
+
+        // ... and from a plain OS thread, which has no runtime context at all
+        let elsewhere = value.clone();
+        std::thread::spawn(move || elsewhere.store(9))
+            .join()
+            .unwrap();
+        assert_eq!(value.load(), 9);
+    }
+
+    /// Load-bearing property 2: a full trigger queue is success, not an error.
+    ///
+    /// The trigger only says "look at the broadcast channel", so a trigger that could not
+    /// be enqueued has lost nothing - the value is still in the broadcast buffer and the
+    /// subscriber will pick it up when it drains. `store()` must not become an `await` to
+    /// "fix" this, because property 1 forbids it.
+    #[test]
+    fn store_tolerates_a_full_trigger_queue() {
+        let mut provider = IntercomProvider::new();
+        let value = provider.add_pv("COUNT", 0i32).unwrap();
+        // Depth 1, so only the first of these three stores can enqueue a trigger
+        let (mut triggers, mut updates) = monitor(&mut provider, "COUNT", 1);
+
+        value.store(1);
+        value.store(2);
+        value.store(3);
+
+        assert_eq!(triggers.try_recv().unwrap(), "COUNT");
+        assert!(
+            triggers.try_recv().is_err(),
+            "the queue was full, so no further triggers got in"
+        );
+        assert_eq!(
+            trigger_count(&provider, "COUNT"),
+            1,
+            "a full queue must not evict the trigger"
+        );
+        // Nothing was lost: all three values are queued for the subscriber
+        assert_eq!(updates.len(), 3);
+        for expected in [1i32, 2, 3] {
+            let (value, _) = updates.try_recv().unwrap();
+            assert_eq!(value, Value::from(vec![expected]));
+        }
+    }
+
+    /// A *closed* trigger, unlike a full one, is dropped - that subscriber is gone.
+    #[test]
+    fn store_drops_closed_triggers() {
+        let mut provider = IntercomProvider::new();
+        let value = provider.add_pv("COUNT", 0i32).unwrap();
+        let (triggers, _updates) = monitor(&mut provider, "COUNT", 4);
+        assert_eq!(trigger_count(&provider, "COUNT"), 1);
+
+        drop(triggers);
+        value.store(1);
+        assert_eq!(trigger_count(&provider, "COUNT"), 0);
+    }
+
+    /// The storage move is meant to be invisible from CA: the same values, types and
+    /// padding as before.
+    #[test]
+    fn neutral_storage_keeps_the_ca_projection() {
+        let mut provider = IntercomProvider::new();
+        // A lone String is a Char array over CA rather than a DBR_STRING, and storage
+        // being neutral must not quietly turn it into a DBR_STRING
+        let text = provider
+            .build_pv("TEXT", "abc".to_string())
+            .minimum_length(8)
+            .build()
+            .unwrap();
+        let dbr = provider.read_value("TEXT", None).unwrap();
+        assert_eq!(dbr.data_type().basic_type, DbrBasicType::Char);
+        assert_eq!(dbr.value().get_count(), 8, "padded to minimum_length");
+
+        // A longer write ratchets the minimum up
+        text.store("a longer string".to_string());
+        assert_eq!(
+            provider
+                .read_value("TEXT", None)
+                .unwrap()
+                .value()
+                .get_count(),
+            15
+        );
+
+        // An enum-typed value still reads back as DBR_ENUM - the asymmetric u16 mapping
+        // in `value::ca` exists for exactly this case
+        let pv = PV {
+            name: "MODE".to_owned(),
+            value: Arc::new(Mutex::new(Value::from(DbrValue::Enum(2)))),
+            ..Default::default()
+        };
+        assert_eq!(pv.load(), DbrValue::Enum(2));
+        assert_eq!(
+            pv.load_for_ca(None).data_type().basic_type,
+            DbrBasicType::Enum
+        );
+        assert_eq!(
+            value_as_dbr(&Value::from(DbrValue::Enum(2))),
+            DbrValue::Enum(2)
+        );
+    }
+
+    /// What subscribers now receive: a neutral value, already padded, with the metadata
+    /// the CA `Time` category used to carry.
+    #[test]
+    fn subscribers_receive_neutral_padded_values() {
+        let mut provider = IntercomProvider::new();
+        let array = provider
+            .build_pv("ARRAY", vec![1i32, 2])
+            .minimum_length(4)
+            .build()
+            .unwrap();
+        let (_triggers, mut updates) = monitor(&mut provider, "ARRAY", 4);
+
+        array.store(vec![7i32, 8]);
+        let (value, meta) = updates.try_recv().unwrap();
+        assert_eq!(
+            value,
+            Value::from(vec![7i32, 8, 0, 0]),
+            "minimum_length is a provider policy, so it applies to the neutral payload"
+        );
+        assert_eq!(meta.alarm, Some(Alarm::none()));
+        assert!(meta.timestamp.is_some());
+        assert!(meta.display.is_none() && meta.control.is_none());
+
+        // ... and it agrees with what the CA read path reports
+        let dbr = provider.read_value("ARRAY", None).unwrap();
+        assert_eq!(Value::from(dbr.value()), value);
     }
 
     #[test]

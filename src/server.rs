@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    dbr::{Dbr, DbrType},
+    dbr::{Dbr, DbrCategory, DbrType},
     messages::{
         self, AccessRights, AsBytes, CAMessage, CreateChannel, CreateChannelResponse, ECAError,
         ErrorCondition, EventAddResponse, Message, MessageError, MonitorMask, ReadNotify,
@@ -31,6 +31,7 @@ use crate::{
         get_default_beacon_period, get_default_beacon_port, get_default_server_port,
         new_reusable_udp_socket,
     },
+    value::{Value, meta::Meta},
 };
 
 /// Serve data to CA clients by managing the Circuit/Channel lifecycles and interfacing with [`Provider`].
@@ -440,7 +441,7 @@ struct PVSubscription {
     data_count: usize,
     subscription_id: u32,
     mask: MonitorMask,
-    receiver: broadcast::Receiver<Dbr>,
+    receiver: broadcast::Receiver<(Value, Meta)>,
 }
 
 impl<L: Provider> Circuit<L> {
@@ -599,7 +600,7 @@ impl<L: Provider> Circuit<L> {
             trace!("Got monitor update for closed subscription!!");
             return Ok(Vec::new());
         };
-        let dbr = match subscription.receiver.recv().await {
+        let (value, meta) = match subscription.receiver.recv().await {
             Ok(v) => v,
             Err(broadcast::error::RecvError::Closed) => {
                 return Err(MessageError::Unknown(
@@ -614,7 +615,14 @@ impl<L: Provider> Circuit<L> {
             }
         };
 
-        debug!("Circuit got update notification: {dbr:?}");
+        debug!("Circuit got update notification: {value:?} {meta:?}");
+        // The provider's payload is protocol-neutral, so project it onto CA's Time
+        // category - the category providers have always returned - before converting to
+        // whatever the subscriber actually asked for
+        let dbr = Dbr::from_value_and_meta(DbrCategory::Time, &value, &meta).map_err(|e| {
+            error!("Cannot represent update to {pv_name} as a CA value: {e}");
+            MessageError::ErrorResponse(ErrorCondition::NoConvert)
+        })?;
         let (item_count, data) = dbr
             .convert_to(subscription.data_type)
             .unwrap()
