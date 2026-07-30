@@ -25,9 +25,11 @@ pub mod header;
 pub mod introspection;
 pub mod io;
 pub mod registry;
+pub mod segments;
 
 pub use encoding::{BitSet, Status, StatusType};
 pub use header::{Direction, MessageKind, PvaHeader, Segmentation};
 pub use introspection::{NoCache, TypeCache};
 pub use io::{ByteOrder, PvaDecode, PvaEncode, PvaError, PvaReader, PvaWriter};
 pub use registry::{ConnectionTypes, IntrospectionRegistry};
+pub use segments::Reassembler;
