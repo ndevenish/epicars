@@ -15,6 +15,7 @@ use crate::{
     Provider,
     dbr::{DBR_CLASS_NAME, Dbr, DbrBasicType, DbrType, DbrValue, DefaultEpicsClass, Status},
     messages::{self, ErrorCondition, MonitorMask},
+    providers::SubscriberId,
     value::{
         Value,
         meta::{Meta, TimeStamp},
@@ -137,7 +138,10 @@ struct PV {
     /// and a pvAccess server will project the same payload onto an NTScalar.
     sender: broadcast::Sender<(Value, Meta)>,
     /// Trigger channel, to notify the server there is a new broadcast available
-    triggers: HashMap<u64, mpsc::Sender<String>>,
+    ///
+    /// Keyed by an ID this provider allocated, so that two servers sharing this PV cannot
+    /// evict each other - see [`SubscriberId`].
+    triggers: HashMap<SubscriberId, mpsc::Sender<String>>,
     /// The EPICS record type, for CLASS_NAME responses
     epics_record_type: Option<String>,
     /// Whether this PV can be written via EPICS
@@ -566,26 +570,26 @@ impl Provider for IntercomProvider {
     fn monitor_value(
         &mut self,
         pv_name: &str,
-        unique_subscriber_id: u64,
         _data_type: DbrType,
         _data_count: usize,
         _mask: MonitorMask,
         trigger: mpsc::Sender<String>,
-    ) -> Result<broadcast::Receiver<(Value, Meta)>, ErrorCondition> {
+    ) -> Result<(SubscriberId, broadcast::Receiver<(Value, Meta)>), ErrorCondition> {
         let mut pvmap = self.pvs.lock().unwrap();
         let mut pv = pvmap
             .get_mut(self.normalize_pv_name(pv_name))
             .ok_or(ErrorCondition::UnavailInServ)?
             .lock()
             .unwrap();
-        pv.triggers.insert(unique_subscriber_id, trigger);
-        Ok(pv.sender.subscribe())
+        let subscriber = SubscriberId::new();
+        pv.triggers.insert(subscriber, trigger);
+        Ok((subscriber, pv.sender.subscribe()))
     }
 
     fn cancel_monitor_value(
         &mut self,
         pv_name: &str,
-        unique_subscriber_id: u64,
+        subscriber: SubscriberId,
         _data_type: DbrType,
         _data_count: usize,
     ) {
@@ -597,7 +601,7 @@ impl Provider for IntercomProvider {
             debug!("Got remove subscription for nonexistent subsription!");
             return;
         };
-        pv.triggers.remove(&unique_subscriber_id);
+        pv.triggers.remove(&subscriber);
     }
 }
 
@@ -612,7 +616,7 @@ mod tests {
         Provider,
         dbr::{DBR_BASIC_INT, DbrBasicType, DbrValue},
         messages::MonitorMask,
-        providers::{IntercomProvider, intercom::Intercom},
+        providers::{IntercomProvider, SubscriberId, intercom::Intercom},
         value::{
             Value,
             meta::{Alarm, Meta},
@@ -625,21 +629,15 @@ mod tests {
         pv_name: &str,
         trigger_depth: usize,
     ) -> (
+        SubscriberId,
         mpsc::Receiver<String>,
         tokio::sync::broadcast::Receiver<(Value, Meta)>,
     ) {
         let (trigger, triggers) = mpsc::channel(trigger_depth);
-        let updates = provider
-            .monitor_value(
-                pv_name,
-                1,
-                DBR_BASIC_INT,
-                1,
-                MonitorMask::default(),
-                trigger,
-            )
+        let (subscriber, updates) = provider
+            .monitor_value(pv_name, DBR_BASIC_INT, 1, MonitorMask::default(), trigger)
             .unwrap();
-        (triggers, updates)
+        (subscriber, triggers, updates)
     }
 
     /// How many triggers the provider still holds for a PV.
@@ -707,7 +705,7 @@ mod tests {
         let mut provider = IntercomProvider::new();
         let value = provider.add_pv("COUNT", 0i32).unwrap();
         // Depth 1, so only the first of these three stores can enqueue a trigger
-        let (mut triggers, mut updates) = monitor(&mut provider, "COUNT", 1);
+        let (_subscriber, mut triggers, mut updates) = monitor(&mut provider, "COUNT", 1);
 
         value.store(1);
         value.store(2);
@@ -731,12 +729,44 @@ mod tests {
         }
     }
 
+    /// Subscription IDs come from the provider, so two subscriptions to one PV never
+    /// collide - including two servers doing it through their own clone of the provider,
+    /// which is what used to break.
+    #[test]
+    fn subscriber_ids_are_unique_and_cancel_independently() {
+        assert_ne!(SubscriberId::new(), SubscriberId::new());
+
+        let mut provider = IntercomProvider::new();
+        let value = provider.add_pv("COUNT", 0i32).unwrap();
+        // A second handle on the same state, as each server's circuit holds
+        let mut shared = provider.clone();
+
+        let (first, mut first_triggers, _first_updates) = monitor(&mut provider, "COUNT", 4);
+        let (second, mut second_triggers, _second_updates) = monitor(&mut shared, "COUNT", 4);
+        assert_ne!(first, second);
+        assert_eq!(trigger_count(&provider, "COUNT"), 2);
+
+        value.store(1);
+        assert_eq!(first_triggers.try_recv().unwrap(), "COUNT");
+        assert_eq!(second_triggers.try_recv().unwrap(), "COUNT");
+
+        // Cancelling one leaves the other running
+        provider.cancel_monitor_value("COUNT", first, DBR_BASIC_INT, 1);
+        assert_eq!(trigger_count(&provider, "COUNT"), 1);
+        value.store(2);
+        assert!(first_triggers.try_recv().is_err());
+        assert_eq!(second_triggers.try_recv().unwrap(), "COUNT");
+
+        shared.cancel_monitor_value("COUNT", second, DBR_BASIC_INT, 1);
+        assert_eq!(trigger_count(&provider, "COUNT"), 0);
+    }
+
     /// A *closed* trigger, unlike a full one, is dropped - that subscriber is gone.
     #[test]
     fn store_drops_closed_triggers() {
         let mut provider = IntercomProvider::new();
         let value = provider.add_pv("COUNT", 0i32).unwrap();
-        let (triggers, _updates) = monitor(&mut provider, "COUNT", 4);
+        let (_subscriber, triggers, _updates) = monitor(&mut provider, "COUNT", 4);
         assert_eq!(trigger_count(&provider, "COUNT"), 1);
 
         drop(triggers);
@@ -799,7 +829,7 @@ mod tests {
             .minimum_length(4)
             .build()
             .unwrap();
-        let (_triggers, mut updates) = monitor(&mut provider, "ARRAY", 4);
+        let (_subscriber, _triggers, mut updates) = monitor(&mut provider, "ARRAY", 4);
 
         array.store(vec![7i32, 8]);
         let (value, meta) = updates.try_recv().unwrap();

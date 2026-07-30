@@ -26,7 +26,7 @@ use crate::{
         ErrorCondition, EventAddResponse, Message, MessageError, MonitorMask, ReadNotify,
         ReadNotifyResponse, WriteNotify, parse_search_packet,
     },
-    providers::Provider,
+    providers::{Provider, SubscriberId},
     utils::{
         get_default_beacon_period, get_default_beacon_port, get_default_server_port,
         new_reusable_udp_socket,
@@ -441,6 +441,8 @@ struct PVSubscription {
     data_count: usize,
     subscription_id: u32,
     mask: MonitorMask,
+    /// The provider's handle on this subscription, to hand back when cancelling
+    subscriber: SubscriberId,
     receiver: broadcast::Receiver<(Value, Meta)>,
 }
 
@@ -644,11 +646,10 @@ impl<L: Provider> Circuit<L> {
                 debug!("{id}: {}: Got {:?}", msg.server_id, msg);
                 let channel = &mut self.channels.get_mut(&msg.server_id).unwrap();
 
-                let receiver = self
+                let (subscriber, receiver) = self
                     .library
                     .monitor_value(
                         &channel.name,
-                        (self.id << 32) | channel.server_id as u64,
                         msg.data_type,
                         msg.data_count as usize,
                         msg.mask,
@@ -665,6 +666,7 @@ impl<L: Provider> Circuit<L> {
                     data_count: msg.data_count as usize,
                     mask: msg.mask,
                     subscription_id: msg.subscription_id,
+                    subscriber,
                     receiver,
                 });
                 // Send back an initial value\
@@ -679,17 +681,20 @@ impl<L: Provider> Circuit<L> {
             Message::EventCancel(msg) => {
                 debug!("{id}: {}: Got {:?}", msg.server_id, msg);
                 let channel = &mut self.channels.get_mut(&msg.server_id).unwrap();
-                self.library.cancel_monitor_value(
-                    &channel.name,
-                    (self.id << 32) | channel.server_id as u64,
-                    msg.data_type,
-                    msg.data_count as usize,
-                );
+                // Hand back the ID the provider gave us, rather than one we derived - see
+                // SubscriberId. Nothing to cancel if the subscription is already gone.
+                if let Some(subscription) = channel.subscription.take() {
+                    self.library.cancel_monitor_value(
+                        &channel.name,
+                        subscription.subscriber,
+                        msg.data_type,
+                        msg.data_count as usize,
+                    );
+                }
                 let _ = self.lifecycle_events.send(ServerEvent::Unsubscribe {
                     circuit_id: self.id,
                     channel_id: msg.server_id,
                 });
-                channel.subscription = None;
                 Ok(vec![msg.response().into()])
             }
             Message::ClientName(name) if self.client_user_name.is_none() => {

@@ -3,6 +3,8 @@
 pub mod intercom;
 pub use intercom::IntercomProvider;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use tokio::sync::{
     broadcast::{self},
     mpsc::{self},
@@ -13,6 +15,36 @@ use crate::{
     messages::{self, ErrorCondition, MonitorMask},
     value::{Value, meta::Meta},
 };
+
+/// An opaque handle to one subscription, allocated by the [`Provider`] that owns it.
+///
+/// Allocated by the provider rather than derived by the server, because the provider is
+/// the only party that can guarantee uniqueness: a `Provider` is `Clone` and one clone per
+/// circuit is the *point*, so several servers can share the same underlying state. The
+/// server used to compute this as `(circuit_id << 32) | channel_id`, with the circuit
+/// counter restarting at 0 for each `Server` - so two servers over one provider both asked
+/// for key 0 and one silently overwrote the other's trigger.
+///
+/// The value carries no meaning; do not attempt to unpack one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SubscriberId(u64);
+
+impl SubscriberId {
+    /// Allocate an ID that no other `SubscriberId` in this process will equal.
+    ///
+    /// Process-wide rather than per-provider so that two providers cannot collide either,
+    /// which costs one atomic increment per subscription.
+    pub fn new() -> SubscriberId {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        SubscriberId(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl Default for SubscriberId {
+    fn default() -> SubscriberId {
+        SubscriberId::new()
+    }
+}
 
 /// Provides PV values for a CAServer
 pub trait Provider: Sync + Send + Clone + Default + 'static {
@@ -63,24 +95,27 @@ pub trait Provider: Sync + Send + Clone + Default + 'static {
     ///
     /// The payload is protocol-neutral. Each server projects `(Value, Meta)` onto its own
     /// wire types, so one provider can feed a CA and a pvAccess server at once.
+    ///
+    /// Returns the [`SubscriberId`] the implementation allocated for this subscription;
+    /// the caller must hand that back to [`Provider::cancel_monitor_value`].
     #[allow(unused_variables)]
     fn monitor_value(
         &mut self,
         pv_name: &str,
-        unique_subscriber_id: u64,
         data_type: DbrType,
         data_count: usize,
         mask: MonitorMask,
         trigger: mpsc::Sender<String>,
-    ) -> Result<broadcast::Receiver<(Value, Meta)>, ErrorCondition> {
+    ) -> Result<(SubscriberId, broadcast::Receiver<(Value, Meta)>), ErrorCondition> {
         Err(ErrorCondition::UnavailInServ)
     }
 
+    /// Tear down a subscription previously returned by [`Provider::monitor_value`].
     #[allow(unused_variables)]
     fn cancel_monitor_value(
         &mut self,
         pv_name: &str,
-        unique_subscriber_id: u64,
+        subscriber: SubscriberId,
         data_type: DbrType,
         data_count: usize,
     ) {
