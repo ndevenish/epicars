@@ -4,7 +4,8 @@
 //! data model. That conflation cannot be carried into pvAccess, whose type system is
 //! strictly larger: booleans, unsigned integers, 64-bit integers, nested structures,
 //! unions and arrays of structures all have no CA representation. This module is the
-//! neutral model that both protocols convert to and from.
+//! neutral model that both protocols convert to and from - see [`ca`] for the CA
+//! adapters.
 //!
 //! Two types, deliberately kept apart:
 //!
@@ -33,6 +34,8 @@
 //!     Some(&Value::from(3i32))
 //! );
 //! ```
+
+pub mod ca;
 
 /// The twelve primitive types a [`Scalar`] or [`ScalarArray`] can hold.
 ///
