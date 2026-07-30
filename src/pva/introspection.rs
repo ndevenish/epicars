@@ -422,7 +422,7 @@ fn decode_complex(
             })
         }
         (detail, array) => Err(PvaError::malformed(format!(
-            "unsupported complex introspection: detail {detail:#03b}, array form {array:#03b}"
+            "unsupported complex introspection: detail {detail:#05b}, array form {array:#04b}"
         ))),
     }
 }
