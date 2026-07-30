@@ -19,3 +19,7 @@
 //! What *does* transfer from the CA module: the shape of its error enum, the
 //! decoder-is-also-the-item trick, and the peek → header-len → payload-len → reserve →
 //! advance framing pattern.
+
+pub mod io;
+
+pub use io::{ByteOrder, PvaDecode, PvaEncode, PvaError, PvaReader, PvaWriter};
