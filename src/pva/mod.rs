@@ -20,6 +20,7 @@
 //! decoder-is-also-the-item trick, and the peek → header-len → payload-len → reserve →
 //! advance framing pattern.
 
+pub mod control;
 pub mod encoding;
 pub mod header;
 pub mod introspection;
@@ -27,6 +28,7 @@ pub mod io;
 pub mod registry;
 pub mod segments;
 
+pub use control::ControlMessage;
 pub use encoding::{BitSet, Status, StatusType};
 pub use header::{Direction, MessageKind, PvaHeader, Segmentation};
 pub use introspection::{NoCache, TypeCache};
