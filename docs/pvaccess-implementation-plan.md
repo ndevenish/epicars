@@ -243,9 +243,13 @@ and `EventCancelResponse`, disambiguated by a payload-size heuristic duplicated 
 phase needs **one** message enum, not two.
 
 What *does* transfer from `messages.rs`: the `impl_from_for!` macro
-(`messages.rs:535`, already fully generic), the `MessageError` and nom `ParseError`
-glue shape (`messages.rs:737-789`), the decoder-is-also-the-item trick, and the
+(`messages.rs:535`, already fully generic), the *shape* of the `MessageError` enum
+(`messages.rs:737-789`), the decoder-is-also-the-item trick, and the
 peek → header-len → payload-len → reserve → advance pattern.
+
+What does **not** transfer is nom itself. Item **1.2** settles that up front, and
+everything else in this phase is written against the reader/writer it defines — so
+read 1.2 before starting any other item here.
 
 This whole phase is unit-testable with **no network**.
 
@@ -264,10 +268,11 @@ pvAccess's header is 8 bytes, always:
 
 **Done when:** header round-trips for every flag combination in both byte orders.
 
-### 1.2 — Decide endianness handling — do this first
+### 1.2 — Byte-order-aware reader/writer — build this first
 
 **Everything downstream depends on this item.** §6 ranks it third among
-underestimated risks: cheap to get right at the start, expensive to retrofit.
+underestimated risks: cheap to get right at the start, expensive to retrofit. Build
+it before 1.1's parsing, before 1.3, before anything.
 
 CA is fixed big-endian, and `messages.rs` uses `be_u16` / `be_u32` throughout
 (already with `::<&[u8], nom::error::Error<&[u8]>>` turbofish noise in about eight
@@ -275,18 +280,51 @@ places). pvAccess **negotiates byte order per connection**, via the `SET_BYTE_OR
 control message and flags bit 7. Copy the existing style naively and you write every
 parser twice.
 
-**Recommendation:** a runtime `ByteOrder` carried on small `PvaReader` / `PvaWriter`
-wrappers, with a `PvaDecode` / `PvaEncode` trait pair — *not* nom. nom's `be_*`/`le_*`
-split forces each parser to be either duplicated or made awkwardly generic over the
-number parser, and the turbofish noise already visible in `messages.rs` gets worse.
+**Decision: `src/pva/` does not use nom.** Instead, a runtime `ByteOrder` carried on
+small reader/writer wrappers, with a decode/encode trait pair:
 
-This is a **deliberate departure** from `messages.rs`'s nom style. It is recorded
-here so that it reads as a decision rather than an inconsistency. The alternatives
-considered and rejected were a generic const parameter (infects every type
-signature) and two generated parser sets (doubles the surface to test).
+```rust
+pub enum ByteOrder { Little, Big }
 
-**Done when:** the reader/writer pair exists, and a test decodes the same message
-bytes in both orders to the same value.
+pub struct PvaReader<'a> { buf: &'a [u8], pos: usize, order: ByteOrder }
+pub struct PvaWriter    { buf: Vec<u8>,             order: ByteOrder }
+
+pub trait PvaDecode: Sized {
+    fn decode(r: &mut PvaReader<'_>) -> Result<Self, PvaError>;
+}
+pub trait PvaEncode {
+    fn encode(&self, w: &mut PvaWriter) -> Result<(), PvaError>;
+}
+```
+
+Byte order lives on the reader/writer, so it is set once per connection (or per
+message, from flags bit 7) and every `decode` implementation below is written once
+and is order-agnostic by construction.
+
+**Why not nom**, which is what the rest of the crate uses: nom's `be_*`/`le_*` split
+forces each parser to be either duplicated or made generic over the number parser,
+and the turbofish noise already visible in `messages.rs` gets worse. The two
+alternatives considered and rejected were a generic const parameter (infects every
+type signature in the module) and two generated parser sets (doubles the surface to
+test).
+
+This is a **deliberate, approved departure** from `messages.rs`'s style, scoped to
+`src/pva/`. **CA keeps nom; do not migrate it.** The inconsistency is the price of
+not writing the pvAccess parsers twice, and it is recorded here so it reads as a
+decision rather than as drift.
+
+Two consequences to carry through the rest of Phase 1:
+
+- `PvaError` is this module's error type, replacing the nom `ParseError` glue. It
+  still mirrors the shape of `MessageError` (`messages.rs:737-789`) — the *shape*
+  transfers even though the parser library does not.
+- Incomplete input must be distinguishable from malformed input, since 1.9's
+  `Decoder` needs "not enough bytes yet, try again" as a non-error. nom gives this
+  for free via `Err::Incomplete`; here it has to be an explicit `PvaError` variant.
+
+**Done when:** the reader/writer pair exists with a `PvaError` distinguishing
+incomplete from malformed, and a test decodes the same logical message from both
+big- and little-endian byte sequences to an identical value.
 
 ### 1.3 — Primitive encodings
 
@@ -414,6 +452,12 @@ connection.
 tokio-util `Decoder` / `Encoder`, following the existing
 peek → header-len → payload-len → reserve → advance pattern from
 `RawMessageDecoder`.
+
+This is where 1.2's incomplete-vs-malformed distinction earns its keep: an
+incomplete `PvaError` maps to `Ok(None)` — "call me again with more bytes" — while a
+malformed one is a real decode error. Getting these confused produces either a
+connection that drops on every partial read or one that spins forever on a
+corrupt frame.
 
 **Done when:** the codec is driven over a `tokio_test::io` mock with the stream
 chopped at arbitrary boundaries, and yields the same messages regardless.
